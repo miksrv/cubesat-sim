@@ -1,6 +1,6 @@
 import time
 import paho.mqtt.client as mqtt
-import picamera
+from picamera2 import Picamera2
 from pathlib import Path
 
 BROKER = "localhost"
@@ -20,12 +20,11 @@ def take_photo():
     filename = PHOTO_DIR / f"photo_{photo_counter}.jpg"
 
     try:
-        with picamera.PiCamera() as camera:
-            camera.resolution = (1024, 768)
-            camera.start_preview()
-            time.sleep(2)
-            camera.capture(str(filename))
-            camera.stop_preview()
+        picam = Picamera2()
+        picam.start_preview()
+        time.sleep(2)
+        picam.capture_file(str(filename))
+        picam.stop_preview()
     except Exception as e:
         print(f"Payload: Error taking photo: {e}")
         return None
@@ -47,7 +46,7 @@ def on_message(client, userdata, msg):
             client.publish(PAYLOAD_PHOTO_TOPIC, photo_path, qos=1)
 
 def main():
-    client = mqtt.Client("Payload")
+    client = mqtt.Client(client_id="Payload", callback_api_version=1)
     client.on_connect = on_connect
     client.on_message = on_message
     client.connect(BROKER, PORT, 60)

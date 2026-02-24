@@ -1,7 +1,7 @@
 # cubeSat_sim/requirements.txt
 
-# MQTT клиент для сервисов
-paho-mqtt==1.6.1
+# MQTT клиент
+paho-mqtt
 
-# Для Pi Camera
-picamera==1.13
+# Новая библиотека камеры для Raspberry Pi
+picamera2

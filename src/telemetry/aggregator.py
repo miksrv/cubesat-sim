@@ -45,6 +45,8 @@ class TelemetryAggregator:
                 swap_percent REAL,
                 disk_percent REAL,
                 uptime_seconds INTEGER,
+                cpu_temperature REAL,
+                gpu_temperature REAL,
                 obc_state TEXT,
                 raw_json TEXT
             )
@@ -114,25 +116,28 @@ class TelemetryAggregator:
                 roll, pitch, yaw,
                 temperature, humidity, pressure,
                 cpu_percent, ram_percent, swap_percent, disk_percent,
-                uptime_seconds, obc_state, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                uptime_seconds, cpu_temperature, gpu_temperature,
+                obc_state, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     packet["timestamp"],
-                    packet["eps"].get("battery", None),           # или 0.0, -1, в зависимости от семантики
+                    packet["eps"].get("battery", None),
                     packet["eps"].get("voltage", None),
                     1 if packet["eps"].get("external_power", False) else 0,
                     packet["adcs"].get("roll", None),
                     packet["adcs"].get("pitch", None),
                     packet["adcs"].get("yaw", None),
-                    packet.get("temperature", None),              # ← можно вынести общую температуру
+                    packet.get("temperature", None),
                     packet["payload"].get("humidity", None),
                     packet["payload"].get("pressure", None),
-                    system["cpu_percent"],
-                    system["ram_percent"],
-                    system["swap_percent"],
-                    system["disk_percent"],
-                    system["uptime_seconds"],
-                    packet["obc_state"],
+                    system.get("cpu_percent", None),
+                    system.get("ram_percent", None),
+                    system.get("swap_percent", None),
+                    system.get("disk_percent", None),
+                    system.get("uptime_seconds", None),
+                    system.get("cpu_temperature", None),
+                    system.get("gpu_temperature", None),
+                    packet.get("obc_state", None),
                     json.dumps(packet, ensure_ascii=False)
                 ))
         self.conn.commit()

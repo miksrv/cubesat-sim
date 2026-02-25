@@ -82,6 +82,6 @@ class SystemMetricsCollector:
             "swap_percent":  cls.get_swap_usage(),
             "disk_percent":  cls.get_sd_usage(),
             "uptime_seconds": time.time() - psutil.boot_time(),  # более точно
-            "cpu_temperature_c": cpu_temp,
+            "cpu_temperature": cpu_temp,
             "gpu_temperature": gpu_temp,  # оставляем строку, как в vcgencmd
         }

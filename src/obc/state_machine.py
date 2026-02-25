@@ -85,3 +85,12 @@ class CubeSatStateMachine:
         self.publish_state()
         # self.obc.publish_control("all/non_critical/off", "")
         # Только EPS и редкая телеметрия остаются активны
+
+    def publish_state(self, extra=None):
+        """
+        Publishes the current state to MQTT.
+        """
+        payload = {"state": self.state}
+        if extra:
+            payload.update(extra)
+        self.obc.publish("cubesat/obc/status", json.dumps(payload), retain=True)

@@ -5,8 +5,8 @@ import logging
 import sys
 import os
 
-from .state_machine import CubeSatStateMachine
-from .handlers import OBCMessageHandlers
+from state_machine import CubeSatStateMachine
+from handlers import OBCMessageHandlers
 
 # Настройка логирования
 logging.basicConfig(

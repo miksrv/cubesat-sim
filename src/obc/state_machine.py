@@ -45,6 +45,8 @@ class CubeSatStateMachine:
             initial='BOOT'
         )
 
+        self.on_enter_BOOT()
+
     # ────────────── Коллбеки входа в состояния ──────────────
     def on_enter_BOOT(self):
         logger.info("OBC → BOOT: запуск самотестирования...")

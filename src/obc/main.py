@@ -29,6 +29,8 @@ class OBC:
         self.state_machine = CubeSatStateMachine(self)
         self.handlers = OBCMessageHandlers(self)
 
+        self.state_machine.on_enter_BOOT()
+
         # Подписки (можно вынести в config)
         self.subscriptions = [
             ("cubesat/eps/status", 1),

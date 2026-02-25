@@ -1,4 +1,3 @@
-import paho.mqtt.client as mqtt
 import time
 import logging
 import sys
@@ -6,6 +5,8 @@ import os
 
 from state_machine import CubeSatStateMachine
 from handlers import OBCMessageHandlers
+from ..common.mqtt_client import get_mqtt_client
+from ..common.config import TOPICS, MQTT_BROKER, MQTT_PORT
 
 # Настройка логирования
 logging.basicConfig(
@@ -20,10 +21,13 @@ logger = logging.getLogger(__name__)
 
 class OBC:
     def __init__(self):
-        self.mqtt_client = mqtt.Client(client_id="cubesat-obc")
-        self.mqtt_client.on_connect = self.on_mqtt_connect
-        self.mqtt_client.on_message = self.on_mqtt_message
+        # Один раз создаём клиента с хорошими настройками
+        self.mqtt_client = get_mqtt_client("cubesat-obc")
+
+        # Назначаем свои обработчики
+        self.mqtt_client.on_connect    = self.on_mqtt_connect
         self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
+        self.mqtt_client.on_message    = self.on_mqtt_message
 
         self.state_machine = CubeSatStateMachine(self)
         self.handlers = OBCMessageHandlers(self)
@@ -47,9 +51,15 @@ class OBC:
 
     def on_mqtt_connect(self, client, userdata, flags, rc):
         logger.info(f"MQTT подключён (rc={rc})")
-        for topic, qos in self.subscriptions:
-            client.subscribe(topic, qos)
-            logger.info(f"Подписан на {topic} (QoS={qos})")
+
+        client.publish(
+            TOPICS["obc_status"],
+            f'{{"state": "{self.state_machine.state}", "alive": true, "ts": {time.time()}}}',
+            qos=1, retain=True
+        )
+
+        client.subscribe(TOPICS["eps_status"], qos=1)
+        client.subscribe(TOPICS["command"], qos=1)
 
     def on_mqtt_disconnect(self, client, userdata, rc):
         logger.warning(f"MQTT отключён (rc={rc}) → переподключение...")
@@ -82,7 +92,9 @@ class OBC:
         self.publish(topic, payload)
 
     def run(self):
-        self.connect_mqtt()
+        self.mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+        self.mqtt_client.loop_start()
+
         logger.info("OBC запущен. Текущее состояние: " + self.state_machine.state)
 
         try:

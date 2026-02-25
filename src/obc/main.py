@@ -23,46 +23,28 @@ class OBC:
         self.mqtt_client = get_mqtt_client("cubesat-obc")
 
         # Назначаем свои обработчики
-        self.mqtt_client.on_connect    = self.on_mqtt_connect
-        self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
-        self.mqtt_client.on_message    = self.on_mqtt_message
+        self.mqtt_client.on_connect = self.on_mqtt_connect
+        self.mqtt_client.on_message = self.on_mqtt_message
 
         self.state_machine = CubeSatStateMachine(self)
-        self.handlers = OBCMessageHandlers(self)
-
-        # Подписки (можно вынести в config)
-        self.subscriptions = [
-            ("cubesat/eps/status", 1),
-            ("cubesat/command", 1),
-        ]
-
-    def connect_mqtt(self):
-        broker = "localhost"          # или из конфига
-        port = 1883
-        try:
-            self.mqtt_client.connect(broker, port, keepalive=60)
-            self.mqtt_client.loop_start()
-        except Exception as e:
-            logger.error(f"Не удалось подключиться к MQTT: {e}")
-            time.sleep(5)
-            sys.exit(1)
+        self.handlers      = OBCMessageHandlers(self)
 
     def on_mqtt_connect(self, client, userdata, flags, rc):
-        logger.info(f"MQTT подключён (rc={rc})")
+        if rc != 0:
+            logger.error(f"Ошибка подключения MQTT → rc = {rc}")
+            return
+
+        logger.info(f"MQTT подключён (rc={rc}, client_id={client._client_id.decode()})")
+
+        client.subscribe(TOPICS["eps_status"], qos=1)
+        client.subscribe(TOPICS["command"],    qos=1)
 
         client.publish(
             TOPICS["obc_status"],
             f'{{"state": "{self.state_machine.state}", "alive": true, "ts": {time.time()}}}',
-            qos=1, retain=True
+            qos=1,
+            retain=True
         )
-
-        client.subscribe(TOPICS["eps_status"], qos=1)
-        client.subscribe(TOPICS["command"], qos=1)
-
-    def on_mqtt_disconnect(self, client, userdata, rc):
-        logger.warning(f"MQTT отключён (rc={rc}) → переподключение...")
-        time.sleep(3)
-        self.connect_mqtt()
 
     def on_mqtt_message(self, client, userdata, msg):
         try:
@@ -84,30 +66,34 @@ class OBC:
         except Exception as e:
             logger.error(f"Ошибка публикации в {topic}: {e}")
 
-    def publish_control(self, subtopic, payload):
-        """Удобный метод для команд управления подсистемами"""
-        topic = f"cubesat/control/{subtopic}"
-        self.publish(topic, payload)
+    # def publish_control(self, subtopic, payload):
+    #     """Удобный метод для команд управления подсистемами"""
+    #     topic = f"cubesat/control/{subtopic}"
+    #     self.publish(topic, payload)
 
     def run(self):
-        self.mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
-        self.mqtt_client.loop_start()
-
-        logger.info("OBC запущен. Текущее состояние: " + self.state_machine.state)
-
         try:
+            self.mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+            self.mqtt_client.loop_start()
+
+            logger.info(f"OBC запущен. Состояние: {self.state_machine.state}")
+
             while True:
-                # Здесь можно добавить периодические действия OBC
-                # Например: публикация текущего состояния раз в 30 сек
-                self.publish("cubesat/obc/status",
-                             f'{{"state": "{self.state_machine.state}"}}',
-                             retain=True)
+                self.publish(
+                    TOPICS["obc_status"],
+                    f'{{"state": "{self.state_machine.state}", "ts": {time.time()}}}',
+                    retain=True
+                )
                 time.sleep(30)
+
         except KeyboardInterrupt:
-            logger.info("OBC остановлен по Ctrl+C")
+            logger.info("Остановка по Ctrl+C")
+        except Exception as e:
+            logger.exception("Критическая ошибка в главном цикле OBC")
         finally:
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
+            logger.info("OBC завершил работу")
 
 if __name__ == "__main__":
     obc = OBC()

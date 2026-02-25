@@ -1,22 +1,20 @@
-import time
 import logging
+from ..common.logging import setup_logging
+
+setup_logging(
+    log_level    = "INFO",
+    log_file     = "obc.log",
+    console      = True
+)
+
+import time
 import sys
 import os
-
 from state_machine import CubeSatStateMachine
 from handlers import OBCMessageHandlers
 from ..common.mqtt_client import get_mqtt_client
 from ..common.config import TOPICS, MQTT_BROKER, MQTT_PORT
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('/var/log/cubesat/obc.log')
-    ]
-)
 logger = logging.getLogger(__name__)
 
 class OBC:

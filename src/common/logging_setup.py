@@ -3,7 +3,6 @@ import logging.config
 import os
 from pathlib import Path
 
-from .config import BASE_DIR
 
 def setup_logging(
         log_level: str = "INFO",
@@ -13,7 +12,7 @@ def setup_logging(
     """
     Единая настройка логирования для всех сервисов.
     """
-    log_dir = BASE_DIR / "logs"
+    log_dir = '/var/log/cubesat/'
     log_dir.mkdir(exist_ok=True)
     log_path = log_dir / log_file
 

@@ -6,7 +6,7 @@ from datetime import datetime
 import psutil
 
 from ..common.mqtt_client import get_mqtt_client  # предполагаем общий MQTT-хелпер
-from ..common.config import DB_PATH, TOPICS
+from ..common.config import DB_PATH, TOPICS, MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE
 
 logger = logging.getLogger(__name__)
 
@@ -114,32 +114,32 @@ class TelemetryAggregator:
     def _log_to_db(self, packet, system):
         cursor = self.conn.cursor()
         cursor.execute('''
-                       INSERT INTO telemetry_log (
-                           timestamp, battery, voltage, external_power,
-                           roll, pitch, yaw,
-                           temperature, humidity, pressure,
-                           cpu_percent, ram_percent, swap_percent, disk_percent,
-                           uptime_seconds, obc_state, raw_json
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                       ''', (
-                           packet["timestamp"],
-                           packet["eps"].get("battery"),
-                           packet["eps"].get("voltage"),
-                           1 if packet["eps"].get("external_power") else 0,
-                           packet["adcs"].get("roll"),
-                           packet["adcs"].get("pitch"),
-                           packet["adcs"].get("yaw"),
-                           packet["payload"].get("temperature") or packet["adcs"].get("temperature"),  # пример
-                           packet["payload"].get("humidity"),
-                           packet["payload"].get("pressure"),
-                           system["cpu_percent"],
-                           system["ram_percent"],
-                           system["swap_percent"],
-                           system["disk_percent"],
-                           system["uptime_seconds"],
-                           packet["obc_state"],
-                           json.dumps(packet)
-                       ))
+            INSERT INTO telemetry_log (
+                timestamp, battery, voltage, external_power,
+                roll, pitch, yaw,
+                temperature, humidity, pressure,
+                cpu_percent, ram_percent, swap_percent, disk_percent,
+                uptime_seconds, obc_state, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    packet["timestamp"],
+                    packet["eps"].get("battery", None),           # или 0.0, -1, в зависимости от семантики
+                    packet["eps"].get("voltage", None),
+                    1 if packet["eps"].get("external_power", False) else 0,
+                    packet["adcs"].get("roll", None),
+                    packet["adcs"].get("pitch", None),
+                    packet["adcs"].get("yaw", None),
+                    packet.get("temperature", None),              # ← можно вынести общую температуру
+                    packet["payload"].get("humidity", None),
+                    packet["payload"].get("pressure", None),
+                    system["cpu_percent"],
+                    system["ram_percent"],
+                    system["swap_percent"],
+                    system["disk_percent"],
+                    system["uptime_seconds"],
+                    packet["obc_state"],
+                    json.dumps(packet, ensure_ascii=False)
+                ))
         self.conn.commit()
 
     def run(self):
@@ -154,6 +154,8 @@ class TelemetryAggregator:
                 time.sleep(30)  # интервал агрегации — можно сделать конфигурируемым
         except KeyboardInterrupt:
             logger.info("Остановка Telemetry Aggregator")
+        except Exception as e:
+            logger.exception("Критическая ошибка в главном цикле Telemetry Aggregator")
         finally:
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()

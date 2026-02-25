@@ -45,37 +45,15 @@ class CubeSatStateMachine:
             initial='BOOT'
         )
 
-        # Добавляем on_enter / on_exit коллбеки (опционально)
-        self.machine.on_enter('BOOT', self.on_enter_boot)
-        self.machine.on_enter('DEPLOY', self.on_enter_deploy)
-        self.machine.on_enter('NOMINAL', self.on_enter_nominal)
-        self.machine.on_enter('SCIENCE', self.on_enter_science)
-        self.machine.on_enter('LOW_POWER', self.on_enter_low_power)
-        self.machine.on_enter('SAFE', self.on_enter_safe)
-
     # ────────────── Коллбеки входа в состояния ──────────────
-
-    def publish_state(self, extra=None):
-        """
-        Publishes the current state to MQTT.
-        Args: extra (dict, optional): Additional key-value pairs to include in the payload.
-        The payload is sent to the 'cubesat/obc/status' topic with retain=True.
-        """
-        payload = {"state": self.state}
-
-        if extra:
-            payload.update(extra)
-
-        self.obc.publish("cubesat/obc/status", json.dumps(payload), retain=True)
-
-    def on_enter_boot(self):
+    def on_enter_BOOT(self):
         logger.info("OBC → BOOT: запуск самотестирования...")
         self.publish_state({"step": "self_test_started"})
         # Здесь можно добавить проверки оборудования
         # После тестов:
         self.auto_deploy()
 
-    def on_enter_deploy(self):
+    def on_enter_DEPLOY(self):
         logger.info("OBC → DEPLOY: развёртывание систем...")
         self.publish_state({"step": "antenna_deploying"})
         # Симуляция: 5–15 секунд
@@ -83,18 +61,18 @@ class CubeSatStateMachine:
         # После завершения:
         self.deployment_complete()
 
-    def on_enter_nominal(self):
+    def on_enter_NOMINAL(self):
         logger.info("OBC → NOMINAL: штатный режим")
         self.publish_state()
         # self.obc.publish_control("telegram/start", "")   # если нужно
         # self.obc.publish_control("wifi/on", "")
         # self.obc.publish_control("payload/on", "")
 
-    def on_enter_science(self):
+    def on_enter_SCIENCE(self):
         logger.info("OBC → SCIENCE: научный режим")
         self.publish_state()
 
-    def on_enter_low_power(self):
+    def on_enter_LOW_POWER(self):
         logger.warning("OBC → LOW_POWER: режим энергосбережения")
         self.publish_state()
         # self.obc.publish_control("telegram/stop", "")
@@ -102,7 +80,7 @@ class CubeSatStateMachine:
         # self.obc.publish_control("payload/off", "")
         # self.obc.publish_control("adcs/reduce_frequency", "60")  # пример
 
-    def on_enter_safe(self):
+    def on_enter_SAFE(self):
         logger.critical("OBC → SAFE: аварийный режим!")
         self.publish_state()
         # self.obc.publish_control("all/non_critical/off", "")

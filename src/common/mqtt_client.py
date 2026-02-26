@@ -16,7 +16,6 @@ def on_disconnect(client, userdata, rc, properties=None):
 
 def get_mqtt_client(
         client_id: str,
-        clean_start: bool = False,
         username: str = None,
         password: str = None,
         reconnect_delay_min: int = 1,
@@ -27,7 +26,6 @@ def get_mqtt_client(
     """
     client = mqtt.Client(
         client_id=client_id + "_" + str(random.randint(1000, 9999)),
-        clean_start=clean_start,
         protocol=mqtt.MQTTv5,
         userdata={"reconnect_delay_min": reconnect_delay_min, "reconnect_delay_max": reconnect_delay_max}
     )

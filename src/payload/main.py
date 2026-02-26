@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class PayloadService:
     def __init__(self):
-        self.mqtt_client = mqtt.Client(client_id="cubesat-payload", clean_start=False)
+        self.mqtt_client = mqtt.Client(client_id="cubesat-payload")
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_message = self.on_mqtt_message
         self.mqtt_client.on_disconnect = self.on_mqtt_disconnect

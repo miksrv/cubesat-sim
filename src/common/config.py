@@ -23,6 +23,7 @@ TOPICS: Dict[str, str] = {
     "obc_status":           "cubesat/obc/status",
     "eps_status":           "cubesat/eps/status",
     "adcs_status":          "cubesat/adcs/status",
+    "payload_status":       "cubesat/payload/status",
     "payload_data":         "cubesat/payload/data",
 
     # Телеметрия

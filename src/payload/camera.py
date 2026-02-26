@@ -9,7 +9,7 @@ from threading import Thread, Event
 logger = logging.getLogger(__name__)
 
 class PayloadCamera:
-    PHOTO_DIR = "/home/pi/cubesat-pi/data/photos"  # или из конфига
+    PHOTO_DIR = "/home/mik/cubesat-sim/data/photos"  # или из конфига
     def __init__(self):
         os.makedirs(self.PHOTO_DIR, exist_ok=True)
         self.picam2 = Picamera2()

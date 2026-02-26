@@ -13,7 +13,7 @@ import sqlite3
 from datetime import datetime
 import psutil
 
-from src.common.mqtt_client import get_mqtt_client  # предполагаем общий MQTT-хелпер
+from src.common import get_mqtt_client
 from src.common.config import DB_PATH, TOPICS, MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE
 from src.common.system_metrics import SystemMetricsCollector
 
@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 class TelemetryAggregator:
     def __init__(self):
-        # Один раз создаём клиента с хорошими настройками
         self.mqtt_client = get_mqtt_client("cubesat-telemetry")
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_message = self.on_mqtt_message

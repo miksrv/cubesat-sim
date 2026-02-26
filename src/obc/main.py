@@ -19,10 +19,7 @@ logger = logging.getLogger(__name__)
 
 class OBC:
     def __init__(self):
-        # Один раз создаём клиента с хорошими настройками
         self.mqtt_client = get_mqtt_client("cubesat-obc")
-
-        # Назначаем свои обработчики
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_message = self.on_mqtt_message
 

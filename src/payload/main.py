@@ -21,16 +21,13 @@ logger = logging.getLogger(__name__)
 
 class PayloadService:
     def __init__(self):
-        # Один раз создаём клиента с хорошими настройками
         self.mqtt_client = get_mqtt_client("cubesat-payload")
-
-        # Назначаем свои обработчики
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_message = self.on_mqtt_message
 
-        self.camera    = PayloadCamera()  # Инициализация камеры
-        self.science   = ScienceCollector()  # если нужно
-        self.obc_state = None  # текущее состояние OBC
+        self.camera    = PayloadCamera()
+        self.science   = ScienceCollector()
+        self.obc_state = None
 
     def on_mqtt_connect(self, client, userdata, flags, rc, properties=None):
         if rc != 0:

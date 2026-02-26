@@ -1,6 +1,5 @@
 import logging
 import logging.config
-import os
 from pathlib import Path
 
 
@@ -12,8 +11,8 @@ def setup_logging(
     """
     Единая настройка логирования для всех сервисов.
     """
-    log_dir = '/var/log/cubesat/'
-    log_dir.mkdir(exist_ok=True)
+    log_dir = Path('/var/log/cubesat/')
+    log_dir.mkdir(parents=True, exist_ok=True)   # создаём папку, если нет
     log_path = log_dir / log_file
 
     handlers = {}
@@ -30,7 +29,7 @@ def setup_logging(
         "level": log_level,
         "formatter": "standard",
         "filename": str(log_path),
-        "maxBytes": 10485760,  # 10MB
+        "maxBytes": 10*1024*1024,  # 10 MB
         "backupCount": 5,
         "encoding": "utf-8",
     }

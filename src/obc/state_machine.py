@@ -1,6 +1,7 @@
 from transitions import Machine
 import logging
 import json
+from src.common import TOPICS
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ class CubeSatStateMachine:
         payload = {"state": self.state}
         if extra:
             payload.update(extra)
-        self.mqtt_client.publish(
+        self.obc.mqtt_client.publish(
             TOPICS["obc_status"],
             json.dumps(payload),
             retain=True

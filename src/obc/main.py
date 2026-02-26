@@ -1,5 +1,5 @@
 import logging
-from ..common.logging import setup_logging
+from src.common import setup_logging
 
 setup_logging(
     log_level    = "INFO",
@@ -12,8 +12,8 @@ import sys
 import os
 from state_machine import CubeSatStateMachine
 from handlers import OBCMessageHandlers
-from ..common.mqtt_client import get_mqtt_client
-from ..common.config import TOPICS, MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE
+from src.common import get_mqtt_client
+from src.common import TOPICS, MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE
 
 logger = logging.getLogger(__name__)
 

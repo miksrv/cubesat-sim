@@ -1,5 +1,3 @@
-# cubeSat_sim/requirements.txt
-
 # MQTT клиент
 paho-mqtt
 

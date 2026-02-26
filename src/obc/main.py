@@ -29,7 +29,7 @@ class OBC:
         self.state_machine = CubeSatStateMachine(self)
         self.handlers      = OBCMessageHandlers(self)
 
-    def on_mqtt_connect(self, client, userdata, flags, rc):
+    def on_mqtt_connect(self, client, userdata, flags, rc, properties=None):
         if rc != 0:
             logger.error(f"Ошибка подключения MQTT → rc = {rc}")
             return

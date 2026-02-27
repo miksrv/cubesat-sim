@@ -1,10 +1,10 @@
 [Unit]
-Description=CubeSat Payload Service
+Description=CubeSat ADCS Service
 After=network.target mosquitto.service
 
 [Service]
 User=%i
-WorkingDirectory=/home/%i/cubesat-sim/src/payload
+WorkingDirectory=/home/%i/cubesat-sim/src/adcs
 ExecStart=/home/%i/cubesat-sim/venv/bin/python main.py
 Restart=always
 RestartSec=10s

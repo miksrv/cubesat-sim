@@ -42,6 +42,9 @@ class TelemetryAggregator:
                 voltage REAL,
                 external_power INTEGER,
                 roll REAL, pitch REAL, yaw REAL,
+                imu_temp REAL,
+                accel_x REAL, accel_y REAL, accel_z REAL,
+                gyro_x REAL, gyro_y REAL, gyro_z REAL,
                 temperature REAL, humidity REAL, pressure REAL,
                 cpu_percent REAL,
                 ram_percent REAL,
@@ -118,22 +121,36 @@ class TelemetryAggregator:
 
     def _log_to_db(self, packet):
         cursor = self.conn.cursor()
+        adcs   = packet.get("adcs", {})
+        accel  = adcs.get("accel_g", {})
+        gyro   = adcs.get("gyro_dps", {})
+
         cursor.execute('''
             INSERT INTO telemetry_log (
                 timestamp, battery, voltage, external_power,
                 roll, pitch, yaw,
+                imu_temp,
+                accel_x, accel_y, accel_z,
+                gyro_x, gyro_y, gyro_z,
                 temperature, humidity, pressure,
                 cpu_percent, ram_percent, swap_percent, disk_percent,
                 uptime_seconds, cpu_temperature, obc_state, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     packet["timestamp"],
                     packet["eps"].get("battery", None),
                     packet["eps"].get("voltage", None),
                     1 if packet["eps"].get("external_power", False) else 0,
-                    packet["adcs"].get("roll", None),
-                    packet["adcs"].get("pitch", None),
-                    packet["adcs"].get("yaw", None),
+                    adcs.get("roll", None),
+                    adcs.get("pitch", None),
+                    adcs.get("yaw", None),
+                    adcs.get("imu_temp", None),
+                    accel.get("x", None),
+                    accel.get("y", None),
+                    accel.get("z", None),
+                    gyro.get("x", None),
+                    gyro.get("y", None),
+                    gyro.get("z", None),
                     packet["payload"].get("temperature", None),
                     packet["payload"].get("humidity", None),
                     packet["payload"].get("pressure", None),

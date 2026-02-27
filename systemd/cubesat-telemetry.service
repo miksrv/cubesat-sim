@@ -4,7 +4,7 @@ After=network.target mosquitto.service
 
 [Service]
 User=%i
-WorkingDirectory=/home/%i/cubesat-sim/telemetry
+WorkingDirectory=/home/%i/cubesat-sim/src/telemetry
 ExecStart=/home/%i/cubesat-sim/venv/bin/python main.py
 Restart=always
 RestartSec=10s

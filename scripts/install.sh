@@ -34,6 +34,7 @@ echo "Dependencies installed"
 
 # Step 5: Copy .service files to /etc/systemd/system/
 SERVICE_DIR="/etc/systemd/system"
+sudo cp ./systemd/cubesat-adcs.service $SERVICE_DIR/
 sudo cp ./systemd/cubesat-obc.service $SERVICE_DIR/
 sudo cp ./systemd/cubesat-payload.service $SERVICE_DIR/
 sudo cp ./systemd/cubesat-telemetry.service $SERVICE_DIR/

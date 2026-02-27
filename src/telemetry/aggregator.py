@@ -83,6 +83,10 @@ class TelemetryAggregator:
                 self.latest["payload"] = data
             elif topic == TOPICS["command_telemetry"]:
                 # При получении команды собираем и публикуем телеметрию
+                request_id = None
+                if "request_id" in data:
+                    request_id = data["request_id"]
+
                 now = datetime.utcnow().isoformat() + "Z"
                 system = self.collect_system_metrics()
                 packet = {
@@ -93,6 +97,10 @@ class TelemetryAggregator:
                     "payload": self.latest.get("payload", {}),
                     "system": system,
                 }
+
+                if request_id is not None:
+                    packet["request_id"] = request_id
+
                 self.mqtt_client.publish(
                     TOPICS["telemetry_data"],
                     json.dumps(packet),

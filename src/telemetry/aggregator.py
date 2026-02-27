@@ -26,6 +26,8 @@ class TelemetryAggregator:
             # можно добавить другие
         }
 
+        self.system_collector = SystemMetricsCollector()
+
         # Инициализация БД
         self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         self._create_table()
@@ -87,7 +89,7 @@ class TelemetryAggregator:
                     request_id = data["request_id"]
 
                 now = datetime.utcnow().isoformat() + "Z"
-                system = self.collect_system_metrics()
+                system = self.system_collector.collect(with_interval=0.8)
                 packet = {
                     "timestamp": now,
                     "obc_state": self.latest.get("obc", {}).get("state", "UNKNOWN"),
@@ -111,14 +113,10 @@ class TelemetryAggregator:
         except Exception as e:
             logger.error(f"Ошибка обработки MQTT {topic}: {e}")
 
-    def collect_system_metrics(self) -> dict:
-        """Собирает метрики системы через отдельный класс"""
-        return SystemMetricsCollector.collect(with_interval=0.8)
-
     def aggregate(self):
         """Собирает полный телеметрический пакет"""
         now    = datetime.utcnow().isoformat() + "Z"
-        system = self.collect_system_metrics()
+        system = self.system_collector.collect(with_interval=0.8)
 
         packet = {
             "timestamp": now,
@@ -152,7 +150,7 @@ class TelemetryAggregator:
                     packet["adcs"].get("roll", None),
                     packet["adcs"].get("pitch", None),
                     packet["adcs"].get("yaw", None),
-                    packet.get("temperature", None),
+                    packet["payload"].get("temperature", None),
                     packet["payload"].get("humidity", None),
                     packet["payload"].get("pressure", None),
                     system.get("cpu_percent", None),

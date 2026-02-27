@@ -47,7 +47,6 @@ class TelemetryAggregator:
                 disk_percent REAL,
                 uptime_seconds INTEGER,
                 cpu_temperature REAL,
-                gpu_temperature REAL,
                 obc_state TEXT,
                 raw_json TEXT
             )
@@ -143,8 +142,7 @@ class TelemetryAggregator:
                 roll, pitch, yaw,
                 temperature, humidity, pressure,
                 cpu_percent, ram_percent, swap_percent, disk_percent,
-                uptime_seconds, cpu_temperature, gpu_temperature,
-                obc_state, raw_json
+                uptime_seconds, cpu_temperature, obc_state, raw_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     packet["timestamp"],
@@ -163,7 +161,6 @@ class TelemetryAggregator:
                     system.get("disk_percent", None),
                     system.get("uptime_seconds", None),
                     system.get("cpu_temperature", None),
-                    system.get("gpu_temperature", None),
                     packet.get("obc_state", None),
                     json.dumps(packet, ensure_ascii=False)
                 ))

@@ -109,8 +109,14 @@ class PayloadService:
 
         try:
             while True:
-                # Здесь можно добавить периодические задачи, например сбор science данных
-                time.sleep(1)
+                if int(time.time()) % 60 == 0:
+                    science_data = self.science.collect()
+                    self.mqtt_client.publish(
+                        TOPICS["payload_data"],
+                        json.dumps(science_data),
+                        qos=1,
+                        retain=False
+                    )
         except KeyboardInterrupt:
             logger.info("Payload остановлен по Ctrl+C")
         except Exception as e:

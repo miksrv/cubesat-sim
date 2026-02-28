@@ -16,10 +16,14 @@ PLD_PIN = 6  # BCM 6 — как в документации X728
 class EPSMonitor:
     def __init__(self):
         self.bus = smbus2.SMBus(I2C_BUS)
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(PLD_PIN, GPIO.IN)
-        logger.info(f"RPi.GPIO инициализирован для PLD_PIN={PLD_PIN}")
+        try:
+            GPIO.setwarnings(False)
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(PLD_PIN, GPIO.IN)
+            logger.info(f"RPi.GPIO инициализирован для PLD_PIN={PLD_PIN}")
+        except Exception as e:
+            logger.error(f"Ошибка настройки GPIO: {e}")
+            raise  # или сделай fallback, если хочешь
 
     def read_word(self, reg: int) -> int:
         try:
@@ -70,4 +74,7 @@ class EPSMonitor:
         return status
 
     def __del__(self):
-        GPIO.cleanup()
+        try:
+            GPIO.cleanup()
+        except Exception as e:
+            logger.debug(f"GPIO cleanup не требуется: {e}")

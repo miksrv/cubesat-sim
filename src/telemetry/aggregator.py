@@ -173,8 +173,10 @@ class TelemetryAggregator:
 
         try:
             while True:
-                self.aggregate()
-                time.sleep(30)  # интервал агрегации — можно сделать конфигурируемым
+                obc_state = self.latest.get("obc", {}).get("state", None)
+                if obc_state == "SCIENCE":
+                    self.aggregate()
+                    time.sleep(30)  # интервал агрегации — можно сделать конфигурируемым
         except KeyboardInterrupt:
             logger.info("Остановка Telemetry Aggregator")
         except Exception as e:

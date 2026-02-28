@@ -177,6 +177,8 @@ class TelemetryAggregator:
                 if obc_state == "SCIENCE":
                     self.aggregate()
                     time.sleep(30)  # интервал агрегации — можно сделать конфигурируемым
+                else:
+                    time.sleep(0.5)  # предотвращение зацикливания при отсутствии агрегации
         except KeyboardInterrupt:
             logger.info("Остановка Telemetry Aggregator")
         except Exception as e:

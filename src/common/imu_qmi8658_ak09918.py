@@ -116,8 +116,8 @@ class IMU:
     q0 = 1.0
     q1 = q2 = q3 = 0.0
     exInt = eyInt = ezInt = 0.0
-    Kp = 4.5
-    Ki = 1.0
+    Kp = 1.0  #4.5
+    Ki = 0.2  #1.0
     halfT = 0.05  # ~20 Hz, подстрой под реальный цикл
 
     def update_ahrs(self, gx: float, gy: float, gz: float,

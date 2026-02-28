@@ -52,7 +52,7 @@ class ADCS:
         try:
             while True:
                 self.publish_status()
-                time.sleep(10.0)  # 1 Гц — можно сделать 5–10 Гц, подстрой halfT в IMU
+                time.sleep(0.5)  # 1 Гц — можно сделать 5–10 Гц, подстрой halfT в IMU
         except KeyboardInterrupt:
             logger.info("Остановка ADCS")
         finally:

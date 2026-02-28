@@ -59,24 +59,33 @@ class EPSMonitor:
         return round(percent, 2)
 
     def get_external_power(self) -> bool:
+        """True = на внешнем питании (AC), False = на батарее"""
         if not self.use_gpio or not self.gpio_line:
-            return True  # fallback: считаем, что на внешнем питании
+            return True  # fallback — считаем, что на внешнем
 
         try:
-            # По документации X728: GPIO6 = 1 → AC present
-            return self.gpio_line.get_value() == 1
+            # По документации и примеру Geekworm: Low (0) = AC present
+            pin_value = self.gpio_line.get_value()
+            is_ac_present = (pin_value == 0)   # ← ИНВЕРСИЯ ЗДЕСЬ
+            logger.debug(f"PLD_PIN value = {pin_value}, external_power = {is_ac_present}")
+            return is_ac_present
         except Exception as e:
             logger.error(f"GPIO read error: {e}")
-            return True
+            return True  # безопасный fallback
 
     def get_status(self) -> Dict:
-        return {
+        status = {
             "timestamp": time.time(),
-            "battery": self.get_battery_percent(),      # теперь 0–100
+            "battery": self.get_battery_percent(),
             "voltage": self.get_battery_voltage(),
             "external_power": self.get_external_power(),
             "status": "ok"
         }
+
+        if not status["external_power"]:
+            logger.warning("ВНИМАНИЕ: внешнее питание отключено! Работает от батареи")
+
+        return status
 
     def __del__(self):
         if self.gpio_line:

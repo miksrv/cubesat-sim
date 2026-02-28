@@ -47,9 +47,6 @@ class EPSMonitor:
 
     def get_external_power(self) -> bool:
         """True = на внешнем питании (AC), False = на батарее"""
-        if not GPIO_AVAILABLE:
-            return True
-
         try:
             pin_value = GPIO.input(PLD_PIN)
             # По документации Geekworm: 0 = AC OK (внешнее есть), 1 = AC Lost
@@ -73,8 +70,4 @@ class EPSMonitor:
         return status
 
     def __del__(self):
-        if GPIO_AVAILABLE:
-            try:
-                GPIO.cleanup()
-            except:
-                pass
+        GPIO.cleanup()

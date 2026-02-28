@@ -83,7 +83,7 @@ class EPSMonitor:
 
         return {
             "timestamp": time.time(),
-            "battery_percent": percent if percent is not None else None,
+            "battery": percent if percent is not None else None,
             "voltage": voltage if voltage is not None else None,
             "external_power": external,
             "status": "ok" if percent is not None else "error"

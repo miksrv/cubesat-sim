@@ -16,18 +16,10 @@ PLD_PIN = 6  # BCM 6 — как в документации X728
 class EPSMonitor:
     def __init__(self):
         self.bus = smbus2.SMBus(I2C_BUS)
-
-        if GPIO_AVAILABLE:
-            try:
-                GPIO.setwarnings(False)
-                GPIO.setmode(GPIO.BCM)
-                GPIO.setup(PLD_PIN, GPIO.IN)
-                logger.info(f"RPi.GPIO инициализирован для PLD_PIN={PLD_PIN}")
-            except Exception as e:
-                logger.warning(f"Не удалось настроить GPIO: {e}")
-                GPIO_AVAILABLE = False  # отключаем, если ошибка
-        else:
-            logger.warning("GPIO отключён — external_power всегда True")
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(PLD_PIN, GPIO.IN)
+        logger.info(f"RPi.GPIO инициализирован для PLD_PIN={PLD_PIN}")
 
     def read_word(self, reg: int) -> int:
         try:

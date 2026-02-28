@@ -23,7 +23,7 @@ class EPSMonitor:
         if self.use_gpio:
             try:
                 import gpiod
-                chip = gpiod.Chip(POWER_GPIO_CHIP)
+                chip = gpiod.Chip("/dev/" + POWER_GPIO_CHIP)  # "/dev/gpiochip0"
                 self.gpio_line = chip.get_line(POWER_GPIO_LINE)
                 self.gpio_line.request(consumer="x728-power", type=gpiod.LINE_REQ_DIR_IN)
                 logger.info("GPIO power-loss detect инициализирован")

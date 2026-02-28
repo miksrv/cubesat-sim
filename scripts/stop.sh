@@ -5,6 +5,7 @@ set -euo pipefail
 SERVICES=(
     "cubesat-adcs.service"
     "cubesat-obc.service"
+    "cubesat-eps.service"
     "cubesat-payload.service"
     "cubesat-telemetry.service"
 )

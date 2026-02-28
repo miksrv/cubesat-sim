@@ -1,0 +1,16 @@
+[Unit]
+Description=CubeSat EPS Service
+After=network.target mosquitto.service
+
+[Service]
+User=mik
+WorkingDirectory=/home/mik/cubesat-sim
+Environment="PYTHONPATH=/home/mik/cubesat-sim"
+ExecStart=/home/mik/cubesat-sim/venv/bin/python -m src.eps.main
+Restart=always
+RestartSec=10s
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

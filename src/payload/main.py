@@ -51,20 +51,21 @@ class PayloadService:
             payload_str = msg.payload.decode('utf-8')
             topic = msg.topic
             data = json.loads(payload_str)
-
             logger.info(f"Получено сообщение в {topic}: {data}")
 
+            # Обновление состояния OBC
             if topic == TOPICS["obc_status"]:
-                # Сохраняем состояние OBC
                 state = data.get("state", "UNKNOWN")
                 if state:
                     self.obc_state = state
                     logger.info(f"OBC state обновлён: {self.obc_state}")
                 return
 
+            # Обработка команды на фото
             if topic == TOPICS["command_photo"]:
                 request_id = data.get("request_id", f"req_{int(time.time())}")
 
+                # Проверка состояния OBC
                 if self.obc_state != "NOMINAL":
                     response = {
                         "status": "error",
@@ -82,24 +83,80 @@ class PayloadService:
 
                 overlay = data.get("overlay", False)
                 path = self.camera.take_photo(overlay=overlay)
-                response = {
-                    "status": "ok",
-                    "request_id": request_id,
-                    "path": path,
-                    "taken_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    "size_bytes": os.path.getsize(path) if os.path.exists(path) else 0
-                }
-                self.mqtt_client.publish(
-                    TOPICS["payload_photo"],
-                    json.dumps(response),
-                    qos=1,
-                    retain=True
-                )
+
+                # Формируем ответ
+                if path and os.path.exists(path):
+                    try:
+                        with open(path, "rb") as f:
+                            photo_bytes = f.read()
+                            photo_base64 = base64.b64encode(photo_bytes).decode('utf-8')
+
+                        response = {
+                            "status": "ok",
+                            "request_id": request_id,
+                            "path": path,
+                            "taken_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "size_bytes": len(photo_bytes),
+                            "photo_base64": photo_base64,
+                            "mime_type": "image/jpeg"
+                        }
+
+                        # Публикуем полный ответ с фото в основной топик для бота
+                        self.mqtt_client.publish(
+                            "cubesat/payload/photo",           # ← основной топик для Telegram-бота
+                            json.dumps(response),
+                            qos=1,
+                            retain=False                       # retain=False для больших сообщений
+                        )
+
+                        # Опционально: короткий статус без base64 (если нужно для логов/мониторинга)
+                        status_only = {
+                            "status": "ok",
+                            "request_id": request_id,
+                            "path": path,
+                            "taken_at": response["taken_at"],
+                            "size_bytes": response["size_bytes"]
+                        }
+                        self.mqtt_client.publish(
+                            TOPICS["payload_status"],          # ← статус без фото
+                            json.dumps(status_only),
+                            qos=1,
+                            retain=True
+                        )
+
+                        logger.info(f"Фото успешно отправлено в MQTT: {path}, size={response['size_bytes']} bytes")
+
+                    except Exception as e:
+                        logger.error(f"Ошибка при чтении/кодировании фото {path}: {e}")
+                        self._send_error_response(request_id, "Failed to encode photo")
+                else:
+                    self._send_error_response(request_id, "Failed to capture photo")
 
         except json.JSONDecodeError:
             logger.error(f"Невалидный JSON в {topic}")
         except Exception as e:
             logger.error(f"Ошибка обработки сообщения {topic}: {e}")
+
+    def _send_error_response(self, request_id, reason):
+        """Вспомогательный метод для отправки ошибки"""
+        response = {
+            "status": "error",
+            "request_id": request_id,
+            "reason": reason
+        }
+        self.mqtt_client.publish(
+            "cubesat/payload/photo",
+            json.dumps(response),
+            qos=1,
+            retain=False
+        )
+        self.mqtt_client.publish(
+            TOPICS["payload_status"],
+            json.dumps(response),
+            qos=1,
+            retain=True
+        )
+        logger.warning(f"Отправлена ошибка по фото: {reason}")
 
     def run(self):
         self.mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=MQTT_KEEPALIVE)

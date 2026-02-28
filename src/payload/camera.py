@@ -20,7 +20,7 @@ class PayloadCamera:
         # Конфигурация камеры (можно настраивать)
         config = self.picam2.create_still_configuration(
             main={"size": (1920, 1080)},  # или (4056, 3040) для полного разрешения
-            lores={"size": (640, 480), "format": "RGB888"}
+            lores={"size": (640, 480), "format": "YUV420"}
         )
         self.picam2.configure(config)
         self.picam2.start()

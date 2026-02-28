@@ -3,9 +3,10 @@ Description=CubeSat Telemetry Aggregator Service
 After=network.target mosquitto.service
 
 [Service]
-User=%i
-WorkingDirectory=/home/%i/cubesat-sim/src/telemetry
-ExecStart=/home/%i/cubesat-sim/venv/bin/python main.py
+User=mik
+WorkingDirectory=/home/mik/cubesat-sim
+Environment="PYTHONPATH=/home/mik/cubesat-sim"
+ExecStart=/home/mik/cubesat-sim/venv/bin/python -m src.telemetry.main
 Restart=always
 RestartSec=10s
 StandardOutput=journal+console

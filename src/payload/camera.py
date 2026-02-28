@@ -4,8 +4,8 @@ from picamera2.outputs import FileOutput
 import time
 import os
 import logging
-from libcamera import Transform
 from threading import Thread, Event
+from libcamera import Transform
 
 logger = logging.getLogger(__name__)
 
@@ -13,29 +13,30 @@ class PayloadCamera:
     PHOTO_DIR = "/home/mik/cubesat-sim/data/photos"  # или из конфига
     def __init__(self):
         os.makedirs(self.PHOTO_DIR, exist_ok=True)
-        self.picam2 = Picamera2()
         self.timelapse_running = False
         self.timelapse_thread = None
         self.stop_event = Event()
 
-        # Конфигурация камеры (можно настраивать)
-        config = self.picam2.create_still_configuration(
+    def _init_camera(self):
+        picam2 = Picamera2()
+        config = picam2.create_still_configuration(
             main={"size": (1920, 1080)},  # или (4056, 3040) для полного разрешения
             lores={"size": (640, 480), "format": "YUV420"},
             transform=Transform(hflip=1, vflip=1)
         )
-        self.picam2.configure(config)
-        self.picam2.start()
+        picam2.configure(config)
+        picam2.start()
+        return picam2
 
     def take_photo(self, overlay=False):
         """Делает одно фото и возвращает путь к файлу"""
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         filename = f"photo_{timestamp}.jpg"
         path = os.path.join(self.PHOTO_DIR, filename)
-
+        picam2 = None
         try:
-            # Простой захват
-            request = self.picam2.capture_request()
+            picam2 = self._init_camera()
+            request = picam2.capture_request()
             request.save("main", path)
             request.release()
 
@@ -48,6 +49,10 @@ class PayloadCamera:
         except Exception as e:
             logger.error(f"Ошибка съёмки фото: {e}")
             return None
+        finally:
+            if picam2:
+                picam2.stop()
+                picam2.close()
 
     def start_timelapse(self, interval_sec=60):
         if self.timelapse_running:
@@ -77,6 +82,4 @@ class PayloadCamera:
 
     def cleanup(self):
         self.stop_timelapse()
-        self.picam2.stop()
-        self.picam2.close()
         logger.info("Камера остановлена")

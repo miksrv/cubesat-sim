@@ -62,7 +62,7 @@ class IMU:
         time.sleep(0.01)
         self.bus.write_byte_data(I2C_ADD_AK09918, AK_CNTL2, AK_CONT_20HZ)
 
-    def _calibrate_gyro(self, samples: int = 32):
+    def _calibrate_gyro(self, samples: int = 128):
         gx_sum = gy_sum = gz_sum = 0
         for _ in range(samples):
             ax, ay, az, gx, gy, gz = self.read_accel_gyro_raw()
@@ -211,15 +211,18 @@ class IMU:
         mx, my, mz = self.read_magnetometer_raw()
 
         # Масштабирование (примерные коэффициенты — подстрой!)
-        ax_g = ax / 16384.0   # ±2g → 16384 LSB/g
+        ax_g = ax / 16384.0   # ±2g → правильно
         ay_g = ay / 16384.0
         az_g = az / 16384.0
 
-        gx_dps = gx / 32.8    # 512 dps → ~32.8 LSB/dps (проверь datasheet)
-        gy_dps = gy / 32.8
-        gz_dps = gz / 32.8
+        # Гироскоп: ±512 dps → 64 LSB/(°/s)
+        gx_dps = gx / 64.0    # ← ИСПРАВИТЬ ЗДЕСЬ! Было 32.8 → стало 64.0
+        gy_dps = gy / 64.0
+        gz_dps = gz / 64.0
 
         # Магнитометр в условных единицах (можно нормализовать позже)
-        return (gx_dps * 0.0174533, gy_dps * 0.0174533, gz_dps * 0.0174533,   # rad/s
-                ax_g, ay_g, az_g,
-                mx, my, mz)
+        return (
+            gx_dps * 0.0174533, gy_dps * 0.0174533, gz_dps * 0.0174533,  # rad/s
+            ax_g, ay_g, az_g,
+            mx, my, mz
+        )

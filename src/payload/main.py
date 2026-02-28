@@ -84,11 +84,14 @@ class PayloadService:
                 overlay = data.get("overlay", False)
                 path = self.camera.take_photo(overlay=overlay)
 
-                # Формируем ответ
+                logger.info(f"take_photo вернул path = {path!r}")
+
                 if path and os.path.exists(path):
+                    logger.info(f"Файл существует, размер = {os.path.getsize(path)} байт")
                     try:
                         with open(path, "rb") as f:
                             photo_bytes = f.read()
+                            logger.info(f"Прочитано {len(photo_bytes)} байт из файла")
                             photo_base64 = base64.b64encode(photo_bytes).decode('utf-8')
 
                         response = {
@@ -125,12 +128,12 @@ class PayloadService:
                         )
 
                         logger.info(f"Фото успешно отправлено в MQTT: {path}, size={response['size_bytes']} bytes")
-
                     except Exception as e:
                         logger.error(f"Ошибка при чтении/кодировании фото {path}: {e}")
                         self._send_error_response(request_id, "Failed to encode photo")
                 else:
                     self._send_error_response(request_id, "Failed to capture photo")
+                    logger.error(f"take_photo вернул некорректный путь или файл не существует: {path}")
 
         except json.JSONDecodeError:
             logger.error(f"Невалидный JSON в {topic}")

@@ -4,7 +4,7 @@ import logging
 import lgpio as sbc
 from typing import Dict, Optional
 
-# ─── LPS22HB (давление + температура) ──────────────────────────────────────
+# ─── LPS22HB (pressure + temperature) ──────────────────────────────────────
 LPS22HB_I2C_ADDRESS = 0x5C
 LPS_CTRL_REG1    = 0x10
 LPS_CTRL_REG2    = 0x11
@@ -15,7 +15,7 @@ LPS_PRESS_OUT_H  = 0x2A
 LPS_TEMP_OUT_L   = 0x2B
 LPS_TEMP_OUT_H   = 0x2C
 
-# ─── SHTC3 (влажность + температура) ───────────────────────────────────────
+# ─── SHTC3 (humidity + temperature) ───────────────────────────────────────
 SHTC3_I2C_ADDRESS    = 0x70
 CRC_POLYNOMIAL       = 0x0131
 SHTC3_WakeUp         = 0x3517
@@ -27,11 +27,11 @@ SHTC3_NM_CD_ReadRH   = 0x58E0
 
 class ScienceCollector:
     """
-    Коллектор метрик с Sense HAT (C):
-    - LPS22HB → давление (hPa), температура (°C)
-    - SHTC3   → влажность (%), температура (°C)
+    Metrics collector from Sense HAT (C):
+    - LPS22HB → pressure (hPa), temperature (°C)
+    - SHTC3   → humidity (%), temperature (°C)
 
-    Возвращает усреднённую температуру, если оба датчика дали показания.
+    Returns averaged temperature if both sensors provide readings.
     """
 
     def __init__(self):
@@ -53,7 +53,7 @@ class ScienceCollector:
             while self.lps_bus.read_byte_data(self.lps_addr, LPS_CTRL_REG2) & 0x04:
                 time.sleep(0.001)
 
-            # Настройки: BDU=1, ODR=0 (one-shot), LPF disabled
+            # Settings: BDU=1, ODR=0 (one-shot), LPF disabled
             self.lps_bus.write_byte_data(self.lps_addr, LPS_CTRL_REG1, 0x02)
         except Exception as e:
             print(f"LPS22HB init error: {e}")
@@ -74,7 +74,7 @@ class ScienceCollector:
     def read_pressure(self) -> Optional[float]:
         try:
             self._lps_start_oneshot()
-            time.sleep(0.08)  # типичное время преобразования ~25-50 мс
+            time.sleep(0.08)  # typical conversion time ~25-50 ms
             status = self.lps_bus.read_byte_data(self.lps_addr, LPS_STATUS)
             if status & 0x01:
                 xl = self.lps_bus.read_byte_data(self.lps_addr, LPS_PRESS_OUT_XL)
@@ -146,11 +146,11 @@ class ScienceCollector:
             pass
         return None
 
-    # ─── Основная публичная функция ─────────────────────────────────────────────
+    # ─── Main public function ─────────────────────────────────────────────
     def collect(self) -> Dict[str, Optional[float]]:
         """
-        Собирает все доступные метрики за один вызов.
-        Температура — среднее от двух датчиков, если оба успешны.
+        Collects all available metrics in one call.
+        Temperature — average from two sensors, if both are successful.
         """
         lps_t  = self.read_lps_temperature()
         sht_t  = self.read_shtc_temperature()
@@ -166,13 +166,13 @@ class ScienceCollector:
             "temperature": avg_temp,
             "pressure":    press,
             "humidity":    hum,
-            # Можно добавить отдельно, если нужно:
+            # You can add separately if needed:
             # "lps_temperature": lps_t,
             # "shtc_temperature": sht_t,
         }
 
     def __del__(self):
-        """Закрываем ресурсы при уничтожении объекта"""
+        """Close resources when the object is destroyed"""
         try:
             self.sbc.i2c_close(self.shtc_fd)
         except Exception:

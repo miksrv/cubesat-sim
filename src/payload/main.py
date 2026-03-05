@@ -32,17 +32,17 @@ class PayloadService:
 
     def on_mqtt_connect(self, client, userdata, flags, rc, properties=None):
         if rc != 0:
-            logger.error(f"Ошибка подключения MQTT → rc = {rc}")
+            logger.error(f"MQTT connection error → rc = {rc}")
             return
 
-        logger.info(f"MQTT подключён (rc={rc}, client_id={client._client_id.decode()})")
+        logger.info(f"MQTT connected (rc={rc}, client_id={client._client_id.decode()})")
 
         client.subscribe(TOPICS["obc_status"],    qos=1)
         client.subscribe(TOPICS["command_photo"], qos=1)
 
         self.mqtt_client.publish(
             TOPICS["payload_status"],
-            f'{{"state": "IDLE", "alive": true, "ts": {time.time()}}}',
+            f'{"state": "IDLE", "alive": true, "ts": {time.time()}}',
             qos=1,
             retain=True
         )
@@ -52,21 +52,21 @@ class PayloadService:
             payload_str = msg.payload.decode('utf-8')
             topic = msg.topic
             data = json.loads(payload_str)
-            logger.info(f"Получено сообщение в {topic}: {data}")
+            logger.info(f"Received message in {topic}: {data}")
 
-            # Обновление состояния OBC
+            # Update OBC state
             if topic == TOPICS["obc_status"]:
                 state = data.get("state", "UNKNOWN")
                 if state:
                     self.obc_state = state
-                    logger.info(f"OBC state обновлён: {self.obc_state}")
+                    logger.info(f"OBC state updated: {self.obc_state}")
                 return
 
-            # Обработка команды на фото
+            # Handle photo command
             if topic == TOPICS["command_photo"]:
                 request_id = data.get("request_id", f"req_{int(time.time())}")
 
-                # Проверка состояния OBC
+                # Check OBC state
                 if self.obc_state != "NOMINAL":
                     response = {
                         "status": "error",
@@ -79,20 +79,20 @@ class PayloadService:
                         qos=1,
                         retain=True
                     )
-                    logger.warning(f"Запрос фото отклонён: OBC state = {self.obc_state}")
+                    logger.warning(f"Photo request denied: OBC state = {self.obc_state}")
                     return
 
                 overlay = data.get("overlay", False)
                 path = self.camera.take_photo(overlay=overlay)
 
-                logger.info(f"take_photo вернул path = {path!r}")
+                logger.info(f"take_photo returned path = {path!r}")
 
                 if path and os.path.exists(path):
-                    logger.info(f"Файл существует, размер = {os.path.getsize(path)} байт")
+                    logger.info(f"File exists, size = {os.path.getsize(path)} bytes")
                     try:
                         with open(path, "rb") as f:
                             photo_bytes = f.read()
-                            logger.info(f"Прочитано {len(photo_bytes)} байт из файла")
+                            logger.info(f"Read {len(photo_bytes)} bytes from file")
                             photo_base64 = base64.b64encode(photo_bytes).decode('utf-8')
 
                         response = {
@@ -105,15 +105,15 @@ class PayloadService:
                             "mime_type": "image/jpeg"
                         }
 
-                        # Публикуем полный ответ с фото в основной топик для бота
+                        # Publish full response with photo to main topic for bot
                         self.mqtt_client.publish(
-                            "cubesat/payload/photo",           # ← основной топик для Telegram-бота
+                            "cubesat/payload/photo",  # ← main topic for Telegram bot
                             json.dumps(response),
                             qos=1,
-                            retain=False                       # retain=False для больших сообщений
+                            retain=False              # retain=False for large messages
                         )
 
-                        # Опционально: короткий статус без base64 (если нужно для логов/мониторинга)
+                        # Optionally: short status without base64 (for logs/monitoring)
                         status_only = {
                             "status": "ok",
                             "request_id": request_id,
@@ -122,27 +122,27 @@ class PayloadService:
                             "size_bytes": response["size_bytes"]
                         }
                         self.mqtt_client.publish(
-                            TOPICS["payload_photo"],          # ← статус без фото
+                            TOPICS["payload_photo"], # ← status without photo
                             json.dumps(status_only),
                             qos=1,
                             retain=True
                         )
 
-                        logger.info(f"Фото успешно отправлено в MQTT: {path}, size={response['size_bytes']} bytes")
+                        logger.info(f"Photo successfully sent to MQTT: {path}, size={response['size_bytes']} bytes")
                     except Exception as e:
-                        logger.error(f"Ошибка при чтении/кодировании фото {path}: {e}")
+                        logger.error(f"Error reading/encoding photo {path}: {e}")
                         self._send_error_response(request_id, "Failed to encode photo")
                 else:
                     self._send_error_response(request_id, "Failed to capture photo")
-                    logger.error(f"take_photo вернул некорректный путь или файл не существует: {path}")
+                    logger.error(f"take_photo returned invalid path or file does not exist: {path}")
 
         except json.JSONDecodeError:
-            logger.error(f"Невалидный JSON в {topic}")
+            logger.error(f"Invalid JSON in {topic}")
         except Exception as e:
-            logger.error(f"Ошибка обработки сообщения {topic}: {e}")
+            logger.error(f"Error processing message {topic}: {e}")
 
     def _send_error_response(self, request_id, reason):
-        """Вспомогательный метод для отправки ошибки"""
+        """Helper method to send error response"""
         response = {
             "status": "error",
             "request_id": request_id,
@@ -160,13 +160,13 @@ class PayloadService:
             qos=1,
             retain=True
         )
-        logger.warning(f"Отправлена ошибка по фото: {reason}")
+        logger.warning(f"Photo error sent: {reason}")
 
     def run(self):
         self.mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=MQTT_KEEPALIVE)
         self.mqtt_client.loop_start()
 
-        logger.info("Payload сервис запущен")
+        logger.info("Payload service started")
 
         try:
             while True:
@@ -179,14 +179,14 @@ class PayloadService:
                 )
                 time.sleep(60)
         except KeyboardInterrupt:
-            logger.info("Payload остановлен по Ctrl+C")
+            logger.info("Payload stopped by Ctrl+C")
         except Exception as e:
-            logger.exception("Критическая ошибка в подсистеме Payload")
+            logger.exception("Critical error in Payload subsystem")
         finally:
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
             self.camera.cleanup()
-            logger.info("Payload сервис завершил работу")
+            logger.info("Payload service stopped")
 
 if __name__ == "__main__":
     service = PayloadService()

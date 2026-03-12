@@ -44,10 +44,15 @@ DATA_DIR = BASE_DIR / "data"
 PHOTOS_DIR = DATA_DIR / "photos"
 DB_PATH = DATA_DIR / "telemetry.db"
 
-# Другие константы
-PHOTO_RESOLUTION = (1920, 1080)          # для камеры
-TELEMETRY_INTERVAL_SEC = 30              # базовый интервал агрегации
-LOW_POWER_TELEMETRY_INTERVAL = 300       # в LOW_POWER
+PHOTO_RESOLUTION = (1920, 1080)          # for camera
+TELEMETRY_INTERVAL_SEC = 30              # default aggregation interval
+LOW_POWER_TELEMETRY_INTERVAL = 300       # in LOW_POWER
+
+# Remote telemetry API integration
+TELEMETRY_API_KEY = os.getenv("TELEMETRY_API_KEY", None)  # API key for remote telemetry server
+TELEMETRY_SEND_ENABLED = int(os.getenv("TELEMETRY_SEND_ENABLED", 0))  # Flag to enable sending telemetry to remote API (0 or 1)
+TELEMETRY_SEND_INTERVAL_SEC = int(os.getenv("TELEMETRY_SEND_INTERVAL_SEC", 30))  # Send interval in seconds
+TELEMETRY_API_URL = os.getenv("TELEMETRY_API_URL", "http://localhost:8080")  # Remote telemetry API base URL
 
 def get_config(key: str, default=None):
     """Получить значение из переменных окружения или дефолт"""

@@ -4,9 +4,10 @@ import time
 import sqlite3
 from datetime import datetime
 import psutil
+import requests
 
 from src.common import get_mqtt_client
-from src.common.config import DB_PATH, TOPICS, MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE
+from src.common.config import DB_PATH, TOPICS, MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE, TELEMETRY_API_KEY, TELEMETRY_API_URL, TELEMETRY_SEND_INTERVAL_SEC, TELEMETRY_SEND_ENABLED
 from src.common.system_metrics import SystemMetricsCollector
 
 logger = logging.getLogger(__name__)
@@ -165,6 +166,33 @@ class TelemetryAggregator:
                 ))
         self.conn.commit()
 
+    def send_to_remote_api(self, packet):
+        """Send telemetry packet to remote API server."""
+        if not TELEMETRY_API_KEY:
+            logger.warning("Remote telemetry API key not set; skipping send.")
+            return
+        url = f"{TELEMETRY_API_URL}/api/cubesat/telemetry"
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": TELEMETRY_API_KEY
+        }
+        try:
+            response = requests.post(url, headers=headers, json=packet, timeout=5)
+            if response.status_code == 201:
+                logger.info(f"Telemetry sent to remote API: {packet['timestamp']}")
+            else:
+                logger.error(f"Remote API error: {response.status_code} {response.text}")
+        except Exception as e:
+            logger.error(f"Failed to send telemetry to remote API: {e}")
+
+    def internet_available(self):
+        """Check if internet is available (simple ping to API server)."""
+        try:
+            requests.get(f"{TELEMETRY_API_URL}/api/cubesat/telemetry/latest", timeout=3)
+            return True
+        except Exception:
+            return False
+
     def run(self):
         self.mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=MQTT_KEEPALIVE)
         self.mqtt_client.loop_start()
@@ -172,13 +200,20 @@ class TelemetryAggregator:
         logger.info("Telemetry Aggregator started")
 
         try:
+            remote_enabled = self.internet_available()
+            if remote_enabled:
+                logger.info("Remote telemetry API available; sending enabled.")
+            else:
+                logger.warning("Remote telemetry API unavailable; sending disabled.")
+
+            # Option flag from config
             while True:
-                obc_state = self.latest.get("obc", {}).get("state", None)
-                if obc_state == "SCIENCE":
-                    self.aggregate()
-                    time.sleep(30)  # aggregation interval — can be made configurable
-                else:
-                    time.sleep(0.5)  # prevents busy loop when not aggregating
+                self.aggregate()
+                # Send to remote API if enabled in config and internet is available
+                if TELEMETRY_SEND_ENABLED and remote_enabled:
+                    packet = self.build_telemetry_packet()
+                    self.send_to_remote_api(packet)
+                time.sleep(TELEMETRY_SEND_INTERVAL_SEC)
         except KeyboardInterrupt:
             logger.info("Telemetry Aggregator stopped by Ctrl+C")
         except Exception as e:

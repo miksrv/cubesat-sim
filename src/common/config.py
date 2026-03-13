@@ -1,6 +1,9 @@
 import os
 from pathlib import Path
 from typing import Dict
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Базовая директория проекта
 BASE_DIR = Path(__file__).resolve().parent.parent.parent

@@ -9,6 +9,7 @@ psutil>=5.9.0
 
 # Конечный автомат состояний
 transitions
+python-dotenv
 
 smbus2
 RPi.GPIO

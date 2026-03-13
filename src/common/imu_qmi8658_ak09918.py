@@ -3,6 +3,11 @@ import math
 from smbus2 import SMBus as smbus
 from typing import Dict, Tuple, Optional
 
+
+def _to_signed16(v: int) -> int:
+    """Convert an unsigned 16-bit integer to a signed 16-bit integer."""
+    return v - 65536 if v >= 32768 else v
+
 # Константы (из твоего примера)
 I2C_ADD_QMI8658 = 0x6B
 I2C_ADD_AK09918 = 0x0C
@@ -35,6 +40,10 @@ AK_CONT_20HZ  = 0x04
 class IMU:
     def __init__(self):
         self.bus = smbus(1)
+        self.q0 = 1.0
+        self.q1 = 0.0
+        self.q2 = 0.0
+        self.q3 = 0.0
         self.exInt = 0.0
         self.eyInt = 0.0
         self.ezInt = 0.0
@@ -74,17 +83,12 @@ class IMU:
 
     def read_accel_gyro_raw(self) -> Tuple[int, int, int, int, int, int]:
         data = self.bus.read_i2c_block_data(I2C_ADD_QMI8658, QMI_AX_L, 12)
-        ax = (data[1] << 8) | data[0]
-        ay = (data[3] << 8) | data[2]
-        az = (data[5] << 8) | data[4]
-        gx = ((data[7] << 8) | data[6]) - self.gyro_offset[0]
-        gy = ((data[9] << 8) | data[8]) - self.gyro_offset[1]
-        gz = ((data[11] << 8) | data[10]) - self.gyro_offset[2]
-
-        # Приведение к signed 16-bit
-        for v in (ax, ay, az, gx, gy, gz):
-            if v >= 32768: v -= 65536
-
+        ax = _to_signed16((data[1] << 8) | data[0])
+        ay = _to_signed16((data[3] << 8) | data[2])
+        az = _to_signed16((data[5] << 8) | data[4])
+        gx = _to_signed16((data[7] << 8) | data[6]) - self.gyro_offset[0]
+        gy = _to_signed16((data[9] << 8) | data[8]) - self.gyro_offset[1]
+        gz = _to_signed16((data[11] << 8) | data[10]) - self.gyro_offset[2]
         return ax, ay, az, gx, gy, gz
 
     def read_magnetometer_raw(self) -> Tuple[int, int, int]:
@@ -97,13 +101,9 @@ class IMU:
             return 0, 0, 0  # timeout
 
         data = self.bus.read_i2c_block_data(I2C_ADD_AK09918, AK_HXL, 6)
-        mx = (data[1] << 8) | data[0]
-        my = (data[3] << 8) | data[2]
-        mz = (data[5] << 8) | data[4]
-
-        for v in (mx, my, mz):
-            if v >= 32768: v -= 65536
-
+        mx = _to_signed16((data[1] << 8) | data[0])
+        my = _to_signed16((data[3] << 8) | data[2])
+        mz = _to_signed16((data[5] << 8) | data[4])
         return mx, my, mz
 
     def read_imu_temp(self) -> float:
@@ -111,14 +111,10 @@ class IMU:
         raw = (data[1] << 8) | data[0]
         return raw / 256.0
 
-    # AHRS (Madgwick-like) из твоего примера — упрощённый вариант
-    # Глобальные переменные quaternion (в реальности лучше в экземпляре)
-    q0 = 1.0
-    q1 = q2 = q3 = 0.0
-    exInt = eyInt = ezInt = 0.0
-    Kp = 1.0  #4.5
-    Ki = 0.2  #1.0
-    halfT = 0.05  # ~20 Hz, подстрой под реальный цикл
+    # AHRS (Mahony complementary filter)
+    Kp = 1.0
+    Ki = 0.2
+    halfT = 0.05  # ~20 Hz update rate
 
     def update_ahrs(self, gx: float, gy: float, gz: float,
                     ax: float, ay: float, az: float,

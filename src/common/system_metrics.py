@@ -55,7 +55,7 @@ class SystemMetricsCollector:
     def get_uptime_seconds() -> int:
         """Время работы системы в секундах"""
         try:
-            return int(psutil.boot_time())
+            return int(time.time() - psutil.boot_time())
         except Exception:
             return 0
 

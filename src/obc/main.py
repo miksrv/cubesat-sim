@@ -7,6 +7,7 @@ setup_logging(
     console   = True
 )
 
+import json
 import time
 import sys
 import os
@@ -38,7 +39,7 @@ class OBC:
 
         self.mqtt_client.publish(
             TOPICS["obc_status"],
-            f'{{"state": "{self.state_machine.state}", "timestamp": {time.time()}}}',
+            json.dumps({"state": self.state_machine.state, "timestamp": time.time()}),
             qos=1,
             retain=True
         )
@@ -67,7 +68,7 @@ class OBC:
             while True:
                 self.mqtt_client.publish(
                     TOPICS["obc_status"],
-                    f'{{"state": "{self.state_machine.state}", "ts": {time.time()}}}',
+                    json.dumps({"state": self.state_machine.state, "ts": time.time()}),
                     retain=True
                 )
                 time.sleep(30)

@@ -20,12 +20,12 @@ These are confirmed bugs that cause incorrect runtime behavior.
 
 | # | Description | File | Status |
 |---|-------------|------|--------|
-| B1 | Signed 16-bit conversion loop rebinds local var — negative IMU values returned as large positive integers; garbage orientation data | `src/common/imu_qmi8658_ak09918.py:85` | `[ ]` |
-| B2 | AHRS quaternion state (`q0/q1/q2/q3`, `exInt/eyInt/ezInt`) declared as class variables — shared across instances | `src/common/imu_qmi8658_ak09918.py:116` | `[ ]` |
-| B3 | `get_uptime_seconds()` returns boot Unix epoch (~1.7 B), not elapsed seconds since boot | `src/common/system_metrics.py:58` | `[ ]` |
-| B4 | `ensure_dir()` calls `Path(path)` but `Path` is never imported — `NameError` at runtime | `src/common/utils.py:34` | `[ ]` |
-| B5 | OBC heartbeat uses raw f-string JSON construction instead of `json.dumps()` — inconsistent with rest of codebase | `src/obc/main.py` | `[~]` |
-| B6 | `payload/main.py` error status value `"error"` inconsistent with `"SUCCESS"` casing | `src/payload/main.py` | `[~]` |
+| B1 | Signed 16-bit conversion loop rebinds local var — negative IMU values returned as large positive integers; garbage orientation data | `src/common/imu_qmi8658_ak09918.py` | `[x]` |
+| B2 | AHRS quaternion state (`q0/q1/q2/q3`, `exInt/eyInt/ezInt`) declared as class variables — shared across instances | `src/common/imu_qmi8658_ak09918.py` | `[x]` |
+| B3 | `get_uptime_seconds()` returns boot Unix epoch (~1.7 B), not elapsed seconds since boot | `src/common/system_metrics.py` | `[x]` |
+| B4 | `ensure_dir()` calls `Path(path)` but `Path` is never imported — `NameError` at runtime | `src/common/utils.py` | `[x]` |
+| B5 | OBC heartbeat uses raw f-string JSON construction instead of `json.dumps()` — inconsistent with rest of codebase | `src/obc/main.py` | `[x]` |
+| B6 | `payload/main.py` error status value `"error"` inconsistent with `"SUCCESS"` casing | `src/payload/main.py` | `[x]` |
 
 ---
 
@@ -123,7 +123,7 @@ _Items will be moved here when done._
 
 | # | Description | Date |
 |---|-------------|------|
-| — | — | — |
+| B1–B6 | All confirmed runtime bugs fixed (IMU sign conversion, AHRS class state, uptime calculation, missing Path import, OBC f-string JSON, payload status casing) | 2026-03-13 |
 
 ---
 

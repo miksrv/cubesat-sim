@@ -1,28 +1,41 @@
 import os
+import yaml
 from pathlib import Path
 from typing import Dict
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Базовая директория проекта
+# Project root directory
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-# MQTT
-MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
-MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
-# MQTT_USERNAME = os.getenv("MQTT_USERNAME", None)
-# MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", None)
-MQTT_KEEPALIVE = 60
+# Load config/config.yaml — provides defaults overrideable by environment variables
+_CONFIG_FILE = BASE_DIR / "config" / "config.yaml"
 
-# Топики
+def _load_yaml_config() -> dict:
+    if _CONFIG_FILE.exists():
+        with open(_CONFIG_FILE) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+_yaml            = _load_yaml_config()
+_mqtt_cfg        = _yaml.get("mqtt", {})
+_telemetry_cfg   = _yaml.get("telemetry", {})
+_camera_cfg      = _yaml.get("camera", {})
+
+# MQTT — environment variables override YAML values
+MQTT_BROKER    = os.getenv("MQTT_BROKER",  _mqtt_cfg.get("broker",    "localhost"))
+MQTT_PORT      = int(os.getenv("MQTT_PORT", _mqtt_cfg.get("port",      1883)))
+MQTT_KEEPALIVE = _mqtt_cfg.get("keepalive", 60)
+
+# Topics — all topic strings in one place; never hardcode these elsewhere
 TOPICS: Dict[str, str] = {
-    # Команды
+    # Commands (ground → subsystem)
     "command":              "cubesat/command",
     "command_photo":        "cubesat/command/photo",
     "command_telemetry":    "cubesat/command/telemetry",
 
-    # Статусы подсистем
+    # Subsystem status
     "obc_status":           "cubesat/obc/status",
     "eps_status":           "cubesat/eps/status",
     "adcs_status":          "cubesat/adcs/status",
@@ -32,21 +45,24 @@ TOPICS: Dict[str, str] = {
     "telemetry_data":       "cubesat/telemetry/data",
 }
 
-# Пути к данным
-DATA_DIR = BASE_DIR / "data"
+# Data paths
+DATA_DIR   = BASE_DIR / "data"
 PHOTOS_DIR = DATA_DIR / "photos"
-DB_PATH = DATA_DIR / "telemetry.db"
+DB_PATH    = DATA_DIR / "telemetry.db"
 
-PHOTO_RESOLUTION = (1920, 1080)          # for camera
-TELEMETRY_INTERVAL_SEC = 30              # default aggregation interval
-LOW_POWER_TELEMETRY_INTERVAL = 300       # in LOW_POWER
+# Camera
+PHOTO_RESOLUTION = tuple(_camera_cfg.get("resolution", [1920, 1080]))
 
-# Remote telemetry API integration
-TELEMETRY_API_KEY = os.getenv("TELEMETRY_API_KEY", None)  # API key for remote telemetry server
-TELEMETRY_SEND_ENABLED = int(os.getenv("TELEMETRY_SEND_ENABLED", 0))  # Flag to enable sending telemetry to remote API (0 or 1)
-TELEMETRY_SEND_INTERVAL_SEC = int(os.getenv("TELEMETRY_SEND_INTERVAL_SEC", 30))  # Send interval in seconds
-TELEMETRY_API_URL = os.getenv("TELEMETRY_API_URL", "http://localhost:8080")  # Remote telemetry API base URL
+# Telemetry intervals (seconds)
+TELEMETRY_INTERVAL_SEC       = _telemetry_cfg.get("interval_sec",           30)
+LOW_POWER_TELEMETRY_INTERVAL = _telemetry_cfg.get("low_power_interval_sec", 300)
+
+# Remote telemetry API integration — secrets/URLs via environment variables only
+TELEMETRY_API_KEY           = os.getenv("TELEMETRY_API_KEY",           None)
+TELEMETRY_SEND_ENABLED      = int(os.getenv("TELEMETRY_SEND_ENABLED",  0))
+TELEMETRY_SEND_INTERVAL_SEC = int(os.getenv("TELEMETRY_SEND_INTERVAL_SEC", 30))
+TELEMETRY_API_URL           = os.getenv("TELEMETRY_API_URL",           "http://localhost:8080")
 
 def get_config(key: str, default=None):
-    """Получить значение из переменных окружения или дефолт"""
+    """Return a value from environment variables, or default."""
     return os.getenv(key.upper(), default)

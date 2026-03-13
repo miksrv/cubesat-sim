@@ -33,10 +33,11 @@ These are confirmed bugs that cause incorrect runtime behavior.
 
 | # | Description | File | Status |
 |---|-------------|------|--------|
-| C1 | `camera.py` hardcodes `PHOTO_DIR = "/home/mik/cubesat-sim/data/photos"` — ignores `config.PHOTOS_DIR` | `src/payload/camera.py` | `[ ]` |
-| C2 | `requests`, `lgpio`, `python-dotenv` missing from `requirements.txt` | `requirements.txt` | `[ ]` |
-| C3 | `install.sh` starts only 3 of 5 services — EPS and ADCS are copied to systemd but never enabled | `scripts/install.sh` | `[ ]` |
-| C4 | Add `config/config.yaml` for runtime config (MQTT broker/port, intervals, paths, log level, photo resolution) — eliminate all hardcoded values | new file | `[ ]` |
+| C1 | `camera.py` hardcodes `PHOTO_DIR = "/home/mik/cubesat-sim/data/photos"` — ignores `config.PHOTOS_DIR` | `src/payload/camera.py` | `[x]` |
+| C2 | `requests`, `lgpio`, `pyyaml` missing from `requirements.txt` (`python-dotenv` was already present) | `requirements.txt` | `[x]` |
+| C3 | `install.sh` starts only 3 of 5 services — EPS and ADCS are copied to systemd but never enabled | `scripts/install.sh` | `[x]` |
+| C4 | Add `config/config.yaml` for runtime config (MQTT broker/port, intervals, photo resolution) and update `config.py` to load from it | `config/config.yaml`, `src/common/config.py` | `[x]` |
+| C5 | Add `scripts/restart.sh` to restart all services after a system update | `scripts/restart.sh` | `[x]` |
 
 ---
 
@@ -124,6 +125,7 @@ _Items will be moved here when done._
 | # | Description | Date |
 |---|-------------|------|
 | B1–B6 | All confirmed runtime bugs fixed (IMU sign conversion, AHRS class state, uptime calculation, missing Path import, OBC f-string JSON, payload status casing) | 2026-03-13 |
+| C1–C5 | All configuration & deployment fixes (hardcoded photo dir, missing requirements, incomplete install.sh, config.yaml, restart.sh) | 2026-03-13 |
 
 ---
 

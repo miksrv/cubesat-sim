@@ -1,15 +1,23 @@
-# MQTT клиент
+# MQTT client
 paho-mqtt
 
-# Новая библиотека камеры для Raspberry Pi
+# Camera library for Raspberry Pi
 picamera2
 
-# Библиотека для работы с датчиками
+# System metrics
 psutil>=5.9.0
 
-# Конечный автомат состояний
+# OBC state machine
 transitions
-python-dotenv
 
+# Configuration
+python-dotenv
+pyyaml
+
+# Sensor I2C libraries
 smbus2
 RPi.GPIO
+lgpio
+
+# Remote telemetry API
+requests

@@ -1,0 +1,21 @@
+# CubeSat Sim — Runtime Configuration
+#
+# These are the default values for all configurable parameters.
+# Environment variables take precedence over this file (see .env).
+# Secrets and deployment-specific settings (API keys, remote URLs)
+# must be set via environment variables only — never commit them here.
+
+mqtt:
+  broker: localhost       # override with MQTT_BROKER env var
+  port: 1883              # override with MQTT_PORT env var
+  keepalive: 60
+
+telemetry:
+  interval_sec: 30        # how often the aggregator writes a telemetry packet (seconds)
+  low_power_interval_sec: 300  # reduced rate when OBC is in LOW_POWER state
+
+camera:
+  resolution: [1920, 1080]  # JPEG capture resolution [width, height]
+
+logging:
+  level: INFO

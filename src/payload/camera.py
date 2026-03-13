@@ -6,14 +6,15 @@ import os
 import logging
 from threading import Thread, Event
 from libcamera import Transform
+from src.common.config import PHOTOS_DIR, PHOTO_RESOLUTION
 
 logger = logging.getLogger(__name__)
 
 class PayloadCamera:
-    PHOTO_DIR = "/home/mik/cubesat-sim/data/photos"  # or from config
 
     def __init__(self):
-        os.makedirs(self.PHOTO_DIR, exist_ok=True)
+        self.photo_dir = str(PHOTOS_DIR)
+        os.makedirs(self.photo_dir, exist_ok=True)
         self.timelapse_running = False
         self.timelapse_thread = None
         self.stop_event = Event()
@@ -21,7 +22,7 @@ class PayloadCamera:
     def _init_camera(self):
         picam2 = Picamera2()
         config = picam2.create_still_configuration(
-            main={"size": (1920, 1080)},  # or (4056, 3040) for full resolution
+            main={"size": PHOTO_RESOLUTION},
             lores={"size": (640, 480), "format": "YUV420"},
             transform=Transform(hflip=1, vflip=1)
         )
@@ -33,7 +34,7 @@ class PayloadCamera:
         """Takes a single photo and returns the file path. If save_photo=False, photo is deleted after sending."""
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         filename = f"photo_{timestamp}.jpg"
-        path = os.path.join(self.PHOTO_DIR, filename)
+        path = os.path.join(self.photo_dir, filename)
         picam2 = None
         try:
             picam2 = self._init_camera()

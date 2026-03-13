@@ -46,7 +46,7 @@ sudo sed -i "s/%i/$CURRENT_USER/g" $SERVICE_DIR/cubesat-*.service
 
 # Step 6: Reload systemd and start/enable services
 sudo systemctl daemon-reload
-for service in cubesat-obc cubesat-payload cubesat-telemetry; do
+for service in cubesat-obc cubesat-eps cubesat-adcs cubesat-payload cubesat-telemetry; do
     sudo systemctl enable $service.service
     sudo systemctl start $service.service
     sudo systemctl status $service.service --no-pager

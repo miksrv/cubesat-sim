@@ -133,7 +133,7 @@ class PayloadService:
     def _send_error_response(self, request_id, reason):
         """Helper method to send error response"""
         response = {
-            "status": "error",
+            "status": "ERROR",
             "request_id": request_id,
             "reason": reason
         }

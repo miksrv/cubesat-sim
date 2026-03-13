@@ -37,8 +37,8 @@ class PayloadService:
 
         logger.info(f"MQTT connected (rc={rc}, client_id={client._client_id.decode()})")
 
-        client.subscribe(TOPICS["obc_status"],    qos=1)
-        client.subscribe(TOPICS["command_photo"], qos=1)
+        client.subscribe(TOPICS["obc_status"], qos=1)
+        client.subscribe(TOPICS["command"],    qos=1)
 
         self.mqtt_client.publish(
             TOPICS["payload_status"],
@@ -58,16 +58,21 @@ class PayloadService:
             data = json.loads(payload_str)
             logger.info(f"Received message in {topic}: {data}")
 
-            # Update OBC state
+            # Update OBC status
             if topic == TOPICS["obc_status"]:
-                state = data.get("state", "UNKNOWN")
-                if state:
-                    self.obc_state = state
-                    logger.info(f"OBC state updated: {self.obc_state}")
+                status = data.get("status", "UNKNOWN")
+                if status:
+                    self.obc_state = status
+                    logger.info(f"OBC status updated: {self.obc_state}")
                 return
 
-            # Handle photo command
-            if topic == TOPICS["command_photo"]:
+            # Handle commands
+            if topic == TOPICS["command"]:
+                command = data.get("command")
+
+                if command != "take_photo":
+                    return
+
                 request_id = data.get("request_id", f"req_{int(time.time())}")
 
                 # Check OBC state
@@ -75,7 +80,7 @@ class PayloadService:
                     response = {
                         "status": "ERROR",
                         "request_id": request_id,
-                        "reason": f"Photo capture not allowed: OBC state is '{self.obc_state}'"
+                        "reason": f"Photo capture not allowed: OBC status is '{self.obc_state}'"
                     }
                     self.mqtt_client.publish(
                         TOPICS["payload_status"],
@@ -83,7 +88,7 @@ class PayloadService:
                         qos=1,
                         retain=True
                     )
-                    logger.warning(f"Photo request denied: OBC state = {self.obc_state}")
+                    logger.warning(f"Photo request denied: OBC status = {self.obc_state}")
                     return
 
                 overlay = data.get("params", {}).get("overlay", False)

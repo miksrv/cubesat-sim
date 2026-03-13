@@ -1,6 +1,7 @@
 from transitions import Machine
 import logging
 import json
+import time
 from src.common import TOPICS
 
 logger = logging.getLogger(__name__)
@@ -91,8 +92,9 @@ class CubeSatStateMachine:
     def publish_state(self, extra=None):
         """
         Publishes the current state to MQTT.
+        Format: {"ts": <unix_float>, "status": <state>, ...extra}
         """
-        payload = {"state": self.state}
+        payload = {"ts": time.time(), "status": self.state}
         if extra:
             payload.update(extra)
         self.obc.mqtt_client.publish(

@@ -70,7 +70,7 @@ class TelemetryAggregator:
         client.subscribe(TOPICS["eps_status"], qos=1)
         client.subscribe(TOPICS["adcs_status"], qos=1)
         client.subscribe(TOPICS["payload_data"], qos=1)
-        client.subscribe(TOPICS["command_telemetry"], qos=1)
+        client.subscribe(TOPICS["command"], qos=1)
 
     def on_mqtt_message(self, client, userdata, msg):
         try:
@@ -86,15 +86,16 @@ class TelemetryAggregator:
                 self.latest["adcs"] = data
             elif topic == TOPICS["payload_data"]:
                 self.latest["payload"] = data
-            elif topic == TOPICS["command_telemetry"]:
-                packet = self.build_telemetry_packet()
-                packet["request_id"] = data.get("request_id")
-                self.mqtt_client.publish(
-                    TOPICS["telemetry_data"],
-                    json.dumps(packet),
-                    qos=1,
-                    retain=True
-                )
+            elif topic == TOPICS["command"]:
+                if data.get("command") == "get_telemetry":
+                    packet = self.build_telemetry_packet()
+                    packet["request_id"] = data.get("request_id")
+                    self.mqtt_client.publish(
+                        TOPICS["telemetry_data"],
+                        json.dumps(packet),
+                        qos=1,
+                        retain=True
+                    )
 
             logger.debug(f"Updated data from {topic}")
         except Exception as e:
@@ -105,7 +106,7 @@ class TelemetryAggregator:
         system = self.system_collector.collect(with_interval=0.8)
         packet = {
             "timestamp": now,
-            "obc_state": self.latest.get("obc", {}).get("state", "UNKNOWN"),
+            "obc_state": self.latest.get("obc", {}).get("status", "UNKNOWN"),
             "eps": self.latest.get("eps", {}),
             "adcs": self.latest.get("adcs", {}),
             "payload": self.latest.get("payload", {}),

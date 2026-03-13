@@ -39,7 +39,7 @@ class OBC:
 
         self.mqtt_client.publish(
             TOPICS["obc_status"],
-            json.dumps({"state": self.state_machine.state, "timestamp": time.time()}),
+            json.dumps({"ts": time.time(), "status": self.state_machine.state}),
             qos=1,
             retain=True
         )
@@ -68,7 +68,7 @@ class OBC:
             while True:
                 self.mqtt_client.publish(
                     TOPICS["obc_status"],
-                    json.dumps({"state": self.state_machine.state, "ts": time.time()}),
+                    json.dumps({"ts": time.time(), "status": self.state_machine.state}),
                     retain=True
                 )
                 time.sleep(30)

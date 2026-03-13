@@ -75,6 +75,18 @@ Zero tests currently exist. The `tests/` directory is referenced in README but d
 
 ---
 
+## 🔨 Minor Refactoring (Priority: High)
+
+Small, focused changes to improve protocol consistency across all services.
+
+| # | Description | Files | Status |
+|---|-------------|-------|--------|
+| RF1 | Standardize `cubesat/obc/status` message format: place `ts` (Unix float) first; rename `state` → `status`. Update all consumers. | `src/obc/state_machine.py`, `src/obc/main.py`, `src/payload/main.py`, `src/telemetry/aggregator.py` | `[x]` |
+| RF2 | Consolidate photo and telemetry commands into `cubesat/command`: remove dedicated `command_photo` and `command_telemetry` topics; add `take_photo` and `get_telemetry` commands to the unified command topic. | `src/common/config.py`, `src/payload/main.py`, `src/telemetry/aggregator.py` | `[x]` |
+| RF3 | Update documentation to reflect RF1 and RF2 changes: `README.md`, `CLAUDE.md`, `docs/architecture.md`. | `README.md`, `CLAUDE.md`, `docs/architecture.md` | `[x]` |
+
+---
+
 ## ♻️ Refactoring (Priority: Medium)
 
 Code quality improvements that reduce complexity and prevent future bugs.
@@ -126,6 +138,7 @@ _Items will be moved here when done._
 |---|-------------|------|
 | B1–B6 | All confirmed runtime bugs fixed (IMU sign conversion, AHRS class state, uptime calculation, missing Path import, OBC f-string JSON, payload status casing) | 2026-03-13 |
 | C1–C5 | All configuration & deployment fixes (hardcoded photo dir, missing requirements, incomplete install.sh, config.yaml, restart.sh) | 2026-03-13 |
+| RF1–RF3 | Minor refactoring: standardized obc/status format (`ts` + `status`), consolidated all commands onto `cubesat/command`, updated README/CLAUDE.md/architecture.md | 2026-03-13 |
 
 ---
 

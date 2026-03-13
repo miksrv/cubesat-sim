@@ -13,9 +13,9 @@ CubeSat Sim is a distributed simulation of a CubeSat satellite's onboard softwar
 │                      MQTT Broker (mosquitto)               │
 │                                                           │
 │  cubesat/command          cubesat/obc/status (retain)     │
-│  cubesat/command/photo    cubesat/eps/status (retain)     │
-│  cubesat/command/payload  cubesat/adcs/status             │
-│  cubesat/command/telemetry cubesat/payload/data           │
+│                           cubesat/eps/status (retain)     │
+│                           cubesat/adcs/status             │
+│                           cubesat/payload/data            │
 │  cubesat/payload/photo    cubesat/telemetry/data          │
 └───────┬──────────────────────────────────────────────────-┘
         │ publish/subscribe
@@ -71,7 +71,7 @@ The central authority of the simulation. Implements a finite state machine using
 - Battery < 40% → `LOW_POWER` (if not already `LOW_POWER` or `SAFE`)
 - Battery < 20% → `SAFE` (from any state)
 - External power restored while in `LOW_POWER`/`SAFE` → `NOMINAL`
-- Ground commands `science_start`, `science_stop`, `safe_mode`, `recover`
+- Ground commands on `cubesat/command`: `science_start`, `science_stop`, `safe_mode`, `recover`
 
 **Files:**
 | File | Responsibility |
@@ -186,7 +186,7 @@ Shared infrastructure used by all services.
 1. Ground sends:  {"command": "science_start"} → cubesat/command
 
 2. OBC receives command, transitions NOMINAL → SCIENCE
-   Publishes: {"state": "SCIENCE"} → cubesat/obc/status (retain)
+   Publishes: {"ts": <unix_float>, "status": "SCIENCE"} → cubesat/obc/status (retain)
 
 3. Payload reads obc_state = "SCIENCE" (no action — science poll is always running)
    Every 60s: collects T/H/P → cubesat/payload/data
@@ -206,15 +206,15 @@ Shared infrastructure used by all services.
 ## Data Flow: Photo Request
 
 ```
-1. Ground sends: {"request_id": "req_001", "overlay": false} → cubesat/command/photo
+1. Ground sends: {"command": "take_photo", "request_id": "req_001", "params": {"overlay": false}}
+   → cubesat/command
 
 2. Payload checks obc_state:
-   - If not NOMINAL → publishes error to cubesat/payload/status
+   - If not NOMINAL → publishes error to cubesat/payload/photo
    - If NOMINAL → captures JPEG via Picamera2
 
 3. Photo encoded as Base64:
    Full response (with photo_base64) → cubesat/payload/photo
-   Status-only response               → cubesat/payload/photo (status)
 ```
 
 ---

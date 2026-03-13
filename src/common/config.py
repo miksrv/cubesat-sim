@@ -30,10 +30,9 @@ MQTT_KEEPALIVE = _mqtt_cfg.get("keepalive", 60)
 
 # Topics — all topic strings in one place; never hardcode these elsewhere
 TOPICS: Dict[str, str] = {
-    # Commands (ground → subsystem)
+    # Commands (ground → all services). All commands are routed through this
+    # single topic; the "command" field in the payload determines the handler.
     "command":              "cubesat/command",
-    "command_photo":        "cubesat/command/photo",
-    "command_telemetry":    "cubesat/command/telemetry",
 
     # Subsystem status
     "obc_status":           "cubesat/obc/status",

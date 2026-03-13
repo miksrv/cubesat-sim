@@ -156,7 +156,7 @@ Note: this service is currently sensing-only. Actuator control (reaction wheels,
 
 Combines two responsibilities:
 
-1. **Camera** — captures a JPEG photo via Picamera2 on demand. Responds to `cubesat/command/photo` messages. Photo capture is gated: it is only permitted when the OBC is in `NOMINAL` state. The JPEG is Base64-encoded and published to `cubesat/payload/photo`.
+1. **Camera** — captures a JPEG photo via Picamera2 on demand. Responds to `take_photo` commands on `cubesat/command`. Photo capture is gated: it is only permitted when the OBC is in `NOMINAL` state. The JPEG is Base64-encoded and published to `cubesat/payload/photo`.
 
 2. **Science** — polls an LPS22HB barometric pressure + temperature sensor (I2C) and a SHTC3 humidity + temperature sensor (I2C) every 60 seconds and publishes the readings to `cubesat/payload/data`.
 
@@ -176,7 +176,7 @@ Combines two responsibilities:
 
 A passive aggregator. Subscribes to all subsystem status topics and maintains an in-memory cache of the latest reading from each. Every 30 seconds it assembles a unified telemetry packet from the cache, appends system health metrics (CPU, RAM, disk, temperature), writes the packet to a SQLite database, and publishes the packet to `cubesat/telemetry/data`.
 
-Also responds to on-demand telemetry requests on `cubesat/command/telemetry`.
+Also responds to on-demand telemetry requests via `get_telemetry` commands on `cubesat/command`.
 
 **SQLite schema** (`data/telemetry.db`, table `telemetry_log`):
 
@@ -222,9 +222,7 @@ All topic strings are defined in `src/common/config.py` (`TOPICS` dict). Always 
 
 | `TOPICS` key | Topic string | Direction | Publisher | Subscribers |
 |---|---|---|---|---|
-| `command` | `cubesat/command` | Ground → OBC | Ground station | OBC |
-| `command_photo` | `cubesat/command/photo` | Ground → Payload | Ground station | Payload |
-| `command_telemetry` | `cubesat/command/telemetry` | Ground → Telemetry | Ground station | Telemetry |
+| `command` | `cubesat/command` | Ground → All | Ground station | OBC, Payload, Telemetry |
 | `obc_status` | `cubesat/obc/status` | OBC → All | OBC | Payload, Telemetry |
 | `eps_status` | `cubesat/eps/status` | EPS → OBC, Telemetry | EPS | OBC, Telemetry |
 | `adcs_status` | `cubesat/adcs/status` | ADCS → Telemetry | ADCS | Telemetry |
@@ -242,8 +240,8 @@ All topic strings are defined in `src/common/config.py` (`TOPICS` dict). Always 
 ### `cubesat/obc/status`
 ```json
 {
-  "state": "NOMINAL",
-  "ts": "2026-03-13T12:00:00.000000"
+  "ts": 1741863600.0,
+  "status": "NOMINAL"
 }
 ```
 
@@ -296,21 +294,21 @@ All topic strings are defined in `src/common/config.py` (`TOPICS` dict). Always 
 {
   "request_id": "req_001",
   "status": "ERROR",
-  "reason": "OBC state is SCIENCE, photo only allowed in NOMINAL"
+  "reason": "OBC status is SCIENCE, photo only allowed in NOMINAL"
 }
 ```
 
-### Ground command to `cubesat/command`
+### Ground commands to `cubesat/command`
+
+All commands use the same topic. The `"command"` field determines which service handles the message.
+
 ```json
 {"command": "science_start"}
 {"command": "science_stop"}
 {"command": "safe_mode"}
 {"command": "recover"}
-```
-
-### Ground command to `cubesat/command/photo`
-```json
-{"request_id": "req_001", "overlay": false}
+{"command": "take_photo", "request_id": "req_001", "params": {"overlay": false}}
+{"command": "get_telemetry", "request_id": "req_002"}
 ```
 
 ---
@@ -323,7 +321,7 @@ All topic strings are defined in `src/common/config.py` (`TOPICS` dict). Always 
 1. Ground sends:  {"command": "science_start"}  →  cubesat/command
 
 2. OBC receives command, transitions NOMINAL → SCIENCE
-   Publishes: {"state": "SCIENCE", "ts": "..."}  →  cubesat/obc/status  (retain)
+   Publishes: {"ts": <unix_float>, "status": "SCIENCE"}  →  cubesat/obc/status  (retain)
 
 3. Payload reads obc_state = "SCIENCE" — science poll continues as normal.
    Every 60 s: reads LPS22HB + SHTC3  →  cubesat/payload/data
@@ -343,7 +341,7 @@ All topic strings are defined in `src/common/config.py` (`TOPICS` dict). Always 
 ### Photo request
 
 ```
-1. Ground sends: {"request_id": "req_001", "overlay": false}  →  cubesat/command/photo
+1. Ground sends: {"command": "take_photo", "request_id": "req_001", "params": {"overlay": false}}  →  cubesat/command
 
 2. Payload checks obc_state:
    - Not NOMINAL → publishes error  →  cubesat/payload/photo
@@ -361,12 +359,12 @@ All topic strings are defined in `src/common/config.py` (`TOPICS` dict). Always 
 
 2. OBC handler: 38% < 40% threshold → triggers enter_low_power
    State: NOMINAL → LOW_POWER
-   Publishes: {"state": "LOW_POWER", ...}  →  cubesat/obc/status
+   Publishes: {"ts": <unix_float>, "status": "LOW_POWER"}  →  cubesat/obc/status
 
 3. If battery continues to drop to 18%:
    OBC handler: 18% < 20% → triggers enter_safe_mode
    State: LOW_POWER → SAFE
-   Publishes: {"state": "SAFE", ...}  →  cubesat/obc/status
+   Publishes: {"ts": <unix_float>, "status": "SAFE"}  →  cubesat/obc/status
 
 4. When external power is connected (GPIO pin HIGH):
    OBC handler: calls recover()

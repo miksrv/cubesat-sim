@@ -76,15 +76,30 @@ All topic strings are centralized in `TOPICS` dict — always reference `TOPICS[
 
 | Key | Topic | Direction |
 |---|---|---|
-| `command` | `cubesat/command` | Ground → OBC |
-| `command_photo` | `cubesat/command/photo` | Ground → Payload |
-| `command_telemetry` | `cubesat/command/telemetry` | Ground → Telemetry |
+| `command` | `cubesat/command` | Ground → OBC, Payload, Telemetry |
 | `obc_status` | `cubesat/obc/status` | OBC → All |
 | `eps_status` | `cubesat/eps/status` | EPS → OBC, Telemetry |
 | `adcs_status` | `cubesat/adcs/status` | ADCS → Telemetry |
 | `payload_data` | `cubesat/payload/data` | Payload → Telemetry |
 | `payload_photo` | `cubesat/payload/photo` | Payload → (bot) |
 | `telemetry_data` | `cubesat/telemetry/data` | Telemetry → Ground |
+
+**`cubesat/command` payload format** — the `"command"` field routes the message to the correct handler:
+
+| `"command"` value | Handler | Additional fields |
+|---|---|---|
+| `science_start` | OBC | — |
+| `science_stop` | OBC | — |
+| `safe_mode` | OBC | — |
+| `recover` | OBC | — |
+| `take_photo` | Payload | `"request_id"`, `"params": {"overlay": bool}` |
+| `get_telemetry` | Telemetry | `"request_id"` |
+
+**`cubesat/obc/status` payload format:**
+```json
+{"ts": <unix_float>, "status": "<STATE>"}
+```
+Consumers read the `"status"` field (not `"state"`) to determine the current OBC state.
 
 ### Shared Common Module (`src/common/`)
 

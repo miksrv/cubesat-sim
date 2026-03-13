@@ -81,7 +81,7 @@ class PayloadService:
                             "reason": f"Photo capture not allowed: OBC status is '{self.obc_state}'"
                         }
                         self.mqtt_client.publish(
-                            TOPICS["payload_status"],
+                            TOPICS["payload_photo"],
                             json.dumps(response),
                             qos=1,
                             retain=True
@@ -121,6 +121,13 @@ class PayloadService:
                             )
 
                             logger.info(f"Photo successfully sent to MQTT: {path}, size={response['size_bytes']} bytes")
+
+                            # Delete the photo file after sending to MQTT
+                            try:
+                                os.remove(path)
+                                logger.info(f"Photo file deleted from disk: {path}")
+                            except Exception as e:
+                                logger.warning(f"Failed to delete photo file {path}: {e}")
                         except Exception as e:
                             logger.error(f"Error reading/encoding photo {path}: {e}")
                             self._send_error_response(request_id, "Failed to encode photo")

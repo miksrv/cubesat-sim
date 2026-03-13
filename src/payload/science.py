@@ -166,9 +166,6 @@ class ScienceCollector:
             "temperature": avg_temp,
             "pressure":    press,
             "humidity":    hum,
-            # You can add separately if needed:
-            # "lps_temperature": lps_t,
-            # "shtc_temperature": sht_t,
         }
 
     def __del__(self):

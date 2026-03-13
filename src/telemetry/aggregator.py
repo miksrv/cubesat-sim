@@ -212,12 +212,11 @@ class TelemetryAggregator:
                 obc_state = self.latest.get("obc", {}).get("status", "")
                 if obc_state == "SCIENCE":
                     self.aggregate()
-                    # Send to remote API if enabled in config and internet is available
-                    if TELEMETRY_SEND_ENABLED and remote_enabled:
-                        packet = self.build_telemetry_packet()
-                        self.send_to_remote_api(packet)
-                else:
-                    logger.debug(f"Telemetry aggregation skipped: OBC state is '{obc_state}' (requires SCIENCE)")
+
+                # Send to remote API if enabled in config and internet is available
+                if TELEMETRY_SEND_ENABLED and remote_enabled:
+                    packet = self.build_telemetry_packet()
+                    self.send_to_remote_api(packet)
                 time.sleep(TELEMETRY_SEND_INTERVAL_SEC)
         except KeyboardInterrupt:
             logger.info("Telemetry Aggregator stopped by Ctrl+C")

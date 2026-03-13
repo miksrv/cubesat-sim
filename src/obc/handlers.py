@@ -4,13 +4,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 class OBCMessageHandlers:
-    """Обработчики входящих MQTT-сообщений для OBC"""
-
     def __init__(self, obc):
         self.obc = obc
 
     def handle_eps_status(self, payload):
-        """Реакция на статус питания от EPS"""
         try:
             data = json.loads(payload)
             battery = data.get('battery', 100)
@@ -23,14 +20,13 @@ class OBCMessageHandlers:
             elif external and self.obc.state_machine.state in ['LOW_POWER', 'SAFE']:
                 self.obc.state_machine.recover()
         except Exception as e:
-            logger.error(f"Ошибка обработки EPS статуса: {e}")
+            logger.error(f"Error processing EPS status: {e}")
 
     def handle_command(self, payload):
-        """Обработка команд с Земли / Telegram / Web"""
         try:
             cmd = json.loads(payload)
             command = cmd.get('command')
-            logger.info(f"Получена команда: {command}")
+            logger.info(f"Command received: {command}")
 
             if command == 'science_start':
                 if self.obc.state_machine.state == 'NOMINAL':
@@ -42,6 +38,6 @@ class OBCMessageHandlers:
                 self.obc.state_machine.enter_safe_mode()
             elif command == 'recover':
                 self.obc.state_machine.recover()
-            # Добавьте свои команды
+            # Add your own commands
         except Exception as e:
-            logger.error(f"Ошибка обработки команды: {e}")
+            logger.error(f"Error processing command: {e}")

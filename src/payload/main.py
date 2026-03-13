@@ -113,7 +113,7 @@ class PayloadService:
                             TOPICS["payload_photo"],  # ← main topic for Telegram bot
                             json.dumps(response),
                             qos=1,
-                            retain=TRUE              # retain=False for large messages
+                            retain=False              # retain=False for large messages
                         )
 
                         logger.info(f"Photo successfully sent to MQTT: {path}, size={response['size_bytes']} bytes")

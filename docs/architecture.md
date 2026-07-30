@@ -15,8 +15,10 @@ CubeSat Sim is a distributed simulation of a CubeSat satellite's onboard softwar
 │  cubesat/command          cubesat/obc/status (retain)     │
 │                           cubesat/eps/status (retain)     │
 │                           cubesat/adcs/status             │
+│                           cubesat/payload/status (retain) │
 │                           cubesat/payload/data            │
 │  cubesat/payload/photo    cubesat/telemetry/data          │
+│                             (published on-demand only)    │
 └───────┬──────────────────────────────────────────────────-┘
         │ publish/subscribe
   ┌─────┴──────────────────────────────────────────────┐
@@ -148,10 +150,14 @@ Photo capture and timelapse start are gated: only allowed when OBC is in `NOMINA
 
 ### Telemetry Aggregator (`src/telemetry/`)
 
-Passive aggregator. Subscribes to all subsystem status topics and maintains a cache of the latest values from each. Periodically (when OBC is in `SCIENCE` state) assembles a full telemetry packet and writes it to SQLite. Also responds to on-demand telemetry requests.
+Passive aggregator. Subscribes to all subsystem status topics and maintains a cache of the latest values from each. Every `TELEMETRY_SEND_INTERVAL_SEC` (default 30s), if the cached OBC state is `SCIENCE`, it assembles a full telemetry packet and writes it to SQLite.
+
+It does **not** publish to `cubesat/telemetry/data` on that periodic loop. That topic is published only:
+- on-demand, in response to a `get_telemetry` command on `cubesat/command`, or
+- optionally, forwarded as an HTTP POST to a remote API (e.g. [cubesat-groundstation](https://github.com/miksrv/cubesat-groundstation)) on every loop iteration when `TELEMETRY_SEND_ENABLED=1` — independent of OBC state. Internet reachability is checked once at startup only.
 
 **SQLite schema** (`data/telemetry.db`, table `telemetry_log`):
-- Timestamps, EPS fields (battery, voltage, external_power)
+- `timestamp` (ISO-8601 UTC string — not a Unix float, unlike the MQTT payloads above), EPS fields (battery, voltage, external_power)
 - ADCS fields (roll, pitch, yaw, imu_temp, accel x/y/z, gyro x/y/z)
 - Payload fields (temperature, humidity, pressure)
 - System fields (cpu_percent, ram_percent, swap_percent, disk_percent, uptime_seconds, cpu_temperature)
@@ -171,7 +177,7 @@ Shared infrastructure used by all services.
 
 | File | Responsibility |
 |---|---|
-| `config.py` | All constants: MQTT broker, port, keepalive, all topic strings (`TOPICS` dict), data paths, intervals |
+| `config.py` | All constants: MQTT broker, port, keepalive, all topic strings (`TOPICS` dict), data paths, intervals. Defaults load from `config/config.yaml`; `MQTT_BROKER`/`MQTT_PORT` env vars (or `.env`) override it. Remote-telemetry secrets are env-var only |
 | `mqtt_client.py` | `get_mqtt_client()` factory — creates MQTTv5 client with exponential backoff reconnect |
 | `logging_setup.py` | `setup_logging()` — rotating file handler (10 MB × 5) + optional console, writes to `/var/log/cubesat/` |
 | `system_metrics.py` | `SystemMetricsCollector` — CPU/RAM/swap/disk/uptime/temperature via `psutil` and sysfs |
@@ -196,11 +202,22 @@ Shared infrastructure used by all services.
 5. EPS: every 30s: reads battery/voltage → cubesat/eps/status
 
 6. Telemetry sees obc_state == "SCIENCE":
-   Every 30s: builds packet from cached data + system metrics → writes to SQLite
-   Also publishes: → cubesat/telemetry/data
+   Every TELEMETRY_SEND_INTERVAL_SEC (default 30s): builds packet from cached data + system metrics → writes to SQLite
+   (does NOT publish to cubesat/telemetry/data on this loop — see "Data Flow: On-Demand Telemetry" below)
 
 7. Ground sends:  {"command": "science_stop"} → cubesat/command
    OBC: SCIENCE → NOMINAL
+```
+
+## Data Flow: On-Demand Telemetry
+
+```
+1. Ground sends: {"command": "get_telemetry", "request_id": "req_002"} → cubesat/command
+
+2. Telemetry aggregator builds a packet from its in-memory cache (independent of OBC state)
+   Attaches request_id to the packet
+
+3. Publishes → cubesat/telemetry/data (retained)
 ```
 
 ## Data Flow: Photo Request
@@ -233,7 +250,7 @@ Shared infrastructure used by all services.
 
 ## Deployment
 
-Services run as systemd units. Unit files are in `systemd/` and are installed by `scripts/install.sh`.
+Services run as systemd units. Unit files are in `systemd/` and are installed by `scripts/install.sh`. Use `scripts/start.sh` / `scripts/stop.sh` / `scripts/restart.sh` to manage all services at once (e.g. `restart.sh` after a system update).
 
 Each unit:
 - Sets `PYTHONPATH` to project root (enables `import src.xxx`)

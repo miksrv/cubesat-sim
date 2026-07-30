@@ -1,8 +1,18 @@
 # CubeSat Sim
 
-CubeSat Sim is an educational simulation platform for CubeSat satellite systems. It models the onboard software of a real CubeSat as a set of independent Python services, each representing a physical subsystem, communicating exclusively over MQTT — the same way hardware modules communicate over a spacecraft bus.
+CubeSat Sim is a working flight software stack for a real, physical CubeSat — not just a simulation on paper. Five independent Python services (OBC, EPS, ADCS, Payload, Telemetry) each model one satellite subsystem and talk to each other exclusively over MQTT, the same way modules communicate over a real spacecraft bus. A central state machine drives the mission lifecycle (`BOOT → DEPLOY → NOMINAL ↔ SCIENCE → LOW_POWER → SAFE`), reacting to live battery telemetry, IMU orientation data, and ground commands, while a telemetry aggregator logs everything to SQLite and can forward it to a [cloud ground station](https://github.com/miksrv/cubesat-groundstation) in real time.
 
-The platform runs on a Raspberry Pi with real hardware sensors, or can be adapted for local development by mocking hardware dependencies.
+It runs today on a Raspberry Pi inside a 3D-printed frame, wired to real sensors — battery fuel gauge, IMU, magnetometer, barometric/humidity sensors, and a camera. Everything needed to build one yourself is in this repo: the code, the [3D models](hardware/models), and the [hardware list](#hardware).
+
+<p align="center">
+  <img src="hardware/photos/04-finished-unit-1.jpg" width="32%" alt="Finished CubeSat with panels — view 1">
+  <img src="hardware/photos/04-finished-unit-2.jpg" width="32%" alt="Finished CubeSat with panels — view 2">
+  <img src="hardware/photos/04-finished-unit-3.jpg" width="32%" alt="Finished CubeSat with panels — view 3">
+</p>
+
+If you're learning satellite software architecture, distributed systems, or embedded Python, feel free to dig in, fork it, and adapt it to your own build. If it's useful to you, a star helps other people find it.
+
+The platform can also be adapted for local development by mocking the hardware dependencies (see [Hardware](#hardware)).
 
 ---
 
@@ -21,10 +31,14 @@ The platform runs on a Raspberry Pi with real hardware sensors, or can be adapte
 - [Data Flows](#data-flows)
 - [Directory Structure](#directory-structure)
 - [Hardware](#hardware)
+  - [Mechanical / Fasteners](#mechanical--fasteners)
+  - [3D Models](#3d-models)
+  - [Build Photos](#build-photos)
 - [Setup and Running](#setup-and-running)
 - [Configuration](#configuration)
 - [Logs](#logs)
 - [Documentation](#documentation)
+- [Related Projects](#related-projects)
 
 ---
 
@@ -36,13 +50,13 @@ Each subsystem is an independent Python process. All inter-process communication
 ┌──────────────────────────────────────────────────────────────────┐
 │                     MQTT Broker (mosquitto)                      │
 │                                                                  │
-│  cubesat/command            cubesat/obc/status    (retained)     │
-│  cubesat/command/photo      cubesat/eps/status    (retained)     │
-│  cubesat/command/telemetry  cubesat/adcs/status                  │
-│                             cubesat/payload/status               │
-│                             cubesat/payload/data                 │
-│                             cubesat/payload/photo                │
-│                             cubesat/telemetry/data               │
+│  cubesat/command            cubesat/obc/status      (retained)   │
+│                              cubesat/eps/status      (retained)   │
+│                              cubesat/adcs/status                  │
+│                              cubesat/payload/status  (retained)   │
+│                              cubesat/payload/data                 │
+│                              cubesat/payload/photo                │
+│                              cubesat/telemetry/data  (on-demand)  │
 └───────────┬──────────────────────────────────────────────────────┘
             │ publish / subscribe
    ┌────────┴──────────────────────────────────────────────┐
@@ -174,15 +188,17 @@ Combines two responsibilities:
 
 **Path:** `src/telemetry/` | **MQTT client ID:** `telemetry`
 
-A passive aggregator. Subscribes to all subsystem status topics and maintains an in-memory cache of the latest reading from each. Every 30 seconds it assembles a unified telemetry packet from the cache, appends system health metrics (CPU, RAM, disk, temperature), writes the packet to a SQLite database, and publishes the packet to `cubesat/telemetry/data`.
+A passive aggregator. Subscribes to all subsystem status topics and maintains an in-memory cache of the latest reading from each. Every `TELEMETRY_SEND_INTERVAL_SEC` (default 30s), if the cached OBC state is `SCIENCE`, it assembles a unified telemetry packet from the cache, appends system health metrics (CPU, RAM, disk, temperature), and writes the packet to a SQLite database.
 
-Also responds to on-demand telemetry requests via `get_telemetry` commands on `cubesat/command`.
+**Note:** the aggregator does **not** publish to `cubesat/telemetry/data` on this periodic loop — that topic is only published in response to an on-demand `get_telemetry` command on `cubesat/command`.
+
+**Optional remote API forwarding:** if `TELEMETRY_SEND_ENABLED=1`, on every loop iteration the aggregator also POSTs the current packet to `TELEMETRY_API_URL` (e.g. the [cubesat-groundstation](https://github.com/miksrv/cubesat-groundstation) backend), independent of OBC state. Internet reachability is checked once at startup only; if unreachable at that point, remote sending stays off for the life of the process.
 
 **SQLite schema** (`data/telemetry.db`, table `telemetry_log`):
 
 | Column group | Fields |
 |---|---|
-| Timing | `id`, `timestamp`, `iso_time` |
+| Timing | `id`, `timestamp` (ISO-8601 UTC string, e.g. `2026-03-11T14:30:00.123456Z` — not a Unix float, unlike the MQTT payloads below) |
 | OBC | `obc_state` |
 | EPS | `battery`, `voltage`, `external_power` |
 | ADCS | `roll`, `pitch`, `yaw`, `imu_temp`, `accel_x/y/z`, `gyro_x/y/z` |
@@ -268,10 +284,20 @@ All topic strings are defined in `src/common/config.py` (`TOPICS` dict). Always 
 }
 ```
 
-### `cubesat/payload/data`
+### `cubesat/payload/status`
+Published (retained) on connect, and again on a photo-processing error.
 ```json
 {
-  "timestamp": 1741863600.0,
+  "state": "IDLE",
+  "alive": true,
+  "timestamp": 1741863600.0
+}
+```
+
+### `cubesat/payload/data`
+No timestamp field — the aggregator timestamps data itself on ingest.
+```json
+{
   "temperature": 23.4,
   "humidity": 45.2,
   "pressure": 1013.25
@@ -294,7 +320,7 @@ All topic strings are defined in `src/common/config.py` (`TOPICS` dict). Always 
 {
   "request_id": "req_001",
   "status": "ERROR",
-  "reason": "OBC status is SCIENCE, photo only allowed in NOMINAL"
+  "reason": "Photo capture not allowed: OBC status is 'SCIENCE'"
 }
 ```
 
@@ -332,13 +358,15 @@ All commands use the same topic. The `"command"` field determines which service 
 
 5. EPS: every 30 s: reads MAX17048 + GPIO  →  cubesat/eps/status
 
-6. Telemetry aggregator: every 30 s:
+6. Telemetry aggregator: every TELEMETRY_SEND_INTERVAL_SEC (default 30 s), while obc_state == "SCIENCE":
    Merges cached OBC/EPS/ADCS/payload/system data → writes row to telemetry.db
-   Publishes packet  →  cubesat/telemetry/data
+   (does NOT publish to cubesat/telemetry/data on this loop — see note below)
 
 7. Ground sends:  {"command": "science_stop"}  →  cubesat/command
    OBC: SCIENCE → NOMINAL
 ```
+
+> `cubesat/telemetry/data` is only published on-demand (step below) or, if `TELEMETRY_SEND_ENABLED=1`, forwarded to a remote HTTP API — see [Telemetry Aggregator](#telemetry-aggregator).
 
 ### Photo request
 
@@ -352,6 +380,17 @@ All commands use the same topic. The `"command"` field determines which service 
                    Base64-encodes image
 
 3. Publishes full response (with photo_base64)  →  cubesat/payload/photo
+```
+
+### On-demand telemetry request
+
+```
+1. Ground sends: {"command": "get_telemetry", "request_id": "req_002"}  →  cubesat/command
+
+2. Telemetry aggregator builds a packet from its in-memory cache (independent of OBC state)
+   Attaches request_id to the packet
+
+3. Publishes  →  cubesat/telemetry/data  (retained)
 ```
 
 ### Timelapse
@@ -435,7 +474,15 @@ cubesat-sim/
 ├── scripts/
 │   ├── install.sh                 # Create venv, install deps, install + start systemd units
 │   ├── start.sh                   # Start and enable all services
-│   └── stop.sh                    # Stop and disable all services
+│   ├── stop.sh                    # Stop and disable all services
+│   └── restart.sh                 # Restart all services (e.g. after a system update)
+│
+├── config/
+│   └── config.yaml                # Runtime defaults: MQTT, telemetry intervals, camera resolution
+│
+├── hardware/                      # Physical build assets (not runtime data)
+│   ├── models/                    # 3D-printable/CAD files for the frame and mounts
+│   └── photos/                    # Build/assembly photos embedded in this README
 │
 ├── data/                          # Runtime data (created on first run)
 │   ├── photos/                    # JPEG files from payload camera
@@ -456,20 +503,63 @@ cubesat-sim/
 
 ## Hardware
 
-The simulation targets Raspberry Pi. The following hardware is required for full operation:
+The simulation targets Raspberry Pi. The following hardware is required for full operation.
 
-| Component | Interface | Used by | Library |
-|-----------|-----------|---------|---------|
-| MAX17048 fuel gauge (LiPo monitor) | I2C (`0x36`) | EPS | `smbus2` |
-| X728 UPS — PLD GPIO pin | GPIO | EPS | `RPi.GPIO` |
-| QMI8658 IMU (accel + gyro) | I2C | ADCS | `smbus2` |
-| AK09918 magnetometer | I2C | ADCS | `smbus2` |
-| LPS22HB barometric pressure + temperature sensor | I2C | Payload | `smbus2` |
-| SHTC3 humidity + temperature sensor | I2C | Payload | `lgpio` |
-| Camera module (any Picamera2-compatible) | CSI | Payload | `picamera2` |
-| Mosquitto MQTT broker | localhost:1883 | All | `paho-mqtt` |
+**Components** — Raspberry Pi, Pi Camera, 2× 18650 batteries, Sense HAT, etc.
+
+![CubeSat hardware components](hardware/photos/02-hardware-components.jpg)
+
+| Component | Purpose | Interface / Library | Product link | Documentation |
+|---|---|---|---|---|
+| Raspberry Pi 4 Model B | Main compute — hosts and runs all five services | — | [Raspberry Pi](https://www.raspberrypi.com/products/raspberry-pi-4-model-b/) | [Raspberry Pi Docs](https://www.raspberrypi.com/documentation/) |
+| X728 V2.5 UPS HAT | Battery power management: LiPo fuel gauge (MAX17048) + AC-loss detection (PLD pin) — used by EPS | I2C (`0x36`) + GPIO · `smbus2`, `RPi.GPIO` | [AliExpress](https://www.aliexpress.us/item/3256804825472151.html) | [Geekworm Wiki](https://wiki.geekworm.com/X728) |
+| Sense HAT (B) | Environmental/orientation sensor HAT: QMI8658 (accel + gyro) + AK09918 (magnetometer) drive ADCS orientation; LPS22HB (pressure) + SHTC3 (humidity) feed Payload science data | I2C · `smbus2`, `lgpio` | [AliExpress](https://www.aliexpress.us/item/3256811354242582.html) | [Waveshare Wiki](<https://www.waveshare.com/wiki/Sense_HAT_(B)>) |
+| Raspberry Pi Camera Module V2 (8MP, 1080p) | Photo capture + timelapse — used by Payload | CSI · `picamera2` | [Amazon](https://a.co/d/02oyeWg8) | [Raspberry Pi Docs](https://www.raspberrypi.com/documentation/accessories/camera.html#camera-module-2) |
+| IoT Node(A) — 52Pi Docker Pi Series (GSM/GPS/LoRa) | Onboard GSM/GPS/LoRa module, present on the build but not yet wired into any service — reserved for future ground-link/positioning work | — | [AliExpress](https://www.aliexpress.us/item/2251832864586218.html) | [52Pi Wiki](https://wiki.52pi.com/index.php?title=EP-0105) |
+
+> Also requires a `mosquitto` MQTT broker running on the Pi (software, not hardware) — see [Prerequisites](#prerequisites).
 
 > **Non-Pi development:** All hardware libraries are imported at module level, so services will fail to import on a non-Raspberry Pi machine. Hardware mocking is on the roadmap (see `ROADMAP.md` items H1–H7).
+
+### Mechanical / Fasteners
+
+Used to assemble the 3D-printed frame ([`hardware/models/`](hardware/models/)) and mount the boards to it.
+
+| Component | Product link |
+|---|---|
+| M3 Nuts | https://www.aliexpress.us/item/2255800416538696.html |
+| M3 Screws | https://www.aliexpress.us/item/3256805798104626.html |
+| M3 Standoffs | https://www.aliexpress.us/item/2251832676215215.html |
+
+### 3D Models
+
+3D-printable STL files for the physical build live in [`hardware/models/`](hardware/models/) (see that folder's README for file conventions):
+
+| File | Purpose |
+|---|---|
+| `base/CS_MGSE_Tight_Fit.stl` | Ground support stand — holds the assembled CubeSat upright on a bench |
+| `frame/Cubesat_Bottom_Frame.stl` | Bottom frame panel |
+| `frame/Cubesat_Side_Frame_Plain.stl` | Side frame panel |
+| `frame/Cubesat_Adaptor_Mount.stl` | Internal adaptor mount for the electronics stack |
+| `frame/Cubesat_RaspbiCam_Frame.stl` | Camera mount for the Raspberry Pi Camera Module |
+
+### Build Photos
+
+Photos of the physical build (full-resolution originals are not kept in the repo — see [`hardware/photos/`](hardware/photos/) for naming conventions).
+
+**3D-printed frame**
+
+![3D-printed CubeSat frame](hardware/photos/01-frame-3d-printed.jpg)
+
+**Assembled — without side panels**
+
+<p align="center">
+  <img src="hardware/photos/03-assembled-no-panels-1.jpg" width="32%" alt="Assembled CubeSat without panels — view 1">
+  <img src="hardware/photos/03-assembled-no-panels-2.jpg" width="32%" alt="Assembled CubeSat without panels — view 2">
+  <img src="hardware/photos/03-assembled-no-panels-3.jpg" width="32%" alt="Assembled CubeSat without panels — view 3">
+</p>
+
+> The finished unit with protective panels is pictured at the top of this README.
 
 ---
 
@@ -494,8 +584,9 @@ bash scripts/install.sh
 ### Manage services
 
 ```bash
-bash scripts/start.sh   # start and enable all services
-bash scripts/stop.sh    # stop and disable all services
+bash scripts/start.sh    # start and enable all services
+bash scripts/stop.sh     # stop and disable all services
+bash scripts/restart.sh  # restart all services (e.g. after a system update)
 ```
 
 ### Run services manually (development)
@@ -518,16 +609,34 @@ Run each in a separate terminal or as a background process.
 
 ## Configuration
 
-Configuration is loaded from environment variables (or a `.env` file in the project root). All defaults are defined in `src/common/config.py`.
+Non-secret defaults live in [`config/config.yaml`](config/config.yaml). `src/common/config.py` loads that file first, then lets specific environment variables (or a `.env` file in the project root) override individual values. Secrets and deployment-specific values (remote API URL/key) are environment-variable only and must never be committed to `config.yaml`.
 
-Create a `.env` file to override settings:
+```yaml
+# config/config.yaml
+mqtt:
+  broker: localhost       # overridden by MQTT_BROKER env var
+  port: 1883              # overridden by MQTT_PORT env var
+  keepalive: 60
+
+telemetry:
+  interval_sec: 30             # not currently read by any service (see note below)
+  low_power_interval_sec: 300  # not currently read by any service (see note below)
+
+camera:
+  resolution: [1920, 1080]     # JPEG capture resolution [width, height]
+
+logging:
+  level: INFO                  # not currently read — each service hardcodes INFO in its main.py
+```
+
+Create a `.env` file to override the environment-variable settings:
 
 ```ini
-# MQTT broker
+# MQTT broker (overrides config.yaml)
 MQTT_BROKER=localhost
 MQTT_PORT=1883
 
-# Remote telemetry API (optional)
+# Remote telemetry API (optional, disabled by default)
 TELEMETRY_SEND_ENABLED=0
 TELEMETRY_SEND_INTERVAL_SEC=30
 TELEMETRY_API_URL=http://localhost:8080
@@ -536,12 +645,14 @@ TELEMETRY_API_KEY=your-api-key-here
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MQTT_BROKER` | `localhost` | Hostname or IP of the MQTT broker |
-| `MQTT_PORT` | `1883` | MQTT broker port |
-| `TELEMETRY_SEND_ENABLED` | `0` | Set to `1` to POST telemetry packets to a remote API |
-| `TELEMETRY_SEND_INTERVAL_SEC` | `30` | How often to POST to the remote API (seconds) |
+| `MQTT_BROKER` | `localhost` (from `config.yaml`) | Hostname or IP of the MQTT broker |
+| `MQTT_PORT` | `1883` (from `config.yaml`) | MQTT broker port |
+| `TELEMETRY_SEND_ENABLED` | `0` | Set to `1` to POST telemetry packets to a remote API (e.g. [cubesat-groundstation](https://github.com/miksrv/cubesat-groundstation)) |
+| `TELEMETRY_SEND_INTERVAL_SEC` | `30` | Sleep interval of the telemetry aggregator's main loop — also governs how often it checks OBC state for SQLite writes and POSTs to the remote API, not just the remote send |
 | `TELEMETRY_API_URL` | `http://localhost:8080` | Base URL of the remote telemetry server |
-| `TELEMETRY_API_KEY` | _(none)_ | API key sent as `Authorization` header |
+| `TELEMETRY_API_KEY` | _(none)_ | API key sent as the `X-API-Key` header; if unset, remote sending is skipped even when enabled |
+
+> **Known gap:** `telemetry.interval_sec`, `telemetry.low_power_interval_sec`, and `logging.level` are defined in `config.yaml` and exposed as constants in `config.py`, but no service currently reads them — the telemetry loop cadence is actually controlled by `TELEMETRY_SEND_INTERVAL_SEC`, and log level is hardcoded to `INFO` per-service. Don't rely on editing those `config.yaml` keys to change behavior yet.
 
 ---
 
@@ -564,9 +675,17 @@ journalctl -u cubesat-telemetry.service -f
 | Document | Description |
 |----------|-------------|
 | [docs/architecture.md](docs/architecture.md) | Detailed runtime architecture, subsystem internals, data flow diagrams |
-| [docs/code_smells.md](docs/code_smells.md) | Catalogue of known bugs and technical debt |
-| [docs/refactoring_plan.md](docs/refactoring_plan.md) | Prioritised refactoring plan with implementation examples |
+| [docs/code_smells.md](docs/code_smells.md) | Historical catalogue of bugs/tech debt found during the initial audit — most items (B1–B6, C1–C5, R1–R4) are already fixed; check [ROADMAP.md](ROADMAP.md#completed) for current status before acting on it |
+| [docs/refactoring_plan.md](docs/refactoring_plan.md) | Prioritised refactoring plan with implementation examples (HAL and tests, H1–H7/T1–T7, are still pending) |
 | [ROADMAP.md](ROADMAP.md) | Feature tracker: bugs, improvements, new features |
+
+---
+
+## Related Projects
+
+| Project | Description |
+|---|---|
+| [cubesat-groundstation](https://github.com/miksrv/cubesat-groundstation) | Cloud ground station (PHP/CodeIgniter 4 backend + React dashboard) that receives telemetry POSTed by this project's `TelemetryAggregator` (see [Telemetry Aggregator](#telemetry-aggregator) and [Configuration](#configuration)), stores it in MySQL, and visualizes it in real time |
 
 ---
 

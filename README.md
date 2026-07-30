@@ -2,13 +2,9 @@
 
 CubeSat Sim is a working flight software stack for a real, physical CubeSat — not just a simulation on paper. Five independent Python services (OBC, EPS, ADCS, Payload, Telemetry) each model one satellite subsystem and talk to each other exclusively over MQTT, the same way modules communicate over a real spacecraft bus. A central state machine drives the mission lifecycle (`BOOT → DEPLOY → NOMINAL ↔ SCIENCE → LOW_POWER → SAFE`), reacting to live battery telemetry, IMU orientation data, and ground commands, while a telemetry aggregator logs everything to SQLite and can forward it to a [cloud ground station](https://github.com/miksrv/cubesat-groundstation) in real time.
 
-It runs today on a Raspberry Pi inside a 3D-printed frame, wired to real sensors — battery fuel gauge, IMU, magnetometer, barometric/humidity sensors, and a camera. Everything needed to build one yourself is in this repo: the code, the [3D models](hardware/models), and the [hardware list](#hardware).
+![CubeSat Sim](hardware/photos/cover.jpg)
 
-<p align="center">
-  <img src="hardware/photos/04-finished-unit-1.jpg" width="32%" alt="Finished CubeSat with panels — view 1">
-  <img src="hardware/photos/04-finished-unit-2.jpg" width="32%" alt="Finished CubeSat with panels — view 2">
-  <img src="hardware/photos/04-finished-unit-3.jpg" width="32%" alt="Finished CubeSat with panels — view 3">
-</p>
+It runs today on a Raspberry Pi inside a 3D-printed frame, wired to real sensors — battery fuel gauge, IMU, magnetometer, barometric/humidity sensors, and a camera. Everything needed to build one yourself is in this repo: the code, the [3D models](hardware/models), and the [hardware list](#hardware).
 
 If you're learning satellite software architecture, distributed systems, or embedded Python, feel free to dig in, fork it, and adapt it to your own build. If it's useful to you, a star helps other people find it.
 
@@ -559,7 +555,13 @@ Photos of the physical build (full-resolution originals are not kept in the repo
   <img src="hardware/photos/03-assembled-no-panels-3.jpg" width="32%" alt="Assembled CubeSat without panels — view 3">
 </p>
 
-> The finished unit with protective panels is pictured at the top of this README.
+**Finished unit — with protective panels**
+
+<p align="center">
+  <img src="hardware/photos/04-finished-unit-1.jpg" width="32%" alt="Finished CubeSat with panels — view 1">
+  <img src="hardware/photos/04-finished-unit-2.jpg" width="32%" alt="Finished CubeSat with panels — view 2">
+  <img src="hardware/photos/04-finished-unit-3.jpg" width="32%" alt="Finished CubeSat with panels — view 3">
+</p>
 
 ---
 

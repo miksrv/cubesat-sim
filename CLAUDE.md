@@ -128,6 +128,8 @@ Services are designed for Raspberry Pi. `picamera2` (camera), `RPi.GPIO` (EPS), 
 
 Physical build assets (not runtime data) live under `hardware/`: `hardware/models/` for 3D-printable/CAD files (frame, mounts), `hardware/photos/` for build photos embedded in `README.md`. This is distinct from `data/photos/`, which holds camera captures produced at runtime by the Payload service.
 
+Per-component hardware documentation (specs, Raspberry Pi setup requirements, Python/Bash usage examples, links to vendor docs) lives in `docs/hardware-*.md` — one file per component in the `README.md` Hardware table, which links to them. See `docs/hardware-x728-ups-hat.md`, `docs/hardware-sense-hat-c.md`, `docs/hardware-camera-module-v2.md`, `docs/hardware-iot-node-a-52pi.md`.
+
 ### Systemd Deployment
 
 Unit files in `systemd/` expect the project at `/home/mik/cubesat-sim` and virtualenv at `/home/mik/cubesat-sim/venv`. Each service sets `PYTHONPATH` to the project root and runs with `python -m src.<module>.main`.

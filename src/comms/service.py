@@ -2,19 +2,27 @@ import logging
 import json
 import time
 import sqlite3
-from datetime import datetime
-import psutil
+from datetime import datetime, timedelta
 import requests
 
 from src.common import get_mqtt_client
-from src.common.config import DB_PATH, TOPICS, MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE, TELEMETRY_API_KEY, TELEMETRY_API_URL, TELEMETRY_SEND_INTERVAL_SEC, TELEMETRY_SEND_ENABLED
+from src.common.config import (
+    DB_PATH, TOPICS, MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE,
+    COMMS_API_KEY, COMMS_API_URL, COMMS_LOOP_INTERVAL_SEC,
+    COMMS_API_ENABLED, COMMS_LORA_ENABLED, COMMS_AGGREGATION_ENABLED,
+    COMMS_DB_RETENTION_DAYS,
+)
 from src.common.system_metrics import SystemMetricsCollector
+from src.comms.lora import LoRaModule
 
 logger = logging.getLogger(__name__)
 
-class TelemetryAggregator:
+CLEANUP_EVERY_N_LOOPS = 120  # ~1 hour at the default 30s loop interval
+
+
+class CommsService:
     def __init__(self):
-        self.mqtt_client = get_mqtt_client("cubesat-telemetry")
+        self.mqtt_client = get_mqtt_client("cubesat-comms")
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_message = self.on_mqtt_message
 
@@ -24,19 +32,28 @@ class TelemetryAggregator:
             "eps": {},       # from EPS
             "adcs": {},      # from ADCS
             "payload": {},   # from Payload (science data)
-            # add others if needed
         }
 
         self.system_collector = SystemMetricsCollector()
+        self.lora = LoRaModule()
+
+        # Runtime-toggleable channels. Reset to these config defaults on every
+        # restart — a ground `set_comms_config` command flips them in-memory
+        # only, nothing is persisted to disk.
+        self.api_enabled = bool(COMMS_API_ENABLED)
+        self.lora_enabled = bool(COMMS_LORA_ENABLED)
+        self.aggregation_enabled = bool(COMMS_AGGREGATION_ENABLED)
 
         # Initialize database
         self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         self._create_table()
 
+        self._loop_count = 0
+
     def _create_table(self):
         cursor = self.conn.cursor()
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS telemetry_log (
+            CREATE TABLE IF NOT EXISTS comms_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
                 battery REAL,
@@ -87,21 +104,42 @@ class TelemetryAggregator:
             elif topic == TOPICS["payload_data"]:
                 self.latest["payload"] = data
             elif topic == TOPICS["command"]:
-                if data.get("command") == "get_telemetry":
-                    packet = self.build_telemetry_packet()
+                command = data.get("command")
+                if command == "get_telemetry":
+                    packet = self.build_comms_packet()
                     packet["request_id"] = data.get("request_id")
                     self.mqtt_client.publish(
-                        TOPICS["telemetry_data"],
+                        TOPICS["comms_data"],
                         json.dumps(packet),
                         qos=1,
                         retain=True
                     )
+                elif command == "set_comms_config":
+                    self._apply_config(data.get("params", {}))
 
             logger.debug(f"Updated data from {topic}")
         except Exception as e:
             logger.error(f"Error processing MQTT {topic}: {e}")
 
-    def build_telemetry_packet(self):
+    def _apply_config(self, params):
+        if "api_enabled" in params:
+            self.api_enabled = bool(params["api_enabled"])
+        if "lora_enabled" in params:
+            self.lora_enabled = bool(params["lora_enabled"])
+        if "aggregation_enabled" in params:
+            self.aggregation_enabled = bool(params["aggregation_enabled"])
+        logger.info(
+            f"COMMS config updated: api_enabled={self.api_enabled}, "
+            f"lora_enabled={self.lora_enabled}, aggregation_enabled={self.aggregation_enabled}"
+        )
+
+    def _republish_command(self, cmd: dict):
+        """Re-injects a command received over an external channel (LoRa/API) onto the
+        local cubesat/command topic, unchanged, so existing routing (OBC/Payload/COMMS)
+        handles it exactly like a command that arrived directly over MQTT."""
+        self.mqtt_client.publish(TOPICS["command"], json.dumps(cmd), qos=1)
+
+    def build_comms_packet(self):
         now = datetime.utcnow().isoformat() + "Z"
         system = self.system_collector.collect(with_interval=0.8)
         packet = {
@@ -115,11 +153,11 @@ class TelemetryAggregator:
         return packet
 
     def aggregate(self):
-        """Collects a full telemetry packet"""
-        packet = self.build_telemetry_packet()
+        """Collects and stores a full COMMS packet"""
+        packet = self.build_comms_packet()
         self._log_to_db(packet)
 
-        logger.debug(f"Telemetry aggregated: {packet['timestamp']}")
+        logger.debug(f"COMMS packet aggregated: {packet['timestamp']}")
 
     def _log_to_db(self, packet):
         cursor = self.conn.cursor()
@@ -128,7 +166,7 @@ class TelemetryAggregator:
         gyro   = adcs.get("gyro_dps", {})
 
         cursor.execute('''
-            INSERT INTO telemetry_log (
+            INSERT INTO comms_log (
                 timestamp, battery, voltage, external_power,
                 roll, pitch, yaw,
                 imu_temp,
@@ -167,63 +205,101 @@ class TelemetryAggregator:
                 ))
         self.conn.commit()
 
+    def _cleanup_old_records(self):
+        cutoff = (datetime.utcnow() - timedelta(days=COMMS_DB_RETENTION_DAYS)).isoformat() + "Z"
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM comms_log WHERE timestamp < ?", (cutoff,))
+        self.conn.commit()
+        if cursor.rowcount:
+            logger.info(f"COMMS DB cleanup: purged {cursor.rowcount} rows older than {COMMS_DB_RETENTION_DAYS} days")
+
     def send_to_remote_api(self, packet):
-        """Send telemetry packet to remote API server."""
-        if not TELEMETRY_API_KEY:
-            logger.warning("Remote telemetry API key not set; skipping send.")
+        """Send a COMMS packet to the remote API server."""
+        if not COMMS_API_KEY:
+            logger.warning("Remote COMMS API key not set; skipping send.")
             return
-        url = f"{TELEMETRY_API_URL}/api/cubesat/telemetry"
+        url = f"{COMMS_API_URL}/api/cubesat/comms"
         headers = {
             "Content-Type": "application/json",
-            "X-API-Key": TELEMETRY_API_KEY
+            "X-API-Key": COMMS_API_KEY
         }
         try:
             response = requests.post(url, headers=headers, json=packet, timeout=5)
             if response.status_code == 201:
-                logger.info(f"Telemetry sent to remote API: {packet['timestamp']}")
+                logger.info(f"COMMS packet sent to remote API: {packet['timestamp']}")
             else:
                 logger.error(f"Remote API error: {response.status_code} {response.text}")
         except Exception as e:
-            logger.error(f"Failed to send telemetry to remote API: {e}")
+            logger.error(f"Failed to send COMMS packet to remote API: {e}")
 
-    def internet_available(self):
-        """Check if internet is available (simple ping to API server)."""
+    def poll_remote_commands(self):
+        """Fetches ground commands queued on the remote API and re-injects them onto
+        cubesat/command. Assumes a GET .../api/cubesat/commands/pending endpoint
+        returning a JSON array of command envelopes — this is a contract this repo
+        expects from cubesat-groundstation, not something implemented there yet."""
         try:
-            requests.get(f"{TELEMETRY_API_URL}/api/cubesat/telemetry/latest", timeout=3)
+            headers = {"X-API-Key": COMMS_API_KEY} if COMMS_API_KEY else {}
+            response = requests.get(f"{COMMS_API_URL}/api/cubesat/commands/pending", headers=headers, timeout=5)
+            if response.status_code != 200:
+                return
+            for cmd in response.json():
+                self._republish_command(cmd)
+        except Exception as e:
+            logger.error(f"Failed to poll remote commands: {e}")
+
+    def _check_internet(self):
+        """Checked every loop iteration (not just once at startup) — the API channel
+        is meant for ground/debug use, where connectivity can come and go."""
+        try:
+            requests.get(f"{COMMS_API_URL}/api/cubesat/comms/latest", timeout=3)
             return True
         except Exception:
             return False
+
+    def _poll_lora(self):
+        packet_bytes = self.lora.receive()
+        if packet_bytes is None:
+            return
+        try:
+            cmd = json.loads(packet_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            logger.warning("Received malformed LoRa command packet, discarding")
+            return
+        self._republish_command(cmd)
 
     def run(self):
         self.mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=MQTT_KEEPALIVE)
         self.mqtt_client.loop_start()
 
-        logger.info("Telemetry Aggregator started")
+        logger.info("COMMS service started")
 
         try:
-            remote_enabled = self.internet_available()
-            if remote_enabled:
-                logger.info("Remote telemetry API available; sending enabled.")
-            else:
-                logger.warning("Remote telemetry API unavailable; sending disabled.")
-
-            # Option flag from config
             while True:
+                self._loop_count += 1
                 obc_state = self.latest.get("obc", {}).get("status", "")
-                if obc_state == "SCIENCE":
-                    self.aggregate()
 
-                # Send to remote API if enabled in config and internet is available
-                if TELEMETRY_SEND_ENABLED and remote_enabled:
-                    packet = self.build_telemetry_packet()
+                if obc_state == "SCIENCE" and self.aggregation_enabled:
+                    self.aggregate()
+                    if self._loop_count % CLEANUP_EVERY_N_LOOPS == 0:
+                        self._cleanup_old_records()
+
+                if self.api_enabled and self._check_internet():
+                    packet = self.build_comms_packet()
                     self.send_to_remote_api(packet)
-                time.sleep(TELEMETRY_SEND_INTERVAL_SEC)
+                    self.poll_remote_commands()
+
+                if self.lora_enabled:
+                    packet = self.build_comms_packet()
+                    self.lora.send(json.dumps(packet).encode("utf-8"))
+                    self._poll_lora()
+
+                time.sleep(COMMS_LOOP_INTERVAL_SEC)
         except KeyboardInterrupt:
-            logger.info("Telemetry Aggregator stopped by Ctrl+C")
+            logger.info("COMMS service stopped by Ctrl+C")
         except Exception as e:
-            logger.exception("Critical error in main Telemetry Aggregator loop")
+            logger.exception("Critical error in main COMMS loop")
         finally:
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
             self.conn.close()
-            logger.info("Telemetry Aggregator stopped")
+            logger.info("COMMS service stopped")

@@ -1,12 +1,12 @@
 [Unit]
-Description=CubeSat Telemetry Aggregator Service
+Description=CubeSat COMMS Service
 After=network.target mosquitto.service
 
 [Service]
 User=mik
 WorkingDirectory=/home/mik/cubesat-sim
 Environment="PYTHONPATH=/home/mik/cubesat-sim"
-ExecStart=/home/mik/cubesat-sim/venv/bin/python -m src.telemetry.main
+ExecStart=/home/mik/cubesat-sim/venv/bin/python -m src.comms.main
 Restart=always
 RestartSec=10s
 StandardOutput=journal+console

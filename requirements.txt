@@ -19,5 +19,9 @@ smbus2
 RPi.GPIO
 lgpio
 
-# Remote telemetry API
+# GPS (A9G module, NMEA over UART)
+pyserial
+pynmea2
+
+# Remote COMMS API
 requests

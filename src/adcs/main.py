@@ -12,6 +12,7 @@ import json
 from src.common import get_mqtt_client
 from src.common.config import TOPICS, MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE
 from src.common.imu_qmi8658_ak09918 import IMU
+from src.common.gps_a9g import GPS
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +20,14 @@ class ADCS:
     def __init__(self):
         self.mqtt_client = get_mqtt_client("cubesat-adcs")
         self.imu = IMU()
+        self.gps = GPS()
         logger.info("ADCS subsystem initialized")
 
     def publish_status(self):
         try:
             ori = self.imu.get_orientation_deg()
             temp = self.imu.read_imu_temp()
+            gps_fix = self.gps.read_position()
 
             packet = {
                 "timestamp": time.time(),
@@ -33,7 +36,8 @@ class ADCS:
                 "yaw": ori["yaw"],
                 "imu_temp": round(temp, 2),
                 "accel_g": ori["accel_g"],
-                "gyro_dps": ori["gyro_dps"]
+                "gyro_dps": ori["gyro_dps"],
+                "gps": gps_fix
             }
 
             self.mqtt_client.publish(

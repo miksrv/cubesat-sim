@@ -1,6 +1,6 @@
 # IoT Node(A) — 52Pi Docker Pi Series (GSM/GPS/LoRa)
 
-Onboard GSM/GPS/LoRa module. **Present on the physical build but not yet wired into any service** — reserved for future ground-link/positioning work. The only trace of it in the codebase today is `crc16_ccitt()` in `src/common/utils.py`, a CRC-16-CCITT helper intended for validating LoRa packets once this module is integrated.
+Onboard GSM/GPS/LoRa module. GPS is wired into **ADCS** (`src/common/gps_a9g.py`, NMEA over `/dev/ttySC1`) and LoRa is wired into **COMMS** (`src/comms/lora.py`, register access over the SC16IS752 I2C bridge) — both use `crc16_ccitt()` in `src/common/utils.py` for framing/validation. GSM/GPRS (AT commands over `/dev/ttySC0`) remains unused; only the GPS and LoRa halves of this module are currently wired up.
 
 - **Product:** [52Pi EP-0105 IoT Node (A)](https://www.aliexpress.us/item/2251832864586218.html)
 - **Official docs:** [52Pi Wiki — EP-0105](https://wiki.52pi.com/index.php?title=EP-0105)
@@ -39,7 +39,7 @@ Onboard GSM/GPS/LoRa module. **Present on the physical build but not yet wired i
    ls /dev/ttySC*   # expect ttySC0, ttySC1 after overlay loads
    ```
 4. Insert a SIM card for GSM/GPRS functionality; GPS works standalone (no SIM needed) once powered.
-5. Python access needs `smbus`/`smbus2` for direct LoRa register control, or a standard serial library (`pyserial`) against `/dev/ttySC0`/`/dev/ttySC1` for GSM AT commands and GPS NMEA sentences.
+5. Python access uses `smbus2` for direct LoRa register control (`src/comms/lora.py`) and `pyserial` + `pynmea2` against `/dev/ttySC1` for GPS NMEA sentences (`src/common/gps_a9g.py`); `/dev/ttySC0` (GSM AT commands) is not used by this project.
 
 ## Usage examples
 
@@ -49,39 +49,34 @@ i2cdetect -y 1
 ls -l /dev/ttySC0 /dev/ttySC1
 ```
 
-**Bash — send AT commands to the GSM module over the bridged UART:**
+**Bash — send AT commands to the GSM module over the bridged UART (unused by this project):**
 ```bash
 echo -e "AT\r" > /dev/ttySC0
 cat /dev/ttySC0   # expect "OK"
 ```
 
-**Python — reset the GSM module (per vendor example):**
+**Python — read the current GPS fix, as implemented in `src/common/gps_a9g.py`:**
 ```python
-import smbus
-bus = smbus.SMBus(1)
-bus.write_byte_data(0x16, 0x23, 0x40)  # GSM reset
+from src.common.gps_a9g import GPS
+
+gps = GPS()  # opens /dev/ttySC1 at 9600 baud
+fix = gps.read_position()
+print(fix)  # {"lat": ..., "lon": ..., "alt": ..., "speed": ..., "fix": True}
 ```
 
-**Python — send a LoRa packet by writing payload registers then triggering TX:**
+**Python — send and receive a LoRa packet, as implemented in `src/comms/lora.py`:**
 ```python
-import smbus
-from src.common.utils import crc16_ccitt
+from src.comms.lora import LoRaModule
 
-bus = smbus.SMBus(1)
-payload = bytes([170, 85, 165, 90])
-crc = crc16_ccitt(payload)  # validate on the receiving end with the same helper
+lora = LoRaModule()  # smbus2, I2C address 0x16
+lora.send(b'{"timestamp": "...", "obc_state": "SCIENCE"}')
 
-for i, b in enumerate(payload, start=1):
-    bus.write_byte_data(0x16, i, b)
-bus.write_byte_data(0x16, 0x23, 0x01)  # trigger TX
+packet = lora.receive()  # None if nothing pending; CRC-16-CCITT verified internally
+if packet is not None:
+    print(packet)
 ```
 
-**Python — poll for a received LoRa packet:**
-```python
-if bus.read_byte_data(0x16, 0x23) & 0x02:
-    bus.write_byte_data(0x16, 0x23, 0x00)  # clear RX flag
-    recv = [bus.read_byte_data(0x16, r) for r in (0x11, 0x12, 0x13, 0x14)]
-```
+`LoRaModule` frames payloads as `[length byte][payload][2-byte CRC-16-CCITT]` within the `0x01`–`0x20` register range and triggers/polls TX/RX via the control register `0x23` — see `src/comms/lora.py` for the exact register offsets, which are a simplified convention layered on top of the vendor's raw register map (adjust against real hardware if it differs).
 
 ## Further reading
 

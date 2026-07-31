@@ -7,7 +7,7 @@ SERVICES=(
     "cubesat-obc.service"
     "cubesat-eps.service"
     "cubesat-payload.service"
-    "cubesat-telemetry.service"
+    "cubesat-comms.service"
 )
 
 # Restart all CubeSat services (e.g. after a system update)

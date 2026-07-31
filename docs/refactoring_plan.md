@@ -74,18 +74,19 @@ cubesat-sim/
 │   │   ├── __init__.py
 │   │   └── main.py                # uses ICamera + IScienceCollector
 │   │
-│   └── telemetry/
+│   └── comms/
 │       ├── __init__.py
 │       ├── main.py
-│       ├── aggregator.py          # split into smaller classes
-│       ├── packet_builder.py      # NEW: assembles telemetry dict
-│       └── storage.py             # NEW: SQLite write logic
+│       ├── service.py             # split into smaller classes
+│       ├── lora.py                # LoRa TX/RX (SC16IS752 I2C driver)
+│       ├── packet_builder.py      # NEW: assembles the comms dict
+│       └── storage.py             # NEW: SQLite write + retention cleanup logic
 │
 ├── tests/
 │   ├── __init__.py
 │   ├── test_state_machine.py
 │   ├── test_handlers.py
-│   ├── test_telemetry_builder.py
+│   ├── test_comms_builder.py
 │   ├── test_eps_logic.py
 │   └── conftest.py                # pytest fixtures with mocks
 │
@@ -191,7 +192,7 @@ Fix all bugs identified in `code_smells.md` without restructuring anything:
 
 **Goal:** eliminate hardcoded paths and make the project deployable without editing source code.
 
-1. Add `config/config.yaml` with keys for: MQTT broker/port, photo directory, telemetry interval, log level, photo resolution.
+1. Add `config/config.yaml` with keys for: MQTT broker/port, photo directory, COMMS loop interval, log level, photo resolution.
 2. Update `src/common/config.py` to load `config.yaml` (with env var overrides).
 3. Remove the hardcoded `PHOTO_DIR = "/home/mik/cubesat-sim/data/photos"` in `camera.py`; use `PHOTOS_DIR` from config.
 4. Update `systemd/` unit files to use a configurable `WorkingDirectory`.
@@ -232,18 +233,18 @@ Fix all bugs identified in `code_smells.md` without restructuring anything:
 
 ---
 
-### Step 4 — Split TelemetryAggregator
+### Step 4 — Split CommsService
 
 **Goal:** apply Single Responsibility.
 
-Extract from `TelemetryAggregator` into:
+Extract from `CommsService` into:
 
-- `TelemetryCache` — dict of latest subsystem data, updated by MQTT callbacks
-- `TelemetryPacketBuilder` — pure function `build_packet(cache, system_metrics) -> dict`
-- `TelemetryStorage` — wraps SQLite: `save(packet)`, `_create_table()`
-- `TelemetryAggregator` — thin orchestrator: wires MQTT, calls builder, calls storage
+- `CommsCache` — dict of latest subsystem data, updated by MQTT callbacks
+- `CommsPacketBuilder` — pure function `build_comms_packet(cache, system_metrics) -> dict`
+- `CommsStorage` — wraps SQLite: `save(packet)`, `_create_table()`, retention cleanup
+- `CommsService` — thin orchestrator: wires MQTT, calls builder/storage, drives the LoRa (`lora.py`) and remote-API channels
 
-This makes `TelemetryPacketBuilder` trivially unit-testable with no MQTT or SQLite.
+This makes `CommsPacketBuilder` trivially unit-testable with no MQTT or SQLite.
 
 ---
 
@@ -255,7 +256,7 @@ Create `tests/` with `pytest` and `pytest-mock`:
 
 1. `test_state_machine.py`: test all state transitions, including edge cases (can't go SCIENCE → SCIENCE).
 2. `test_handlers.py`: test EPS status thresholds (39% → no transition, 40% → LOW_POWER, 19% → no SAFE if already SAFE).
-3. `test_telemetry_builder.py`: test `build_packet()` with various cache states (missing subsystem data, null values).
+3. `test_comms_builder.py`: test `build_comms_packet()` with various cache states (missing subsystem data, null values).
 4. `test_eps_logic.py`: test `get_battery_percent()`, `get_battery_voltage()` with known raw register values.
 5. `test_utils.py`: test `crc16_ccitt()`, `ensure_dir()`, `timestamp_iso()`.
 

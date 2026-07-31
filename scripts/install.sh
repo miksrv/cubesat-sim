@@ -38,7 +38,7 @@ sudo cp ./systemd/cubesat-adcs.service $SERVICE_DIR/
 sudo cp ./systemd/cubesat-obc.service $SERVICE_DIR/
 sudo cp ./systemd/cubesat-eps.service $SERVICE_DIR/
 sudo cp ./systemd/cubesat-payload.service $SERVICE_DIR/
-sudo cp ./systemd/cubesat-telemetry.service $SERVICE_DIR/
+sudo cp ./systemd/cubesat-comms.service $SERVICE_DIR/
 echo "Service files copied to $SERVICE_DIR"
 
 # Replace %i with actual user in .service files (if needed; systemd usually does this, but just in case)
@@ -46,7 +46,7 @@ sudo sed -i "s/%i/$CURRENT_USER/g" $SERVICE_DIR/cubesat-*.service
 
 # Step 6: Reload systemd and start/enable services
 sudo systemctl daemon-reload
-for service in cubesat-obc cubesat-eps cubesat-adcs cubesat-payload cubesat-telemetry; do
+for service in cubesat-obc cubesat-eps cubesat-adcs cubesat-payload cubesat-comms; do
     sudo systemctl enable $service.service
     sudo systemctl start $service.service
     sudo systemctl status $service.service --no-pager

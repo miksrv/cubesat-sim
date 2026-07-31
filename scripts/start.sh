@@ -7,7 +7,7 @@ SERVICES=(
     "cubesat-obc.service"
     "cubesat-eps.service"
     "cubesat-payload.service"
-    "cubesat-telemetry.service"
+    "cubesat-comms.service"
 )
 
 # Start and enable autostart for all CubeSat services

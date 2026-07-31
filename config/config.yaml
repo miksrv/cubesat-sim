@@ -10,9 +10,14 @@ mqtt:
   port: 1883              # override with MQTT_PORT env var
   keepalive: 60
 
-telemetry:
-  interval_sec: 30        # how often the aggregator writes a telemetry packet (seconds)
-  low_power_interval_sec: 300  # reduced rate when OBC is in LOW_POWER state
+comms:
+  loop_interval_sec: 30    # COMMS main loop tick: aggregation check, API send/poll, LoRa TX/RX
+  db_retention_days: 30    # rows older than this are purged from comms.db periodically
+  lora_i2c_address: 0x16   # SC16IS752 bridge address (52Pi IoT Node(A))
+
+gps:
+  port: /dev/ttySC1        # A9G GPS/BDS NMEA UART (see docs/hardware-iot-node-a-52pi.md)
+  baudrate: 9600
 
 camera:
   resolution: [1920, 1080]  # JPEG capture resolution [width, height]

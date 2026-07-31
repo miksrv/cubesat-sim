@@ -188,9 +188,9 @@ Every service that uses `get_mqtt_client()` immediately overwrites `client.on_co
 
 ---
 
-### D11 — `comm/` module documented but not implemented
+### D11 — `comm/` module documented but not implemented — **Resolved**
 
-The README describes a `comm/` subsystem for WiFi/MQTT and LoRa communication. It does not exist in `src/`. `utils.py` includes a `crc16_ccitt()` function for "LoRa packets" but nothing uses it.
+The README described a `comm/` subsystem for WiFi/MQTT and LoRa communication that didn't exist in `src/`; `utils.py`'s `crc16_ccitt()` was unused scaffolding for it. Resolved by the GPS+LoRa+COMMS redesign (see `ROADMAP.md` items G1–G9): LoRa now lives in `src/comms/lora.py` and uses `crc16_ccitt()` for packet framing/validation.
 
 ---
 

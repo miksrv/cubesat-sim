@@ -39,6 +39,20 @@ journalctl -u cubesat-obc.service -f
 
 **Dependencies:** `paho-mqtt`, `transitions`, `psutil`, `picamera2`, `smbus2`, `RPi.GPIO`, `lgpio`, `pyserial`, `pynmea2`, `python-dotenv`, `pyyaml`, `requests`
 
+## Testing
+
+The test suite (`tests/`) runs on any machine — it never needs real Raspberry Pi hardware or a real MQTT broker. `tests/conftest.py` replaces `RPi.GPIO`, `lgpio`, `smbus2`, `picamera2`/`libcamera` with mocks in `sys.modules` before any `src.*` module is imported, and individual tests inject fake I2C/serial peripherals (see `tests/fakes.py`) or mock the MQTT client after construction.
+
+**Run tests:**
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements-test.txt
+pytest --cov --cov-report=term-missing
+```
+`requirements-test.txt` is separate from `requirements.txt`: it skips the four hardware-only packages (mocked instead, see above) and adds `pytest`, `pytest-cov`, `requests-mock`. Coverage config (`.coveragerc`) enforces a 95% minimum (`fail_under`).
+
+GitHub Actions (`.github/workflows/tests.yml`) runs the suite on every push to `main` and on every pull request, across Python 3.10–3.12.
+
 ## Architecture
 
 Each subsystem is an independent Python process with its own `main.py` entry point. All inter-service communication happens exclusively over MQTT. Services must be run from the repo root so that `src` is importable as a package.

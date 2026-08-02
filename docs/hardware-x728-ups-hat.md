@@ -23,8 +23,26 @@ Battery power management HAT used by the **EPS** subsystem (`src/eps/`). Provide
 | Software-shutdown trigger GPIO (BCM, official scripts) | GPIO26 (V2.0–V2.5; GPIO13/16 on v1.2/v1.3) — pulled high to signal the HAT's MCU to cut 5V rail |
 | Charge-control jumper (V2.5 only) | GPIO16 — for advanced use, controls charging when the "CHG Ctrl" jumper is open |
 | AC power-loss detection (PLD) | Dedicated GPIO input; `0` = AC present, `1` = AC lost (this project reads it on **BCM GPIO6**, see `src/eps/power_monitor.py` — `PLD_PIN = 6`) |
+| Buzzer control (V2.1+) | GPIO20 — drives the onboard buzzer, not used by this project |
 
 > The GPIO5/12/26 pins above are Geekworm's own safe-shutdown daemon (`xPWR.sh`/`xSoft.sh`), which this project does **not** currently wire up — the EPS service only *reads* battery and AC status over MQTT; it does not drive a graceful auto-poweroff sequence itself. AC-loss detection is read on GPIO6, matching `EPSMonitor.get_external_power()`.
+
+### GPIO pins reserved by this HAT (stacking compatibility)
+
+Since X728 is a HAT that sits on the Raspberry Pi's 40-pin header, any other HAT stacked on top of it (or plugged into a pass-through header) shares the same physical GPIO pins. Before wiring a sensor/breakout to a specific GPIO through another HAT, check it doesn't collide with the pins below:
+
+| BCM GPIO | Physical pin | Used for |
+|---|---|---|
+| GPIO2 / GPIO3 | 3 / 5 | I2C bus (fuel gauge `0x36`, optional RTC `0x68`) |
+| GPIO5 | 29 | Power-button / shutdown-daemon pulse input |
+| GPIO6 | 31 | AC power-loss detection (PLD) — read by this project |
+| GPIO12 | 32 | Boot-indicator (driven high once boot completes) |
+| GPIO13 | 33 | Software-shutdown trigger (v1.2/v1.3 only) |
+| GPIO16 | 36 | Charge-control jumper (v2.5) / software-shutdown trigger (v1.2/v1.3) |
+| GPIO20 | 38 | Buzzer control (v2.1+) |
+| GPIO26 | 37 | Software-shutdown trigger (v2.0–v2.5, replaces GPIO13) |
+
+Exact pin usage depends on the board revision (v1.2/v1.3 vs. v2.0+) — check silkscreen/jumper markings on the specific unit before assuming a pin is free.
 
 ## Requirements to run on Raspberry Pi
 

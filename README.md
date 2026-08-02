@@ -27,6 +27,7 @@ The platform can also be adapted for local development by mocking the hardware d
 - [Data Flows](#data-flows)
 - [Directory Structure](#directory-structure)
 - [Hardware](#hardware)
+  - [New Components](#new-components)
   - [Mechanical / Fasteners](#mechanical--fasteners)
   - [3D Models](#3d-models)
   - [Build Photos](#build-photos)
@@ -540,13 +541,23 @@ The simulation targets Raspberry Pi. The following hardware is required for full
 |---|---|---|---|---|
 | Raspberry Pi 4 Model B | Main compute — hosts and runs all five services | — | [Raspberry Pi](https://www.raspberrypi.com/products/raspberry-pi-4-model-b/) | [Raspberry Pi Docs](https://www.raspberrypi.com/documentation/) |
 | [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md) | Battery power management: LiPo fuel gauge (MAX17048) + AC-loss detection (PLD pin) — used by EPS | I2C (`0x36`) + GPIO · `smbus2`, `RPi.GPIO` | [AliExpress](https://www.aliexpress.us/item/3256804825472151.html) | [Geekworm Wiki](https://wiki.geekworm.com/X728) |
-| [Sense HAT (C)](docs/hardware-sense-hat-c.md) | Environmental/orientation sensor HAT: QMI8658 (accel + gyro) + AK09918 (magnetometer) drive ADCS orientation; LPS22HB (pressure) + SHTC3 (humidity) feed Payload science data | I2C · `smbus2`, `lgpio` | [AliExpress](https://www.aliexpress.us/item/3256811354242582.html) | [Waveshare Wiki](<https://www.waveshare.com/wiki/Sense_HAT_(C)>) |
+| ~~[Sense HAT (C)](docs/hardware-sense-hat-c.md)~~ | ~~Environmental/orientation sensor HAT: QMI8658 (accel + gyro) + AK09918 (magnetometer) drive ADCS orientation; LPS22HB (pressure) + SHTC3 (humidity) feed Payload science data~~ | ~~I2C · `smbus2`, `lgpio`~~ | ~~[AliExpress](https://www.aliexpress.us/item/3256811354242582.html)~~ | ~~[Waveshare Wiki](<https://www.waveshare.com/wiki/Sense_HAT_(C)>)~~ |
 | [Raspberry Pi Camera Module V2 (8MP, 1080p)](docs/hardware-camera-module-v2.md) | Photo capture + timelapse — used by Payload | CSI · `picamera2` | [Amazon](https://a.co/d/02oyeWg8) | [Raspberry Pi Docs](https://www.raspberrypi.com/documentation/accessories/camera.html#camera-module-2) |
-| [IoT Node(A) — 52Pi Docker Pi Series (GSM/GPS/LoRa)](docs/hardware-iot-node-a-52pi.md) | Onboard GSM/GPS/LoRa module (A9G): GPS/BDS position feeds ADCS, LoRa (via the SC16IS752 I2C↔UART bridge) is COMMS' radio ground link alongside its HTTP API | UART (GPS) + I2C (LoRa) · `pyserial`, `pynmea2`, `smbus2` | [AliExpress](https://www.aliexpress.us/item/2251832864586218.html) | [52Pi Wiki](https://wiki.52pi.com/index.php?title=EP-0105) |
+| ~~[IoT Node(A) — 52Pi Docker Pi Series (GSM/GPS/LoRa)](docs/hardware-iot-node-a-52pi.md)~~ | ~~Onboard GSM/GPS/LoRa module (A9G): GPS/BDS position feeds ADCS, LoRa (via the SC16IS752 I2C↔UART bridge) is COMMS' radio ground link alongside its HTTP API~~ | ~~UART (GPS) + I2C (LoRa) · `pyserial`, `pynmea2`, `smbus2`~~ | ~~[AliExpress](https://www.aliexpress.us/item/2251832864586218.html)~~ | ~~[52Pi Wiki](https://wiki.52pi.com/index.php?title=EP-0105)~~ |
 
 > Also requires a `mosquitto` MQTT broker running on the Pi (software, not hardware) — see [Prerequisites](#prerequisites).
 
 > **Non-Pi development:** All hardware libraries are imported at module level, so services will fail to import on a non-Raspberry Pi machine. Hardware mocking is on the roadmap (see `ROADMAP.md` items H1–H7).
+
+### New Components
+
+| Component | Power | Interface | Cost | Order Link |
+|---|---|---|---|---|
+| IO Expansion HAT for Raspberry Pi 5 / 4B / 3B+ (DFR0566) | 5V (3.3V/5V sensor rails, 6–12V for PWM) | Gravity — I2C, UART, SPI, IIS, digital, analog, PWM | $9.90 | [DFRobot](https://www.dfrobot.com/product-1930.html) |
+| Gravity 4Pin I2C/UART Sensor Cable (10PCS) | — | Gravity PH2.0-4P ↔ XH2.54 DuPont | $6.00 | [DFRobot](https://www.dfrobot.com/product-1581.html) |
+| Gravity: 10 DOF IMU AHRS BNO055 + BMP280 | 3.3–5V, 5mA | Gravity-I2C | $25.90 | [DFRobot](https://www.dfrobot.com/product-1793.html) |
+| Gravity SEN0501 — High Accuracy Temperature, Humidity, Pressure, Ambient Light and UV Sensor | 3.3–5V, ~4mA | Gravity — I2C/UART | $29.90 | [DFRobot](https://www.dfrobot.com/product-2528.html) |
+| Gravity: GNSS GPS BeiDou Receiver Module (TEL0157) | 3.3–5.5V, 40mA | Gravity — I2C/UART, IPEX1 antenna | $17.90 | [DFRobot](https://www.dfrobot.com/product-2651.html) |
 
 ### Mechanical / Fasteners
 

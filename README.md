@@ -57,7 +57,7 @@ Each subsystem is an independent Python process. All inter-process communication
 └───────────┬──────────────────────────────────────────────────────┘
             │ publish / subscribe
    ┌────────┴───────────────────────────────────────────────┐
-   ▼            ▼           ▼             ▼                ▼
+   ▼            ▼           ▼             ▼                 ▼
 ┌──────┐    ┌──────┐    ┌───────┐    ┌───────────┐    ┌───────────┐
 │ OBC  │    │ EPS  │    │ ADCS  │    │  Payload  │    │  COMMS    │
 │      │    │      │    │       │    │           │    │           │

@@ -12,6 +12,7 @@ CAD/3D-printable files used to build the physical CubeSat frame and mounts (e.g.
 
 | File | Purpose |
 |---|---|
+| `CUBESAT.blend` | Full 3D assembly of the satellite in Blender, organized into layers (frame, mounts, electronics stack, etc.) |
 | `base/CS_MGSE_Tight_Fit.stl` | Ground support stand — holds the assembled CubeSat upright on a bench |
 | `frame/Cubesat_Bottom_Frame.stl` | Bottom frame panel |
 | `frame/Cubesat_Side_Frame_Plain.stl` | Side frame panel |

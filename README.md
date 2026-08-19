@@ -575,6 +575,7 @@ Used to assemble the 3D-printed frame ([`hardware/models/`](hardware/models/)) a
 
 | File | Purpose |
 |---|---|
+| `CUBESAT.blend` | Full 3D assembly of the satellite in Blender, organized into layers (frame, mounts, electronics stack, etc.) |
 | `base/CS_MGSE_Tight_Fit.stl` | Ground support stand — holds the assembled CubeSat upright on a bench |
 | `frame/Cubesat_Bottom_Frame.stl` | Bottom frame panel |
 | `frame/Cubesat_Side_Frame_Plain.stl` | Side frame panel |

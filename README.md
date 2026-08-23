@@ -547,6 +547,7 @@ The simulation targets Raspberry Pi. The following hardware is required for full
 | [Heltec WiFi LoRa 32 V4 (Meshtastic)](docs/hardware-heltec-lora32-v4.md) | LoRa ground link for COMMS — runs stock Meshtastic firmware, which handles framing, CRC, retries and encryption; replaces the LoRa half of the IoT Node(A) | UART `/dev/serial0` @ 115200 · `meshtastic` | [Heltec](https://heltec.org/project/wifi-lora-32-v4/) | [Heltec Wiki](https://wiki.heltec.org/docs/devices/open-source-hardware/esp32-series/lora-32/wifi-lora-32-v4/) |
 | [Gravity SEN0501 — Multifunctional Environmental Sensor](docs/hardware-sen0501-environmental-sensor.md) | Environmental science data for Payload: temperature, humidity, atmospheric pressure, ambient light and UV — replaces the LPS22HB/SHTC3 pair of the Sense HAT (C) | I2C (`0x22`) · `smbus2` | [DFRobot](https://www.dfrobot.com/product-2528.html) | [DFRobot Wiki](https://wiki.dfrobot.com/SKU_SEN0501_Gravity_Multifunctional_Environmental_Sensor) |
 | [Gravity 10 DOF IMU AHRS — BNO055 + BMP280](docs/hardware-bno055-bmp280-imu.md) | Absolute orientation for ADCS: BNO055 runs sensor fusion on-chip and outputs quaternion/Euler directly; onboard BMP280 adds pressure and temperature. Replaces the QMI8658 + AK09918 pair of the Sense HAT (C) | I2C (`0x28` + `0x76`) · `smbus2` — **requires a 10 kHz bus clock** | [DFRobot](https://www.dfrobot.com/product-1793.html) | [DFRobot Wiki](https://wiki.dfrobot.com/SEN0253) |
+| [Gravity GNSS Receiver TEL0157](docs/hardware-tel0157-gnss.md) | Satellite positioning for ADCS — GPS/BeiDou/GLONASS with on-module NMEA parsing, exposed as plain registers. Replaces the A9G GPS of the IoT Node(A) | I2C (`0x20`) · `smbus2` | [DFRobot](https://www.dfrobot.com/product-2651.html) | [DFRobot Wiki](https://wiki.dfrobot.com/TEL0157) |
 
 > Also requires a `mosquitto` MQTT broker running on the Pi (software, not hardware) — see [Prerequisites](#prerequisites).
 
@@ -572,16 +573,17 @@ dtparam=i2c_arm_baudrate=10000
 
 This is not tuning, it is a correctness requirement: at the default 100 kHz the BNO055 stretches the clock in a way the Pi's BCM2835 controller mishandles, and roughly two thirds of byte reads come back with bit 7 silently forced to 1. Every other peripheral on the bus is low-rate and unaffected by the slower clock. See [the BNO055 documentation](docs/hardware-bno055-bmp280-imu.md#the-clock-stretching-problem) for the measurements and the reasoning.
 
-**Observed on the bus** — last scanned 2026-08-23:
+**Verified on the bus** — all four Gravity modules were bench-tested on 2026-08-23, but **one at a time**: a single Gravity cable was moved from one to the next, so no scan ever showed all of them together. Addresses do not collide, so they can share the bus once permanently wired.
 
 | Address | Device | Used by | Status |
 |---|---|---|---|
-| `0x10` | IO Expansion HAT (DFR0566) co-processor (ADC/PWM) — *identification not yet verified* | — | present |
-| `0x22` | [Gravity SEN0501](docs/hardware-sen0501-environmental-sensor.md) environmental sensor (temperature, humidity, pressure, ambient light, UV) | Payload (planned) | bench-verified; unplugged afterwards, its cable was reused for the IMU |
-| `0x28` | [BNO055](docs/hardware-bno055-bmp280-imu.md) 9-axis absolute orientation sensor (on-chip fusion) | ADCS (planned) | present, bench-verified |
-| `0x36` | MAX17048 LiPo fuel gauge on the [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md) | EPS | present |
-| `0x68` | **unidentified** — appeared in the scan but is not accounted for by any documented component | — | present, needs identifying |
-| `0x76` | [BMP280](docs/hardware-bno055-bmp280-imu.md) pressure + temperature, on the same board as the BNO055 | undecided — duplicates the SEN0501 pressure reading | present, bench-verified |
+| `0x10` | IO Expansion HAT (DFR0566) co-processor (ADC/PWM) — *identification not yet verified* | — | permanently on the HAT |
+| `0x20` | [TEL0157](docs/hardware-tel0157-gnss.md) GNSS receiver (GPS + BeiDou + GLONASS) | ADCS (planned) | verified with a 3D fix, 23 satellites |
+| `0x22` | [Gravity SEN0501](docs/hardware-sen0501-environmental-sensor.md) environmental sensor (temperature, humidity, pressure, ambient light, UV) | Payload (planned) | verified: all five measurements read correctly |
+| `0x28` | [BNO055](docs/hardware-bno055-bmp280-imu.md) 9-axis absolute orientation sensor (on-chip fusion) | ADCS (planned) | verified: fusion running, all vectors self-consistent |
+| `0x36` | MAX17048 LiPo fuel gauge on the [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md) | EPS | permanently on the UPS HAT |
+| `0x68` | **unidentified** — appeared in the scan but is not accounted for by any documented component | — | permanently present, needs identifying |
+| `0x76` | [BMP280](docs/hardware-bno055-bmp280-imu.md) pressure + temperature, on the same board as the BNO055 | undecided — duplicates the SEN0501 pressure reading | verified: temperature and pressure compensated correctly |
 
 **Known but not currently on the bus** (the Sense HAT (C) is out of the design):
 
@@ -590,12 +592,6 @@ This is not tuning, it is a correctness requirement: at the default 100 kHz the 
 | `0x6B` | QMI8658 accelerometer + gyroscope, ~~[Sense HAT (C)](docs/hardware-sense-hat-c.md)~~ | ADCS (`src/common/imu_qmi8658_ak09918.py`) | removed |
 | `0x0C` | AK09918 magnetometer, ~~[Sense HAT (C)](docs/hardware-sense-hat-c.md)~~ | ADCS (`src/common/imu_qmi8658_ak09918.py`) | removed |
 | `0x16` | SC16IS752 I2C↔UART bridge, ~~[IoT Node(A)](docs/hardware-iot-node-a-52pi.md)~~ | COMMS (`src/comms/lora.py`), ADCS (`src/common/gps_a9g.py`) | removed — replaced by [Heltec V4](docs/hardware-heltec-lora32-v4.md) on UART |
-
-**Planned** — fill in the address from `i2cdetect` once the module is physically connected and tested:
-
-| Address | Device | Intended consumer |
-|---|---|---|
-| TBD | Gravity GNSS GPS BeiDou receiver (TEL0157) | ADCS — replaces `src/common/gps_a9g.py` |
 
 > **The `0x68` address is still unexplained** and predates every sensor tested so far — it was already on the bus before the SEN0501, the IMU or anything else was connected. Worth identifying before it collides with something.
 

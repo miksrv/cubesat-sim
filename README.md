@@ -545,10 +545,48 @@ The simulation targets Raspberry Pi. The following hardware is required for full
 | [Raspberry Pi Camera Module V2 (8MP, 1080p)](docs/hardware-camera-module-v2.md) | Photo capture + timelapse — used by Payload | CSI · `picamera2` | [Amazon](https://a.co/d/02oyeWg8) | [Raspberry Pi Docs](https://www.raspberrypi.com/documentation/accessories/camera.html#camera-module-2) |
 | ~~[IoT Node(A) — 52Pi Docker Pi Series (GSM/GPS/LoRa)](docs/hardware-iot-node-a-52pi.md)~~ | ~~Onboard GSM/GPS/LoRa module (A9G): GPS/BDS position feeds ADCS, LoRa (via the SC16IS752 I2C↔UART bridge) is COMMS' radio ground link alongside its HTTP API~~ | ~~UART (GPS) + I2C (LoRa) · `pyserial`, `pynmea2`, `smbus2`~~ | ~~[AliExpress](https://www.aliexpress.us/item/2251832864586218.html)~~ | ~~[52Pi Wiki](https://wiki.52pi.com/index.php?title=EP-0105)~~ |
 | [Heltec WiFi LoRa 32 V4 (Meshtastic)](docs/hardware-heltec-lora32-v4.md) | LoRa ground link for COMMS — runs stock Meshtastic firmware, which handles framing, CRC, retries and encryption; replaces the LoRa half of the IoT Node(A) | UART `/dev/serial0` @ 115200 · `meshtastic` | [Heltec](https://heltec.org/project/wifi-lora-32-v4/) | [Heltec Wiki](https://wiki.heltec.org/docs/devices/open-source-hardware/esp32-series/lora-32/wifi-lora-32-v4/) |
+| [Gravity SEN0501 — Multifunctional Environmental Sensor](docs/hardware-sen0501-environmental-sensor.md) | Environmental science data for Payload: temperature, humidity, atmospheric pressure, ambient light and UV — replaces the LPS22HB/SHTC3 pair of the Sense HAT (C) | I2C (`0x22`) · `smbus2` | [DFRobot](https://www.dfrobot.com/product-2528.html) | [DFRobot Wiki](https://wiki.dfrobot.com/SKU_SEN0501_Gravity_Multifunctional_Environmental_Sensor) |
 
 > Also requires a `mosquitto` MQTT broker running on the Pi (software, not hardware) — see [Prerequisites](#prerequisites).
 
 > **Non-Pi development:** All hardware libraries are imported at module level, so services will fail to import on a non-Raspberry Pi machine. Hardware mocking is on the roadmap (see `ROADMAP.md` items H1–H7).
+
+### I2C Address Map
+
+Every I2C peripheral shares bus 1 (`/dev/i2c-1`, `dtparam=i2c_arm=on`), so addresses must not collide. Scan the bus with `i2cdetect` (part of `i2c-tools`, which installs into `/usr/sbin` and is therefore not on the `PATH` of a non-interactive SSH shell):
+
+```bash
+sudo apt install -y i2c-tools
+/usr/sbin/i2cdetect -y 1
+```
+
+`/dev/i2c-20` and `/dev/i2c-21` also exist on a Pi 4 — those are the HDMI DDC buses, not usable for sensors.
+
+**Observed on the bus** — last scanned 2026-08-23:
+
+| Address | Device | Used by | Status |
+|---|---|---|---|
+| `0x10` | IO Expansion HAT (DFR0566) co-processor (ADC/PWM) — *identification not yet verified* | — | present |
+| `0x22` | [Gravity SEN0501](docs/hardware-sen0501-environmental-sensor.md) environmental sensor (temperature, humidity, pressure, ambient light, UV) | Payload (planned) | present, bench-verified |
+| `0x36` | MAX17048 LiPo fuel gauge on the [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md) | EPS | present |
+| `0x68` | **unidentified** — appeared in the scan but is not accounted for by any documented component | — | present, needs identifying |
+
+**Known but not currently on the bus** (the Sense HAT (C) is out of the design):
+
+| Address | Device | Used by | Status |
+|---|---|---|---|
+| `0x6B` | QMI8658 accelerometer + gyroscope, ~~[Sense HAT (C)](docs/hardware-sense-hat-c.md)~~ | ADCS (`src/common/imu_qmi8658_ak09918.py`) | removed |
+| `0x0C` | AK09918 magnetometer, ~~[Sense HAT (C)](docs/hardware-sense-hat-c.md)~~ | ADCS (`src/common/imu_qmi8658_ak09918.py`) | removed |
+| `0x16` | SC16IS752 I2C↔UART bridge, ~~[IoT Node(A)](docs/hardware-iot-node-a-52pi.md)~~ | COMMS (`src/comms/lora.py`), ADCS (`src/common/gps_a9g.py`) | removed — replaced by [Heltec V4](docs/hardware-heltec-lora32-v4.md) on UART |
+
+**Planned** — fill in the address from `i2cdetect` once the module is physically connected and tested:
+
+| Address | Device | Intended consumer |
+|---|---|---|
+| expected `0x28` / `0x29` (ADR pin) — to be confirmed | Gravity 10 DOF IMU AHRS (BNO055 + BMP280) | ADCS — replaces the QMI8658/AK09918 driver entirely |
+| TBD | Gravity GNSS GPS BeiDou receiver (TEL0157) | ADCS — replaces `src/common/gps_a9g.py` |
+
+> **BNO055 caveat:** the BNO055 does not fully respect the I2C specification (clock stretching / repeated start) and is known to read unreliably on the Pi's hardware I2C controller. If readings come back as garbage, lower `dtparam=i2c_arm_baudrate`, switch to a software bus via `dtoverlay=i2c-gpio`, or use the module in UART mode if its Gravity variant supports it — before suspecting the wiring.
 
 ### New Components
 

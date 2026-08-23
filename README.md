@@ -573,7 +573,7 @@ dtparam=i2c_arm_baudrate=10000
 
 This is not tuning, it is a correctness requirement: at the default 100 kHz the BNO055 stretches the clock in a way the Pi's BCM2835 controller mishandles, and roughly two thirds of byte reads come back with bit 7 silently forced to 1. Every other peripheral on the bus is low-rate and unaffected by the slower clock. See [the BNO055 documentation](docs/hardware-bno055-bmp280-imu.md#the-clock-stretching-problem) for the measurements and the reasoning.
 
-**Verified on the bus** — all four Gravity modules were bench-tested on 2026-08-23, but **one at a time**: a single Gravity cable was moved from one to the next, so no scan ever showed all of them together. Addresses do not collide, so they can share the bus once permanently wired.
+**Verified on the bus** — all four Gravity modules were bench-tested on 2026-08-23, but **one at a time**: a single Gravity cable was moved from one to the next, so no scan ever showed all of them together. Addresses do not collide. Confirmed on the fully assembled satellite the same day: a single scan showed all seven addresses at once, and a bus-integrity check passed with 0 corrupted reads out of 200 with every module attached.
 
 | Address | Device | Used by | Status |
 |---|---|---|---|
@@ -582,7 +582,7 @@ This is not tuning, it is a correctness requirement: at the default 100 kHz the 
 | `0x22` | [Gravity SEN0501](docs/hardware-sen0501-environmental-sensor.md) environmental sensor (temperature, humidity, pressure, ambient light, UV) | Payload (planned) | verified: all five measurements read correctly |
 | `0x28` | [BNO055](docs/hardware-bno055-bmp280-imu.md) 9-axis absolute orientation sensor (on-chip fusion) | ADCS (planned) | verified: fusion running, all vectors self-consistent |
 | `0x36` | MAX17048 LiPo fuel gauge on the [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md) | EPS | permanently on the UPS HAT |
-| `0x68` | **unidentified** — appeared in the scan but is not accounted for by any documented component | — | permanently present, needs identifying |
+| `0x68` | DS1307 real-time clock on the [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md#the-ds1307-at-0x68) | nothing — no `i2c-rtc` overlay is loaded, so there is no `/dev/rtc` | permanently on the UPS HAT; present but never initialised |
 | `0x76` | [BMP280](docs/hardware-bno055-bmp280-imu.md) pressure + temperature, on the same board as the BNO055 | undecided — duplicates the SEN0501 pressure reading | verified: temperature and pressure compensated correctly |
 
 **Known but not currently on the bus** (the Sense HAT (C) is out of the design):
@@ -593,7 +593,7 @@ This is not tuning, it is a correctness requirement: at the default 100 kHz the 
 | `0x0C` | AK09918 magnetometer, ~~[Sense HAT (C)](docs/hardware-sense-hat-c.md)~~ | ADCS (`src/common/imu_qmi8658_ak09918.py`) | removed |
 | `0x16` | SC16IS752 I2C↔UART bridge, ~~[IoT Node(A)](docs/hardware-iot-node-a-52pi.md)~~ | COMMS (`src/comms/lora.py`), ADCS (`src/common/gps_a9g.py`) | removed — replaced by [Heltec V4](docs/hardware-heltec-lora32-v4.md) on UART |
 
-> **The `0x68` address is still unexplained** and predates every sensor tested so far — it was already on the bus before the SEN0501, the IMU or anything else was connected. Worth identifying before it collides with something.
+> **`0x68` is resolved:** it is the DS1307 RTC on the X728 UPS HAT, physically present but never initialised — the oscillator is halted and no kernel driver is bound to it. Enabling it would give the satellite a clock that survives a network outage; see [the X728 documentation](docs/hardware-x728-ups-hat.md#the-ds1307-at-0x68).
 
 ### New Components
 

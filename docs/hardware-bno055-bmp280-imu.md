@@ -117,6 +117,28 @@ To read the magnetometer without fusion — useful when isolating a fault — us
 
 Readings are usable before calibration completes, but **`heading` is meaningless until the magnetometer field reaches 3** — before that it reads a constant, typically `0.00`. Calibration is lost on reset, so the bench script offers `--no-reset` to keep an accumulated calibration between runs. A production driver should save and restore the calibration profile registers instead.
 
+## Magnetometer readings depend on the environment, not just the sensor
+
+Two magnitudes were measured during bring-up:
+
+| Setup | Magnitude | Magnetometer calibration |
+|---|---|---|
+| On a desk beside a laptop and an active LoRa radio | 59.0 µT | reached 3 (calibrated) |
+| Mounted in the assembled satellite, in a different room | 36.9 µT | 0 (uncalibrated) |
+
+**Neither number supports a conclusion about the frame.** Three variables changed at once — the location, the nearby emitters and the calibration state — so the difference cannot be attributed to the assembly. In particular, an uncalibrated magnetometer carries an arbitrary hard-iron offset, which makes its magnitude meaningless until `CALIB_STAT` mag reaches 3.
+
+For reference, the Earth's total field in northern California is roughly 48 µT. Both readings deviate from it, which is the expected outcome of an uncalibrated sensor sitting near powered electronics.
+
+What follows for ADCS:
+
+- **Calibrate in the final configuration and the final location.** A profile collected in a different place, or beside a laptop and a transmitting radio, encodes the wrong offset.
+- Treat `heading` as an estimate rather than a measurement, and do not publish it while `CALIB_STAT` mag is below 3 — before that it reads a constant.
+- Field magnitude is a one-sided health check: a value outside 25–65 µT proves something is wrong, but a value inside it proves nothing.
+- Do not compare magnitudes across setups to judge the mechanical design. To actually measure the frame's contribution, take both readings in the same place, with the magnetometer calibrated in both, changing only whether it is mounted.
+
+Accelerometer and gyroscope are not subject to any of this — gravity does not care about the surroundings. `|a|` measured 9.54 m/s² in the assembled satellite against 9.42 m/s² on the bench, both consistent with g.
+
 ## Usage examples
 
 ```bash
@@ -151,6 +173,8 @@ Sanity checks worth repeating on any new board: `|a|` should be close to 9.8 m/s
 - No driver in `src/` yet. It replaces `src/common/imu_qmi8658_ak09918.py` wholesale — the chips share no register map — and is consumed by ADCS.
 - **The 10 kHz bus clock is now a project-wide requirement**, not a detail of this sensor. Any deployment or install script that writes `config.txt` must set it, and `docs/` for the other I2C peripherals assumes it.
 - Decide whether pressure comes from this BMP280 or from the SEN0501, and drop the duplicate.
+- Magnetometer calibration must be captured in the final configuration and location, then persisted — see [Magnetometer readings](#magnetometer-readings-depend-on-the-environment-not-just-the-sensor). A profile collected elsewhere encodes the wrong hard-iron offset.
+- The frame's actual magnetic contribution is still unmeasured. It needs a controlled comparison: same location, magnetometer calibrated in both cases, only the mounting changed.
 - Calibration persistence is unimplemented: the driver should read back the calibration profile once `CALIB_STAT` is 3 and restore it on start, otherwise every reboot begins uncalibrated and heading is unusable until the satellite is manually waved about.
 - Tests will need a fake I2C peripheral in `tests/fakes.py`, including a case that reproduces the bit-7 corruption so the driver's ID check is exercised.
 

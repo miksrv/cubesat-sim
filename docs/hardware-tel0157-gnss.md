@@ -74,7 +74,7 @@ These matter more than the register map — every one of them produces plausible
 
 **Course is stale at zero speed.** At rest the module reported `speed 0.00 knots` with `course 210.87 deg`, retaining its last value. Course over ground is only meaningful while moving.
 
-**The default constellation mode is 3 (GPS + BeiDou).** Setting it to 7 measurably helped: satellites in view went from 6 to 9 immediately and SNR values rose (PRN01 25 → 39, PRN02 26 → 42). The setting may revert to the factory default when the module loses power, so a driver should set it on every start rather than assume it persists.
+**The default constellation mode is 3 (GPS + BeiDou).** Setting it to 7 measurably helped: satellites in view went from 6 to 9 immediately and SNR values rose (PRN01 25 → 39, PRN02 26 → 42). Measured afterwards: the mode **did** survive a full power cycle of the assembled satellite, and so did the ephemeris — a fix came back within a minute of boot with 8 satellites, rather than repeating the multi-minute cold start. A driver should still write the mode on every start, since that costs one register write and removes the assumption entirely.
 
 **A cold start takes minutes, and satellite count alone does not indicate progress.** The module knew the correct UTC time long before it had a position — decoding time needs one satellite, a 3D fix needs decoded ephemeris from at least four. The tell is in the `GSV` sentences: entries with an SNR but *empty* elevation and azimuth fields mean the signal is being tracked but the ephemeris has not arrived yet. Worst case for a full almanac is around 12.5 minutes.
 

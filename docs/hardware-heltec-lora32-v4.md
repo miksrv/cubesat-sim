@@ -117,6 +117,49 @@ Why this is required: the V4 has native USB, so the protobuf API lives on USB CD
 
 **Leave Bluetooth enabled for now** — it is the way back if the UART does not come up. Enabling the Serial module does not break the USB API (`override_console_serial_port` stays `false`), so a rollback is always possible.
 
+## Node identity and channels
+
+Configured on 2026-08-23:
+
+| | |
+|---|---|
+| Long name | `CubeSat CTM-1` |
+| Short name | `CSAT` — 4 characters maximum, this is what appears on maps and in node lists |
+| Channel 0 (primary) | `LongFast`, default key — left untouched |
+| Channel 1 (secondary) | `CubeSat`, own randomly generated PSK |
+
+```bash
+meshtastic --port /dev/serial0 --set-owner "CubeSat CTM-1" --set-owner-short "CSAT"
+```
+
+A new node name propagates on the next node-info broadcast, which defaults to every 3 hours (`nodeInfoBroadcastSecs: 10800`) — it is not immediate.
+
+### Why a secondary channel
+
+**All CubeSat traffic — telemetry and ground commands — goes on channel 1, not on the public primary channel.** Two reasons: bench tests would otherwise clutter the shared `LongFast` chat that every node in range reads, and the ground-command path needs to not be world-writable.
+
+Be clear about what this does and does not hide. A secondary channel is a separate encryption key layered on the *same* radio configuration — same frequency, same `LONG_FAST` preset. Neighbouring nodes still see that packets are being transmitted, and the node's name and position are still broadcast on the primary channel as ordinary mesh housekeeping. What they cannot do is read the contents.
+
+```bash
+meshtastic --port /dev/serial0 --ch-add CubeSat            # creates it with a random PSK
+meshtastic --port /dev/serial0 --sendtext "..." --ch-index 1
+```
+
+### The channel URL is a secret — keep it out of this repository
+
+Sharing the channel with a phone or a second node is done with the URL from:
+
+```bash
+meshtastic --port /dev/serial0 --qr-all      # prints "Complete URL (includes all channels)"
+```
+
+**That URL embeds the channel's pre-shared key, and it is deliberately not recorded here.** Anyone holding it can not only decrypt telemetry but *send commands* — COMMS republishes anything arriving over LoRa onto `cubesat/command`, so a leaked key means a stranger can trigger `safe_mode`, `take_photo` or `science_stop`. Treat it exactly like `COMMS_API_KEY`: environment or personal notes, never `config.yaml`, never a committed document. Regenerate with `--ch-set psk random --ch-index 1` if it is ever exposed, then re-import on every node.
+
+Two practical notes when importing:
+
+- The URL contains **both** channels, so a phone that already has the default primary reports `Channel already exists` if you choose *Add*. Choosing *Replace* is safe as long as the primary in the URL is the stock `LongFast` with the default key (`psk: "AQ=="`, `name: ""` in `--info`) — the result is the same primary plus the new secondary.
+- **Renaming a channel changes its hash**, because Meshtastic identifies channels by name *and* key. After a rename every other node must re-import, and until then messages silently fail to decrypt rather than reporting an error. Delete the old entry on the phone so two channels do not sit in the list with only one working.
+
 ## Requirements to run on Raspberry Pi
 
 Verified on a Raspberry Pi 4 Model B, Raspberry Pi OS Bookworm, kernel 6.12.
@@ -216,6 +259,7 @@ iface.close()
 
 ## Open items
 
+- **The channel index must become a configuration value**, not a constant: telemetry is sent with `--ch-index 1`, and if the driver and the ground station disagree the messages silently land on different channels. It belongs in `src/common/config.py` next to `LORA_PORT`.
 - **Packet size is unresolved and blocks `COMMS_LORA_ENABLED=1`.** The Serial module carries up to 240 bytes per message, while an aggregated COMMS packet (eps + adcs + payload + system) runs to several hundred. `src/comms/lora.py:33` currently truncates the payload to 28 bytes, so `src/comms/service.py:293` transmits a silently mangled packet. Decide between a compact beacon field set and chunking before enabling the channel.
 - `src/comms/lora.py` still targets `smbus2`/SC16IS752 and needs rewriting on top of `meshtastic`. `src/common/config.py` and `config/config.yaml` still carry `LORA_I2C_ADDRESS` instead of `LORA_PORT` / `LORA_BAUDRATE`.
 - `tests/test_comms_lora.py` mocks `smbus`; it needs reworking (`tests/test_common_gps_a9g.py` is a good model for faking a serial peripheral).

@@ -582,7 +582,7 @@ This is not tuning, it is a correctness requirement: at the default 100 kHz the 
 | `0x22` | [Gravity SEN0501](docs/hardware-sen0501-environmental-sensor.md) environmental sensor (temperature, humidity, pressure, ambient light, UV) | Payload (planned) | verified: all five measurements read correctly |
 | `0x28` | [BNO055](docs/hardware-bno055-bmp280-imu.md) 9-axis absolute orientation sensor (on-chip fusion) | ADCS (planned) | verified: fusion running, all vectors self-consistent |
 | `0x36` | MAX17048 LiPo fuel gauge on the [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md) | EPS | permanently on the UPS HAT |
-| `0x68` | DS1307 real-time clock on the [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md#the-ds1307-at-0x68) | nothing — no `i2c-rtc` overlay is loaded, so there is no `/dev/rtc` | permanently on the UPS HAT; present but never initialised |
+| `0x68` | DS1307 real-time clock on the [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md#the-ds1307-at-0x68) | the kernel, via `/dev/rtc0` | **shows as `UU`, not `68`** — claimed by the `i2c-rtc,ds1307` overlay; do not access it from user space |
 | `0x76` | [BMP280](docs/hardware-bno055-bmp280-imu.md) pressure + temperature, on the same board as the BNO055 | undecided — duplicates the SEN0501 pressure reading | verified: temperature and pressure compensated correctly |
 
 **Known but not currently on the bus** (the Sense HAT (C) is out of the design):
@@ -593,7 +593,7 @@ This is not tuning, it is a correctness requirement: at the default 100 kHz the 
 | `0x0C` | AK09918 magnetometer, ~~[Sense HAT (C)](docs/hardware-sense-hat-c.md)~~ | ADCS (`src/common/imu_qmi8658_ak09918.py`) | removed |
 | `0x16` | SC16IS752 I2C↔UART bridge, ~~[IoT Node(A)](docs/hardware-iot-node-a-52pi.md)~~ | COMMS (`src/comms/lora.py`), ADCS (`src/common/gps_a9g.py`) | removed — replaced by [Heltec V4](docs/hardware-heltec-lora32-v4.md) on UART |
 
-> **`0x68` is resolved:** it is the DS1307 RTC on the X728 UPS HAT, physically present but never initialised — the oscillator is halted and no kernel driver is bound to it. Enabling it would give the satellite a clock that survives a network outage; see [the X728 documentation](docs/hardware-x728-ups-hat.md#the-ds1307-at-0x68).
+> **`0x68` is the DS1307 RTC on the X728 UPS HAT, and it is now enabled** — `dtoverlay=i2c-rtc,ds1307`, so the satellite keeps time across reboots and network outages without NTP. Because the kernel owns the address it appears as `UU` in `i2cdetect` rather than `68`; a scan showing `UU` there is correct. See [the X728 documentation](docs/hardware-x728-ups-hat.md#the-ds1307-at-0x68).
 
 ### New Components
 

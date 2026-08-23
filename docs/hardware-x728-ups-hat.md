@@ -120,19 +120,31 @@ Confirmed by four independent signs, read on 2026-08-23:
 | `CONTROL` register `0x07` | `0x03` |
 | Battery-backed NVRAM from `0x08` | readable — 56 bytes, a DS1307 signature |
 
-**It is unused.** No `i2c-rtc` overlay is loaded, so there is no `/dev/rtc`, `timedatectl` reports `RTC time: n/a`, and the system clock comes from NTP.
+**It is now enabled** (2026-08-23). Before that it was unused: no `i2c-rtc` overlay was loaded, there was no `/dev/rtc`, `timedatectl` reported `RTC time: n/a`, and the system clock came only from NTP — which for a satellite simulation means no notion of time at all once the network goes away, and telemetry timestamped `2000-01-01`.
 
-That is worth revisiting. A satellite simulation that loses its network has no way to know the time, and a stopped clock is exactly what produces telemetry timestamped `2000-01-01`. Enabling it:
+What was needed:
 
 ```
-dtoverlay=i2c-rtc,ds1307       # /boot/firmware/config.txt, then reboot
+dtparam=i2c_arm=on
+dtparam=i2c_arm_baudrate=10000
+dtoverlay=i2c-rtc,ds1307        # /boot/firmware/config.txt, then reboot
 ```
 
-Three caveats before doing so:
+What to expect afterwards:
 
-- **The RTC needs its own backup cell** on the HAT (a coin cell). Without one it loses time the moment the Pi is unpowered, which defeats the purpose.
-- **Once the kernel claims it, the address disappears from `i2cdetect`** — it shows as `UU` rather than `68`. That is normal, not a fault.
-- The clock has never been set; `hwclock -w` after a good NTP sync is needed once, and the `CH` bit clears when the kernel driver starts it.
+- `dmesg` shows `rtc-ds1307 1-0068: registered as rtc0`, and `/dev/rtc → rtc0` appears.
+- `rtc-ds1307 1-0068: hctosys: unable to read the hardware clock` on the first boot is **normal** — the clock had never been set, so there was nothing to read.
+- **`0x68` disappears from `i2cdetect` and shows as `UU`.** The kernel driver has claimed the address; this is the expected result, not a fault. It also means user-space code must not poke `0x68` over `smbus2` any more — go through `/dev/rtc` instead.
+- **`hwclock` does not exist on Raspberry Pi OS Bookworm** by default (it lives in the `util-linux-extra` package) and is not needed: `systemd-timesyncd` writes the system time into the RTC by itself once `timedatectl show -p NTPSynchronized` turns `yes`. No manual `hwclock -w` step was required.
+- `fake-hwclock` is not installed on this image, so there is no second component competing to set the clock at boot. On images that do have it, remove it once a real RTC is working.
+
+Verifying the oscillator actually started — the `CH` bit in register `0x00` had been set, halting it:
+
+```bash
+cat /sys/class/rtc/rtc0/since_epoch    # read twice, a few seconds apart
+```
+
+If the value advances by the elapsed time, the clock is running. Measured: +5 over a 5 second gap. `timedatectl` then showed `RTC time` one second behind `Universal time`, which is simply the DS1307's one-second resolution, not drift.
 
 ## Verified readings
 

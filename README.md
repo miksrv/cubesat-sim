@@ -546,6 +546,7 @@ The simulation targets Raspberry Pi. The following hardware is required for full
 | ~~[IoT Node(A) — 52Pi Docker Pi Series (GSM/GPS/LoRa)](docs/hardware-iot-node-a-52pi.md)~~ | ~~Onboard GSM/GPS/LoRa module (A9G): GPS/BDS position feeds ADCS, LoRa (via the SC16IS752 I2C↔UART bridge) is COMMS' radio ground link alongside its HTTP API~~ | ~~UART (GPS) + I2C (LoRa) · `pyserial`, `pynmea2`, `smbus2`~~ | ~~[AliExpress](https://www.aliexpress.us/item/2251832864586218.html)~~ | ~~[52Pi Wiki](https://wiki.52pi.com/index.php?title=EP-0105)~~ |
 | [Heltec WiFi LoRa 32 V4 (Meshtastic)](docs/hardware-heltec-lora32-v4.md) | LoRa ground link for COMMS — runs stock Meshtastic firmware, which handles framing, CRC, retries and encryption; replaces the LoRa half of the IoT Node(A) | UART `/dev/serial0` @ 115200 · `meshtastic` | [Heltec](https://heltec.org/project/wifi-lora-32-v4/) | [Heltec Wiki](https://wiki.heltec.org/docs/devices/open-source-hardware/esp32-series/lora-32/wifi-lora-32-v4/) |
 | [Gravity SEN0501 — Multifunctional Environmental Sensor](docs/hardware-sen0501-environmental-sensor.md) | Environmental science data for Payload: temperature, humidity, atmospheric pressure, ambient light and UV — replaces the LPS22HB/SHTC3 pair of the Sense HAT (C) | I2C (`0x22`) · `smbus2` | [DFRobot](https://www.dfrobot.com/product-2528.html) | [DFRobot Wiki](https://wiki.dfrobot.com/SKU_SEN0501_Gravity_Multifunctional_Environmental_Sensor) |
+| [Gravity 10 DOF IMU AHRS — BNO055 + BMP280](docs/hardware-bno055-bmp280-imu.md) | Absolute orientation for ADCS: BNO055 runs sensor fusion on-chip and outputs quaternion/Euler directly; onboard BMP280 adds pressure and temperature. Replaces the QMI8658 + AK09918 pair of the Sense HAT (C) | I2C (`0x28` + `0x76`) · `smbus2` — **requires a 10 kHz bus clock** | [DFRobot](https://www.dfrobot.com/product-1793.html) | [DFRobot Wiki](https://wiki.dfrobot.com/SEN0253) |
 
 > Also requires a `mosquitto` MQTT broker running on the Pi (software, not hardware) — see [Prerequisites](#prerequisites).
 
@@ -562,14 +563,25 @@ sudo apt install -y i2c-tools
 
 `/dev/i2c-20` and `/dev/i2c-21` also exist on a Pi 4 — those are the HDMI DDC buses, not usable for sensors.
 
+**The bus clock must be held at 10 kHz**, project-wide:
+
+```
+dtparam=i2c_arm=on
+dtparam=i2c_arm_baudrate=10000
+```
+
+This is not tuning, it is a correctness requirement: at the default 100 kHz the BNO055 stretches the clock in a way the Pi's BCM2835 controller mishandles, and roughly two thirds of byte reads come back with bit 7 silently forced to 1. Every other peripheral on the bus is low-rate and unaffected by the slower clock. See [the BNO055 documentation](docs/hardware-bno055-bmp280-imu.md#the-clock-stretching-problem) for the measurements and the reasoning.
+
 **Observed on the bus** — last scanned 2026-08-23:
 
 | Address | Device | Used by | Status |
 |---|---|---|---|
 | `0x10` | IO Expansion HAT (DFR0566) co-processor (ADC/PWM) — *identification not yet verified* | — | present |
-| `0x22` | [Gravity SEN0501](docs/hardware-sen0501-environmental-sensor.md) environmental sensor (temperature, humidity, pressure, ambient light, UV) | Payload (planned) | present, bench-verified |
+| `0x22` | [Gravity SEN0501](docs/hardware-sen0501-environmental-sensor.md) environmental sensor (temperature, humidity, pressure, ambient light, UV) | Payload (planned) | bench-verified; unplugged afterwards, its cable was reused for the IMU |
+| `0x28` | [BNO055](docs/hardware-bno055-bmp280-imu.md) 9-axis absolute orientation sensor (on-chip fusion) | ADCS (planned) | present, bench-verified |
 | `0x36` | MAX17048 LiPo fuel gauge on the [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md) | EPS | present |
 | `0x68` | **unidentified** — appeared in the scan but is not accounted for by any documented component | — | present, needs identifying |
+| `0x76` | [BMP280](docs/hardware-bno055-bmp280-imu.md) pressure + temperature, on the same board as the BNO055 | undecided — duplicates the SEN0501 pressure reading | present, bench-verified |
 
 **Known but not currently on the bus** (the Sense HAT (C) is out of the design):
 
@@ -583,10 +595,9 @@ sudo apt install -y i2c-tools
 
 | Address | Device | Intended consumer |
 |---|---|---|
-| expected `0x28` / `0x29` (ADR pin) — to be confirmed | Gravity 10 DOF IMU AHRS (BNO055 + BMP280) | ADCS — replaces the QMI8658/AK09918 driver entirely |
 | TBD | Gravity GNSS GPS BeiDou receiver (TEL0157) | ADCS — replaces `src/common/gps_a9g.py` |
 
-> **BNO055 caveat:** the BNO055 does not fully respect the I2C specification (clock stretching / repeated start) and is known to read unreliably on the Pi's hardware I2C controller. If readings come back as garbage, lower `dtparam=i2c_arm_baudrate`, switch to a software bus via `dtoverlay=i2c-gpio`, or use the module in UART mode if its Gravity variant supports it — before suspecting the wiring.
+> **The `0x68` address is still unexplained** and predates every sensor tested so far — it was already on the bus before the SEN0501, the IMU or anything else was connected. Worth identifying before it collides with something.
 
 ### New Components
 

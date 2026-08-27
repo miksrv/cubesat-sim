@@ -1,0 +1,29 @@
+# The only unit in this project that runs as root.
+#
+# HOSTD holds no decision logic: it executes a fixed vocabulary of actions on an
+# explicit allowlist and reports what it actually achieved. Everything that
+# decides runs unprivileged, in cubesat@obc.
+#
+# It must never stop cubesat@obc or mosquitto — that is the branch it is sitting
+# on — and OBC must never stop it. Both are enforced in code, not here.
+
+[Unit]
+Description=CubeSat host executor (profiles, network, power)
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/mik/cubesat-sim
+ExecStart=/home/mik/cubesat-sim/venv/bin/python -m cubesat.hostd
+Restart=always
+RestartSec=5
+
+StateDirectory=cubesat
+RuntimeDirectory=cubesat
+RuntimeDirectoryPreserve=yes
+LogsDirectory=cubesat
+
+[Install]
+WantedBy=multi-user.target

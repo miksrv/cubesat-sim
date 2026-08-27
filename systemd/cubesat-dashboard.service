@@ -1,0 +1,36 @@
+# The local dashboard: MQTT to WebSocket, read-only REST over the database, and
+# the static React build deployed from cubesat-groundstation.
+#
+# Separate from the template because it binds a port and reads the database
+# read-only, and because HOSTD starts it only in profiles that ask for it.
+
+[Unit]
+Description=CubeSat local dashboard
+After=network.target mosquitto.service
+Wants=mosquitto.service
+PartOf=cubesat.target
+
+[Service]
+Type=simple
+User=mik
+Group=mik
+WorkingDirectory=/home/mik/cubesat-sim
+ExecStart=/home/mik/cubesat-sim/venv/bin/python -m cubesat.dashboard
+Restart=always
+RestartSec=5
+
+# The second entry creates /var/lib/cubesat/dashboard, where the interface's
+# built files are deployed from cubesat-groundstation. systemd makes it, so
+# nothing in the code ever mkdirs a system path.
+StateDirectory=cubesat cubesat/dashboard
+RuntimeDirectory=cubesat
+RuntimeDirectoryPreserve=yes
+LogsDirectory=cubesat
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

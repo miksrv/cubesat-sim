@@ -1,0 +1,42 @@
+# Template unit for the identical services: cubesat@obc, cubesat@eps,
+# cubesat@adcs, cubesat@payload, cubesat@dhs, cubesat@comms.
+#
+# One template instead of six near-identical files, because six files drift and
+# a template cannot. HOSTD and DASHBOARD are separate units: different
+# privileges and different dependencies.
+#
+#   sudo systemctl enable --now cubesat@obc.service
+
+[Unit]
+Description=CubeSat %i subsystem
+After=network.target mosquitto.service
+Wants=mosquitto.service
+PartOf=cubesat.target
+
+[Service]
+Type=simple
+User=mik
+Group=mik
+# I2C, GPIO and the camera; the serial group is for the Meshtastic node.
+SupplementaryGroups=i2c gpio video dialout
+WorkingDirectory=/home/mik/cubesat-sim
+ExecStart=/home/mik/cubesat-sim/venv/bin/python -m cubesat.%i
+Restart=always
+RestartSec=5
+
+# systemd creates and owns these, so nothing in the code ever mkdirs a system
+# path: /var/lib/cubesat (database, photos), /run/cubesat (bus lock, socket),
+# /var/log/cubesat (rotating logs).
+StateDirectory=cubesat
+RuntimeDirectory=cubesat
+RuntimeDirectoryPreserve=yes
+LogsDirectory=cubesat
+
+# Unprivileged: only HOSTD may touch the host.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

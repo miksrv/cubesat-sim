@@ -1,0 +1,128 @@
+# CubeSat Sim — platform profiles.
+#
+# A profile is what the Raspberry Pi is allowed to be. It is chosen by a human,
+# changes rarely, and defines the envelope inside which the mission state
+# machine operates. Profiles are data: adding one must not require editing OBC.
+#
+# The active profile is NEVER restored after a reboot — every boot applies
+# default_profile below. A profile is a statement about the current situation,
+# and a boot means the situation is no longer known: a satellite that hit
+# CRITICAL on a trip and is plugged in at a desk hours later must not come back
+# up with Wi-Fi off and no SSH. This also makes a power cycle the simplest
+# recovery path from any profile.
+#
+# NOTE: network mode "off" must stay quoted. YAML 1.1 parses a bare off as the
+# boolean false, which reaches the loader as an invalid network mode.
+
+default_profile: HOSTED
+
+# HOSTD may start and stop the cubesat-* units plus exactly these. An explicit
+# allowlist, so a typo in a profile cannot take down sshd.
+#
+# A profile's own external_units field says which of these it wants running:
+# "start" for all of them, "stop" for none, or a list naming exactly the ones it
+# wants — the list is what a profile uses when one unrelated service belongs on
+# the desk and another only during a demonstration. Naming a unit that is not
+# registered here fails at load; whatever a profile does not ask for is stopped,
+# so the field is read as the whole intent and never as a change to it.
+external_units:
+  - unit: telegram-bot.service
+    requires_internet: true
+  - unit: starmap.service
+    requires_internet: true
+
+profiles:
+
+  # Default. On the desk, mains powered, hosting unrelated services. The
+  # satellite itself is idle: OBC and EPS run (EPS because a satellite that
+  # cannot see its own battery cannot protect its filesystem) — and COMMS,
+  # which runs here to LISTEN. Every boot lands in HOSTED, including a reboot
+  # in the field, where there is no home network and no SSH and an uplinked
+  # set_profile over LoRa is the only way back in. Listening costs nothing;
+  # STANDBY has no row in the beacon table, so the radio hears everything and
+  # says nothing on its own.
+  HOSTED:
+    mission: standby
+    network: { mode: client }
+    external_units: start
+    services: [comms]
+    dashboard: false
+    persistence: none
+    # The lora flag permits listening; transmission is additionally rationed by
+    # the per-state beacon table, which never names STANDBY.
+    downlink: { lora: true }
+    power: { governor: ondemand, cadence_scale: 1.0 }
+    ttl_minutes: null
+
+  # Showing the satellite off at home: full stack alongside the unrelated
+  # services, home network up, dashboard reachable from a phone on the LAN.
+  DEMO:
+    mission: active
+    network: { mode: client, advertise_mdns: true }
+    external_units: start
+    services: [adcs, payload, dhs, comms]
+    dashboard: true
+    persistence: mission_db
+    downlink: { lora: true }
+    power: { governor: ondemand, cadence_scale: 1.0 }
+    ttl_minutes: null
+
+  # Science fair, school, library, office. Own access point, no internet,
+  # usually on battery. LOW_POWER and SAFE deliberately keep the AP and the
+  # dashboard: losing the display in front of an audience because the battery
+  # hit 39% would be the wrong behaviour.
+  EXPO:
+    mission: active
+    network: { mode: ap, ssid: cubesat, advertise_mdns: true }
+    external_units: stop
+    services: [adcs, payload, dhs, comms]
+    dashboard: true
+    persistence: mission_db
+    downlink: { lora: true }
+    power: { governor: ondemand, cadence_scale: 1.0 }
+    ttl_minutes: null
+
+  # On the move: a trip, the walk to work. Wi-Fi down, so LoRa is the only way
+  # in or out. Records a GNSS track — that is the point of the profile.
+  FLIGHT:
+    mission: active
+    network: { mode: "off" }
+    external_units: stop
+    services: [adcs, payload, dhs, comms]
+    dashboard: false
+    persistence: mission_db
+    downlink: { lora: true }
+    power: { governor: powersave, cadence_scale: 1.0 }
+    timelapse: false          # opt-in: costs battery and card space
+    ttl_minutes: 600          # ~a working day, then fall back to HOSTED
+
+  # Bench work after re-assembly or a hardware swap. Everything polled fast,
+  # nothing written to the mission database, nothing sent anywhere. COMMS runs
+  # so the radio's presence is part of the DEPLOY evidence — but deaf and
+  # silent (downlink false): the bench has the LAN, and DIAG transmits nothing.
+  DIAG:
+    mission: active
+    network: { mode: client, advertise_mdns: true }
+    external_units: stop
+    services: [adcs, payload, dhs, comms]
+    dashboard: true
+    persistence: diag_db
+    downlink: { lora: false }
+    power: { governor: performance, cadence_scale: 0.2 }
+    ttl_minutes: 120
+
+  # apt upgrade, git pull, reflashing the radio. Nothing of ours writes to the
+  # card while the OS is being changed underneath it. The one profile where
+  # COMMS does not run at all: reflashing the Heltec needs /dev/serial0 free,
+  # so this is, deliberately, the only deaf profile — and it is entered by a
+  # human who is already connected some other way.
+  MAINTENANCE:
+    mission: none
+    network: { mode: client }
+    external_units: stop
+    services: []
+    dashboard: false
+    persistence: none
+    downlink: { lora: false }
+    power: { governor: ondemand, cadence_scale: 1.0 }
+    ttl_minutes: 240

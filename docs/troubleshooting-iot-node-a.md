@@ -1,5 +1,10 @@
 # Troubleshooting Log — IoT Node(A) 52Pi (GSM/GPS/LoRa)
 
+> **⚠️ Плата выведена из схемы.** Журнал закрыт: LoRa заменена на
+> [Heltec WiFi LoRa 32 V4 с Meshtastic](hardware-heltec-lora32-v4.md), GPS — на
+> [TEL0157 по I2C](hardware-tel0157-gnss.md). Файл оставлен как история диагностики; выводы из него
+> перенесены в [`../PLAN.md`](../PLAN.md).
+
 Живой журнал диагностики платы IoT Node(A) на реальном Raspberry Pi (`cubesat`, `10.10.0.62`). Обновляется по мере продолжения расследования. Справочная документация по железу — `docs/hardware-iot-node-a-52pi.md`; вики вендора — [52Pi Wiki EP-0105](https://wiki.52pi.com/index.php?title=EP-0105).
 
 ## Состояние на конец сессии

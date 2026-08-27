@@ -1,6 +1,8 @@
 # Raspberry Pi Camera Module V2 (8MP, 1080p)
 
-CSI camera used by the **Payload** subsystem (`src/payload/camera.py`) for on-demand photo capture (`take_photo` command) and timelapse sequences. Photo bytes are published over MQTT (`cubesat/payload/photo`) and the file is deleted from disk afterwards.
+CSI camera used by the **PAYLOAD** subsystem (`src/cubesat/payload/camera.py`) for on-demand photo capture (`take_photo` command) and timelapse sequences.
+
+Photos are **kept on disk**, filed under the mission that was recording when they were taken (`/var/lib/cubesat/photos/<mission_id>/`). An on-demand capture is additionally published base64-encoded over MQTT (`cubesat/payload/photo`) — that is how a Telegram bot or the dashboard receives it — while a timelapse frame publishes metadata only, because five hundred frames through the broker would crowd out the telemetry the satellite exists to collect. (The pre-rewrite build published the bytes and then deleted the file; nothing keeps the only copy in a message any more.)
 
 - **Product:** [Raspberry Pi Camera Module 2](https://a.co/d/02oyeWg8)
 - **Official docs:** [Raspberry Pi Documentation — Camera](https://www.raspberrypi.com/documentation/accessories/camera.html#camera-module-2)

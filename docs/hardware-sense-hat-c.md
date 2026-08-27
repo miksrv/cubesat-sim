@@ -1,5 +1,11 @@
 # Sense HAT (C)
 
+> **⚠️ No longer in the design.** The Sense HAT (C) was removed from the satellite: its
+> QMI8658 + AK09918 pair was replaced by a [BNO055](hardware-bno055-bmp280-imu.md) (on-chip fusion,
+> so no AHRS filter is needed at all) and its LPS22HB + SHTC3 pair by a
+> [SEN0501](hardware-sen0501-environmental-sensor.md). This file is kept for reference — the
+> register maps and the wiring notes are still accurate for the board itself.
+
 > **Naming note:** the product is a Waveshare **Sense HAT (C)**, not "(B)" — the (B) revision uses a different IMU (ICM-20948) and does not carry the QMI8658/AK09918 pair this project's driver targets. Confirmed against `src/common/imu_qmi8658_ak09918.py`, which implements exactly the QMI8658 + AK09918 register map below.
 
 Multi-sensor HAT feeding two subsystems:

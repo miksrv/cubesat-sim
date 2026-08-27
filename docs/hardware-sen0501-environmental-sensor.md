@@ -140,7 +140,7 @@ SEN0501 found at 0x22 on bus 1 (ID 0x22)
 
 ## Open items
 
-- No driver in `src/` yet. The natural home is `src/common/` alongside the other sensor drivers, consumed by **Payload** for science data — mirroring how `src/common/imu_qmi8658_ak09918.py` is consumed by ADCS.
+- No driver in `src/` yet. Its home in the rewrite is `src/cubesat/hal/rpi/sen0501.py`, behind the `Environment` protocol, consumed by **PAYLOAD** for science data. (In the pre-rewrite layout it would have gone in `src/common/` alongside the other sensor drivers.)
 - Board revision (V1.0 vs V3.0) still unconfirmed, so the UV field cannot be published yet. Confirm in direct sunlight.
 - `requirements.txt` already carries `smbus2`, so no new dependency is needed. Tests will need a fake I2C peripheral in `tests/fakes.py`, the same approach used for the existing IMU.
 - Decide whether Payload publishes elevation at all, given the fixed-reference caveat above.

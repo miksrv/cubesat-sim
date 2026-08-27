@@ -170,7 +170,8 @@ Sanity checks worth repeating on any new board: `|a|` should be close to 9.8 m/s
 
 ## Open items
 
-- No driver in `src/` yet. It replaces `src/common/imu_qmi8658_ak09918.py` wholesale — the chips share no register map — and is consumed by ADCS.
+- No driver in `src/` yet. Its home in the rewrite is `src/cubesat/hal/rpi/bno055.py`, behind the
+  `IMU` protocol. It replaces `src/common/imu_qmi8658_ak09918.py` wholesale — the chips share no register map — and is consumed by ADCS.
 - **The 10 kHz bus clock is now a project-wide requirement**, not a detail of this sensor. Any deployment or install script that writes `config.txt` must set it, and `docs/` for the other I2C peripherals assumes it.
 - Decide whether pressure comes from this BMP280 or from the SEN0501, and drop the duplicate.
 - Magnetometer calibration must be captured in the final configuration and location, then persisted — see [Magnetometer readings](#magnetometer-readings-depend-on-the-environment-not-just-the-sensor). A profile collected elsewhere encodes the wrong hard-iron offset.

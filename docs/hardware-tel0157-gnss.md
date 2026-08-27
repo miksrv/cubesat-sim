@@ -125,7 +125,8 @@ What to read from it: in `GNGGA` the field after the longitude hemisphere is fix
 
 ## Open items
 
-- No driver in `src/` yet. It replaces `src/common/gps_a9g.py` and is consumed by ADCS. Keep that module's contract: return the last known fix with `fix: false` rather than blocking the ADCS loop while there is no signal — the same behaviour is needed here, and the module's "tidy zeros" make it easy to get wrong.
+- No driver in `src/` yet. Its home in the rewrite is `src/cubesat/hal/rpi/tel0157.py`, behind the
+  `GNSS` protocol. It replaces `src/common/gps_a9g.py` and is consumed by ADCS. Keep that module's contract: return the last known fix with `fix: false` rather than blocking the ADCS loop while there is no signal — the same behaviour is needed here, and the module's "tidy zeros" make it easy to get wrong.
 - `pynmea2` loses its only consumer once this lands; `pyserial` too, unless the Heltec link needs it. Decide whether to drop them from `requirements.txt`.
 - Altitude is now available from three sources: this module, the BMP280 and the SEN0501. Pick one per quantity.
 - Tests need a fake I2C peripheral in `tests/fakes.py`, including a no-fix case (all zeros) and a southern/western position to catch a sign regression.

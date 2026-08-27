@@ -1,5 +1,15 @@
 # IoT Node(A) — 52Pi Docker Pi Series (GSM/GPS/LoRa)
 
+> **⚠️ No longer in the design.** Both halves this project used were replaced: LoRa by a
+> [Heltec WiFi LoRa 32 V4 running Meshtastic](hardware-heltec-lora32-v4.md) on the PL011 UART, and
+> the A9G GPS by a [TEL0157 GNSS receiver](hardware-tel0157-gnss.md) on I2C. The SC16IS752
+> register-level LoRa protocol in `src/comms/lora.py` was never verified against real hardware and
+> is being deleted rather than fixed.
+>
+> Remove `dtoverlay=sc16is752-i2c` from `/boot/firmware/config.txt` on any Pi that still has it —
+> no `ttySC*` devices are created without the board, and it was one of the two leftovers that broke
+> the new UART setup (see [`../PLAN.md`](../PLAN.md), stage 3).
+
 Onboard GSM/GPS/LoRa module. GPS is wired into **ADCS** (`src/common/gps_a9g.py`, NMEA over `/dev/ttySC1`) and LoRa is wired into **COMMS** (`src/comms/lora.py`, register access over the SC16IS752 I2C bridge) — both use `crc16_ccitt()` in `src/common/utils.py` for framing/validation. GSM/GPRS (AT commands over `/dev/ttySC0`) remains unused; only the GPS and LoRa halves of this module are currently wired up.
 
 - **Product:** [52Pi EP-0105 IoT Node (A)](https://www.aliexpress.us/item/2251832864586218.html)

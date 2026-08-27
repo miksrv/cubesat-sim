@@ -2,7 +2,7 @@
 
 LoRa ground link for **COMMS**, replacing the LoRa half of the [52Pi IoT Node(A)](hardware-iot-node-a-52pi.md). The board runs **stock Meshtastic firmware** and is a self-contained radio: the Raspberry Pi talks to it over UART using Meshtastic's Serial module in `PROTO` mode, and Meshtastic handles framing, CRC, retries, acknowledgements and encryption on its own. The custom `length + payload + CRC-16-CCITT` framing used against the 52Pi bridge is therefore obsolete here.
 
-> **Status:** the radio link is bench-verified end to end (Pi → UART → Heltec → air → second Meshtastic node, and back). `src/comms/lora.py` still contains the old `smbus2`/SC16IS752 implementation and has **not** been rewritten against `meshtastic` yet — see [Open items](#open-items) and `ROADMAP.md` item G10.
+> **Status:** the radio link is bench-verified end to end (Pi → UART → Heltec → air → second Meshtastic node, and back). The driver is now `src/cubesat/hal/rpi/meshtastic_radio.py`, built on the `meshtastic` library — the old `smbus2`/SC16IS752 implementation is gone, and with it the hand-rolled framing and CRC that Meshtastic already provides. **None of it has run on the Pi yet.**
 
 - **Product:** [Heltec WiFi LoRa 32 V4](https://heltec.org/project/wifi-lora-32-v4/)
 - **Official docs:** [Heltec Wiki — WiFi LoRa 32 V4](https://wiki.heltec.org/docs/devices/open-source-hardware/esp32-series/lora-32/wifi-lora-32-v4/)
@@ -153,7 +153,7 @@ Sharing the channel with a phone or a second node is done with the URL from:
 meshtastic --port /dev/serial0 --qr-all      # prints "Complete URL (includes all channels)"
 ```
 
-**That URL embeds the channel's pre-shared key, and it is deliberately not recorded here.** Anyone holding it can not only decrypt telemetry but *send commands* — COMMS republishes anything arriving over LoRa onto `cubesat/command`, so a leaked key means a stranger can trigger `safe_mode`, `take_photo` or `science_stop`. Treat it exactly like `COMMS_API_KEY`: environment or personal notes, never `config.yaml`, never a committed document. Regenerate with `--ch-set psk random --ch-index 1` if it is ever exposed, then re-import on every node.
+**That URL embeds the channel's pre-shared key, and it is deliberately not recorded here.** Anyone holding it can not only decrypt telemetry but *send commands* — COMMS republishes anything arriving over LoRa onto `cubesat/command`, so a leaked key means a stranger can trigger `safe_mode`, `take_photo` or `science_stop`. Treat it as a secret: environment or personal notes, never `config.yaml`, never a committed document. Regenerate with `--ch-set psk random --ch-index 1` if it is ever exposed, then re-import on every node.
 
 Two practical notes when importing:
 
@@ -259,9 +259,13 @@ iface.close()
 
 ## Open items
 
-- **The channel index must become a configuration value**, not a constant: telemetry is sent with `--ch-index 1`, and if the driver and the ground station disagree the messages silently land on different channels. It belongs in `src/common/config.py` next to `LORA_PORT`.
-- **Packet size is unresolved and blocks `COMMS_LORA_ENABLED=1`.** The Serial module carries up to 240 bytes per message, while an aggregated COMMS packet (eps + adcs + payload + system) runs to several hundred. `src/comms/lora.py:33` currently truncates the payload to 28 bytes, so `src/comms/service.py:293` transmits a silently mangled packet. Decide between a compact beacon field set and chunking before enabling the channel.
-- `src/comms/lora.py` still targets `smbus2`/SC16IS752 and needs rewriting on top of `meshtastic`. `src/common/config.py` and `config/config.yaml` still carry `LORA_I2C_ADDRESS` instead of `LORA_PORT` / `LORA_BAUDRATE`.
+Both of the items that used to be here are closed.
+
+- **The channel index is a configuration value.** `config.LORA_CHANNEL_INDEX` (env `LORA_CHANNEL_INDEX`), next to `LORA_PORT`. If the driver and the ground station disagree, messages transmit and receive perfectly and simply never meet — the hardest kind of radio fault to diagnose, and not one to leave to a constant buried in a driver.
+- **Packet size is settled: a compact beacon, not chunking.** The Serial module carries at most 240 bytes and a full telemetry packet runs to several hundred, so the radio sends a single readable `key=value` line — around 101 bytes typically, 122 in the worst plausible case — and the full record stays in DHS to be collected when the satellite is back on a network. One message is one complete observation, where a lost chunk would void a whole packet, and LoRa airtime is duty-cycle limited. It is **never truncated**: when space runs short, whole optional fields are dropped in priority order. The old driver's silent 28-byte truncation is what this replaced.
+
+What remains is bench work, not design — see the verification table in [`ROADMAP.md`](../ROADMAP.md): nothing in this driver has yet transmitted from the assembled satellite.
+- `src/comms/lora.py` (becoming `src/cubesat/comms/mesh.py`) still targets `smbus2`/SC16IS752 and needs rewriting on top of `meshtastic`. `src/common/config.py` and `config/config.yaml` still carry `LORA_I2C_ADDRESS` instead of `LORA_PORT` / `LORA_BAUDRATE`.
 - `tests/test_comms_lora.py` mocks `smbus`; it needs reworking (`tests/test_common_gps_a9g.py` is a good model for faking a serial peripheral).
 - `crc16_ccitt()` in `src/common/utils.py` loses its only consumer once the rewrite lands — decide whether to keep it.
 - A two-way ground link needs an SX1262 receiver attached to the ground station as well.

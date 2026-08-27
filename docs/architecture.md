@@ -1,5 +1,13 @@
 # Architecture Overview
 
+> **⚠️ Pre-rewrite document.** This describes the five-service version of the software
+> (OBC / EPS / ADCS / Payload / COMMS) against sensors that are no longer on the satellite. It is
+> kept as the record of that design and is *not* the current reference.
+>
+> For the target architecture — platform profiles, the `HOSTD`/`OBC` privilege split, `DHS` as the
+> flight recorder, and the current MQTT contract — read [`../README.md`](../README.md) and
+> [`concept.md`](concept.md).
+
 ## System Purpose
 
 CubeSat Sim is a distributed simulation of a CubeSat satellite's onboard software. Each real-world CubeSat subsystem is represented by an independent Python process. The processes run on a Raspberry Pi (or cluster of boards) and communicate exclusively through MQTT, mirroring how physical subsystems communicate over a spacecraft bus.

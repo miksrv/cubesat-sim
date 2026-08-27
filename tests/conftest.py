@@ -1,57 +1,54 @@
-"""
-Global pytest fixtures for the CubeSat Sim test suite.
+"""Test configuration.
 
-The project targets Raspberry Pi hardware: several modules import
-RPi.GPIO, lgpio, smbus2 and picamera2/libcamera, none of which are
-installable (or usable) on a generic CI runner or a contributor's laptop.
-
-Before any ``src.*`` module is imported anywhere in the test session, we
-replace those hardware modules in ``sys.modules`` with ``MagicMock``
-instances. This must happen at *module import time* (not inside a
-fixture function), since conftest.py is imported by pytest before any
-test module, which is in turn before any ``src`` import triggered by a
-test module.
-
-Individual tests further configure/inspect the relevant mock (e.g.
-``bus.read_byte_data.return_value = ...``) or monkeypatch a serial
-connection, as needed.
+The environment is set up **before** anything from ``cubesat`` is imported,
+because ``cubesat.common.config`` resolves its paths at import time. Every test
+therefore runs against a temporary data directory, the repository's own config
+files, and the mock HAL — never a real bus, a real broker or a system path.
 """
 
-import sys
-from unittest.mock import MagicMock
+from __future__ import annotations
 
-_HARDWARE_MODULES = [
-    "RPi",
-    "RPi.GPIO",
-    "lgpio",
-    "smbus2",
-    "picamera2",
-    "picamera2.encoders",
-    "picamera2.outputs",
-    "libcamera",
-]
+import os
+import tempfile
+from pathlib import Path
 
-for _name in _HARDWARE_MODULES:
-    sys.modules[_name] = MagicMock(name=_name)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+_TMP = Path(tempfile.mkdtemp(prefix="cubesat-test-"))
 
-# Make `import RPi.GPIO as GPIO` and `RPi.GPIO` attribute access consistent.
-sys.modules["RPi"].GPIO = sys.modules["RPi.GPIO"]
+os.environ.setdefault("CUBESAT_CONFIG_DIR", str(REPO_ROOT / "config"))
+os.environ.setdefault("CUBESAT_DATA_DIR", str(_TMP / "data"))
+os.environ.setdefault("CUBESAT_RUN_DIR", str(_TMP / "run"))
+os.environ.setdefault("CUBESAT_LOG_DIR", str(_TMP / "log"))
+os.environ.setdefault("CUBESAT_MOCK_HARDWARE", "1")
+for _key in ("CUBESAT_DATA_DIR", "CUBESAT_RUN_DIR", "CUBESAT_LOG_DIR"):
+    Path(os.environ[_key]).mkdir(parents=True, exist_ok=True)
 
-import src.common as common
+import pytest  # noqa: E402
 
-# Every subsystem's main.py calls setup_logging(...) at import time, which
-# writes to the hardcoded /var/log/cubesat/ directory — not writable without
-# root. Replace it with a no-op so importing e.g. src.obc.main is safe in
-# any environment; the real function is still exercised directly in
-# test_common_logging_setup.py.
-common.setup_logging = lambda *_args, **_kwargs: None
-
-import pytest
+from tests.fakes.mqtt import FakeMqttClient  # noqa: E402
 
 
-@pytest.fixture(autouse=True)
-def _no_real_sleep(monkeypatch):
-    """Hardware drivers call time.sleep() for real timing budgets (sensor
-    settling times, calibration loops, polling). Tests don't need to wait
-    for those, so time.sleep is a no-op everywhere by default."""
-    monkeypatch.setattr("time.sleep", lambda *_args, **_kwargs: None)
+@pytest.fixture
+def fake_client() -> FakeMqttClient:
+    return FakeMqttClient()
+
+
+@pytest.fixture
+def service_factory(monkeypatch):
+    """Build a Service subclass wired to a fake broker.
+
+    Returns ``(service, client)``. Nothing is connected to anything;
+    ``client.deliver(...)`` is how a test simulates an inbound message.
+    """
+
+    def build(cls, **kwargs):
+        from cubesat.common import mqtt as mqtt_factory
+
+        client = FakeMqttClient()
+        monkeypatch.setattr(mqtt_factory, "make_client", lambda _name: client)
+        monkeypatch.setattr(mqtt_factory, "connect", lambda _client: None)
+        service = cls(**kwargs)
+        client.bind(service)
+        return service, client
+
+    return build

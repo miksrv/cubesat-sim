@@ -137,6 +137,9 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+# The template is committed on purpose: it names every knob and carries the
+# reasoning for the ones that are not obvious. It holds no values.
+!.env.example
 .venv
 env/
 venv/
@@ -208,3 +211,6 @@ __marimo__/
 
 
 .idea
+# macOS / editor noise
+.DS_Store
+*.blend1

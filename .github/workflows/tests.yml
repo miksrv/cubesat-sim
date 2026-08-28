@@ -1,10 +1,9 @@
-name: Tests
+name: tests
 
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   test:
@@ -15,25 +14,26 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: requirements-test.txt
 
-      - name: Install test dependencies
-        run: pip install -r requirements-test.txt
+      # No hardware extra: the whole point of the HAL is that the suite runs
+      # anywhere. CUBESAT_MOCK_HARDWARE is set by tests/conftest.py.
+      - name: Install
+        run: pip install -e ".[test]"
 
-      - name: Run tests with coverage
-        run: pytest --cov --cov-report=term-missing --cov-report=xml
+      - name: Lint
+        run: ruff check src tests
 
-      - name: Upload coverage report
-        if: matrix.python-version == '3.11'
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: coverage.xml
+      # The hardware extras are not installed here, so the drivers' lazy imports
+      # (smbus2, picamera2, meshtastic, RPi) have no stubs to check against and
+      # are ignored in pyproject.toml. Everything else is checked.
+      - name: Types
+        run: mypy
+
+      - name: Test
+        run: pytest --cov --cov-report=term-missing

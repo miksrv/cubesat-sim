@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cubesat-sim"
+version = "0.1.0"
+description = "Flight software for a physical educational CubeSat model"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+
+# Everything here installs on any machine, so the whole stack runs against the
+# mock HAL on a laptop. Hardware-only packages live in the `rpi` extra.
+dependencies = [
+    "paho-mqtt>=2.0",
+    "transitions>=0.9",
+    "psutil>=5.9",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# Only on a Raspberry Pi: these either refuse to build elsewhere or are pointless.
+rpi = [
+    "smbus2>=0.4",
+    "RPi.GPIO>=0.7",
+    "lgpio>=0.2",
+    "picamera2>=0.3",
+    "meshtastic>=2.5",
+    "pyserial>=3.5",
+]
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-psutil",
+    "types-PyYAML",
+]
+
+[project.scripts]
+cubesat = "cubesat.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+
+[tool.coverage.run]
+source = ["cubesat"]
+# __main__.py files are launchers: parse args, build the service, call run().
+# There is nothing in them to assert that running the process would not assert
+# better, so they are excluded rather than padded with a fake test.
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.$",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/cubesat"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+# smbus2 ships no type information and only installs on a Raspberry Pi, so there
+# is nothing to check it against here. It is imported lazily inside hal/i2c.py
+# for exactly that reason.
+[[tool.mypy.overrides]]
+module = ["smbus2", "picamera2", "libcamera", "meshtastic.*", "RPi.*"]
+ignore_missing_imports = true

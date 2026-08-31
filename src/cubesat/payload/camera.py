@@ -243,11 +243,27 @@ class CameraController:
         self._unfiled_warned = False
         #: Why the last timelapse ended. None means none was ever started.
         self._timelapse_reason: str | None = None
+        #: The pending idle close, and the count of camera uses that arms it.
+        #: The generation is what makes a stale timer harmless: a timer that was
+        #: already firing when a capture re-armed cannot be cancelled, but it
+        #: can notice the world moved on and decline to close a camera that was
+        #: just used.
+        self._idle_timer: threading.Timer | None = None
+        self._idle_generation = 0
 
-    @property
-    def camera(self) -> Camera:
-        """The device itself, for PAYLOAD to probe. Nothing else reaches past."""
-        return self._camera
+    def probe(self) -> bool:
+        """Whether the camera answers, and PAYLOAD's only way of asking.
+
+        Routed through the controller rather than exposing the device, because
+        a probe *opens* the camera — that is what makes it evidence — and an
+        opened camera is heat until something schedules giving it back. The
+        idle close below is that something, so every path that touches the
+        sensor has to end here or in ``capture``.
+        """
+        try:
+            return bool(self._camera.probe())
+        finally:
+            self._arm_idle_close()
 
     # ── the card ────────────────────────────────────────────────────────────
 
@@ -355,7 +371,13 @@ class CameraController:
             directory = self.directory_for(context.mission_id)
             path = directory / self._filename(taken_at, kind, sequence)
             sidecar = self._sidecar(context, taken_at, path) if context.overlay else None
-            photo = self._camera.capture(path, overlay=_overlay_text(sidecar))
+            try:
+                photo = self._camera.capture(path, overlay=_overlay_text(sidecar))
+            finally:
+                # Armed on failure too: a capture that raised still touched —
+                # and may have opened — the sensor, and a camera that broke
+                # mid-shot is not one worth keeping powered.
+                self._arm_idle_close()
             if sidecar is not None:
                 # Written after the capture so a sidecar never outlives a photo
                 # that failed to be taken.
@@ -390,6 +412,51 @@ class CameraController:
             "mission_state": context.state.value if context.state is not None else None,
             "position": context.position,
         }
+
+    # ── idle close ──────────────────────────────────────────────────────────
+
+    def _arm_idle_close(self) -> None:
+        """Schedule giving the sensor back, restarting the countdown.
+
+        Why close at all: an open Picamera2 runs the ISP pipeline — metering,
+        white balance, the lores stream — continuously, which is SoC heat for
+        as long as nobody takes a photo. Reopening costs about a second, so a
+        timelapse faster than the window never pays it, and a slower one trades
+        a second per frame for a camera that is cold between frames.
+
+        Read from config at each call, like the timelapse floor: a bench
+        session should be able to change the window without a redeploy.
+        """
+        self._idle_generation += 1
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
+        window = config.CAMERA_IDLE_CLOSE_SEC
+        if window <= 0:
+            return
+        timer = threading.Timer(window, self._idle_close, args=(self._idle_generation,))
+        # Daemon for the same reason the timelapse thread is: a pending close
+        # must not keep the process alive past SIGTERM.
+        timer.daemon = True
+        timer.name = "camera-idle-close"
+        timer.start()
+        self._idle_timer = timer
+
+    def _idle_close(self, generation: int) -> None:
+        """The timer's side: close the camera unless it was used again.
+
+        The generation check closes the race that ``cancel()`` cannot: a timer
+        that has already started firing when a capture re-arms would otherwise
+        close the sensor immediately after the capture that wanted it warm.
+        """
+        with self._capture_lock:
+            if generation != self._idle_generation:
+                return
+            self._camera.close()
+            self.log.info(
+                "camera closed after %.0fs idle; the next capture re-opens it",
+                config.CAMERA_IDLE_CLOSE_SEC,
+            )
 
     # ── timelapse ───────────────────────────────────────────────────────────
 
@@ -528,6 +595,12 @@ class CameraController:
     def close(self) -> None:
         """Stop the timelapse and give the camera back, in that order."""
         self.stop_timelapse()
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
+        # Bumped so an idle timer already past cancel() finds a stale
+        # generation instead of closing a second time on its own schedule.
+        self._idle_generation += 1
         self._camera.close()
 
 

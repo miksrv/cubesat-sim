@@ -102,8 +102,12 @@ class PayloadService(Service):
         )
         #: What the last probe or read said. Not a cached truth — it is exactly
         #: what payload_status reports, and it changes when the hardware does.
-        self._sensor_present = False
-        self._camera_present = False
+        #: None means "not probed yet", which is a different claim from False:
+        #: the first status can go out before the camera probe has finished
+        #: (see on_start), and reporting an unprobed camera as absent would be
+        #: exactly the plausible-wrong-number this project refuses to publish.
+        self._sensor_present: bool | None = None
+        self._camera_present: bool | None = None
         self._readings = 0
         self._last_read: float | None = None
         #: From dhs_status. None until DHS opens a mission.
@@ -122,7 +126,17 @@ class PayloadService(Service):
         not optimism.
         """
         self._sensor_present = self._probe("SEN0501 environment", self._sensor)
-        self._camera_present = self._probe("Camera Module V2", self._controller.camera)
+        if self._sensor_present:
+            # Report in NOW, with the camera honestly null: the camera probe
+            # below imports picamera2, which on a cold Pi costs longer than the
+            # whole DEPLOY window (35 s measured on first hardware bring-up,
+            # 2026-08-28), and the sensor answering is already the evidence
+            # DEPLOY is waiting for.
+            self._publish_status()
+        # Probed through the controller, not the device: the probe opens the
+        # camera, and the controller is what schedules giving it back — an
+        # opened sensor left running is SoC heat until the next profile change.
+        self._camera_present = self._probe("Camera Module V2", self._controller)
         if not (self._sensor_present or self._camera_present):
             # Nothing answered, so there is nothing to report in about. The gap
             # on payload_status is the honest signal — publishing anyway would
@@ -140,6 +154,17 @@ class PayloadService(Service):
         DEPLOY would find no evidence for a subsystem that is working perfectly.
         Nothing is republished if nothing ever answered: the gap is still the
         honest signal.
+        """
+        if self._sensor_present or self._camera_present:
+            self._publish_status()
+
+    def report_in(self) -> None:
+        """A DEPLOY this service survived: republish the evidence it has.
+
+        PAYLOAD publishes status only on change, so a DEMO→EXPO switch — where
+        the profile keeps it running — would otherwise leave DEPLOY with no
+        fresh message inside its window. Same guard as ``on_connected``: if
+        nothing ever answered, the gap stays the honest signal.
         """
         if self._sensor_present or self._camera_present:
             self._publish_status()

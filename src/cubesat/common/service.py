@@ -136,6 +136,23 @@ class Service:
     def on_state_change(self, previous: MissionState | None, current: MissionState) -> None:
         """The mission state changed. Cadence is already updated."""
 
+    def report_in(self) -> None:
+        """DEPLOY has begun and OBC is waiting for fresh evidence — publish it.
+
+        The bring-up self-test counts only status messages that arrive inside
+        its window, and rightly: a retained status proves the hardware answered
+        *once*, not that it still does. A service that was just started reports
+        in from ``on_start``; the hole is the service that **survived** the
+        profile switch — COMMS runs across every profile change by design — and
+        publishes its status only on change, so a healthy radio would sit
+        silent through the whole window and fail the self-test (bench-found on
+        the first hardware run, 2026-08-28).
+
+        The default is a no-op: a service whose status already streams on its
+        DEPLOY cadence row (ADCS at 2 Hz, DHS every 2 s) needs nothing extra.
+        Override where status is published only on change.
+        """
+
     def on_stop(self) -> None:
         """Called once during shutdown, before disconnecting."""
 
@@ -291,6 +308,13 @@ class Service:
             self.on_state_change(previous, state)
         except Exception:
             self.log.exception("on_state_change failed")
+        if state is MissionState.DEPLOY:
+            # OBC is waiting for fresh evidence, and a service that survived the
+            # profile switch will produce none on its own — see report_in.
+            try:
+                self.report_in()
+            except Exception:
+                self.log.exception("report_in failed")
 
     def _all_subscriptions(self) -> tuple[str, ...]:
         keys = list(self.subscriptions)

@@ -140,6 +140,11 @@ DHS_ATTITUDE_MIN_INTERVAL_SEC: float = float(
 #: unbounded buffer would turn that into an unbounded process.
 DHS_ATTITUDE_BUFFER: int = int(_dhs.get("attitude_buffer", 7200))
 
+#: How many radio events may wait in memory for a write that is failing.
+#: Radio traffic is sparse — a beacon a minute in NOMINAL — so a few hundred
+#: covers hours; bounded for the same reason the attitude buffer is.
+DHS_RADIO_BUFFER: int = int(_dhs.get("radio_buffer", 512))
+
 _retention = _yaml.get("retention", {})
 DHS_RETENTION_DAYS: int = int(os.getenv("DHS_RETENTION_DAYS", _retention.get("days", 30)))
 
@@ -163,6 +168,12 @@ _science = _yaml.get("science", {})
 _res = _camera.get("resolution", [1920, 1080])
 PHOTO_RESOLUTION: tuple[int, int] = (int(_res[0]), int(_res[1]))
 MIN_TIMELAPSE_INTERVAL_SEC: float = float(_camera.get("min_timelapse_interval_sec", 1.0))
+
+#: How long the camera stays open after its last use, in seconds. An open
+#: Picamera2 runs its ISP loops continuously and that is SoC heat for nothing
+#: on a satellite that photographs on demand; reopening costs about a second.
+#: 0 disables the idle close and keeps the camera open once first used.
+CAMERA_IDLE_CLOSE_SEC: float = float(_camera.get("idle_close_sec", 60.0))
 
 #: Free space below which PAYLOAD stops writing images. Paired deliberately with
 #: DHS's retention headroom: the camera's floor and the recorder's horizon are

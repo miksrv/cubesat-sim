@@ -31,6 +31,12 @@ TOPICS: dict[str, str] = {
     "comms_status": "cubesat/comms/status",
     "dhs_status": "cubesat/dhs/status",
     "comms_data": "cubesat/comms/data",
+    # One event per radio transaction — a received message, or a transmission
+    # attempt with whether it left. Not retained: this is a log line, not a
+    # state, and a browser replaying a stale "last packet" would show traffic
+    # that is not happening. DHS records these into radio_log; COMMS still
+    # persists nothing.
+    "comms_radio": "cubesat/comms/radio",
     # Liveness. Every service publishes here on a fixed interval regardless of
     # its poll cadence; OBC declares a subsystem lost after a few misses. A
     # single shared topic means OBC subscribes once instead of eight times.

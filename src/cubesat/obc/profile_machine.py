@@ -34,6 +34,13 @@ from typing import Any
 from cubesat.common.profiles import ProfileConfig, ProfileError, ProfileSpec
 from cubesat.common.states import MissionMode, Profile
 
+#: How long after a profile request the platform is considered to be settling —
+#: units stopping and starting on OBC's own instruction. Matches the
+#: heartbeat-loss window (HEARTBEAT_INTERVAL_SEC * HEARTBEAT_MISS_THRESHOLD):
+#: a switch that takes longer than a service is allowed to be silent is no
+#: longer a switch, and the health monitor should get its say back.
+SETTLE_GRACE_SEC = 30.0
+
 
 @dataclass(frozen=True)
 class ProfileUpdate:
@@ -83,11 +90,26 @@ class ProfileMachine:
         self._requested: Profile | None = None
         self._requested_label: str | None = None
         self._requested_ttl: int | None = None
+        self._requested_at: float | None = None
         self._deadline: float | None = None
 
     @property
     def default(self) -> Profile:
         return self._config.default
+
+    @property
+    def settling(self) -> bool:
+        """A profile request is in flight and recent: HOSTD is rearranging units.
+
+        While this is true, a subsystem's goodbye is the profile change itself —
+        HOSTD stops units on OBC's own request — and must not be read as a
+        fault (the first hardware run latched SAFE on exactly that, 2026-08-28).
+        Bounded in time so a request HOSTD never answers cannot suppress the
+        health monitor forever: after the window, silence is silence again.
+        """
+        if self._requested is None or self._requested_at is None:
+            return False
+        return self._clock() - self._requested_at < SETTLE_GRACE_SEC
 
     @property
     def deadline(self) -> float | None:
@@ -118,6 +140,7 @@ class ProfileMachine:
         self._requested = spec.name
         self._requested_label = mission_label
         self._requested_ttl = ttl_minutes if ttl_minutes is not None else spec.ttl_minutes
+        self._requested_at = self._clock()
         self.log.info(
             "requesting profile %s (ttl=%s, label=%r)",
             spec.name.value,
@@ -190,6 +213,7 @@ class ProfileMachine:
             self._requested = None
             self._requested_label = None
             self._requested_ttl = None
+            self._requested_at = None
 
         return ProfileUpdate(
             achieved=achieved, spec=spec, changed=changed, matches_request=matches

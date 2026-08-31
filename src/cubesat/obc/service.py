@@ -31,7 +31,7 @@ from typing import Any
 from cubesat.common import profiles as profiles_module
 from cubesat.common.profiles import ProfileConfig
 from cubesat.common.service import Service
-from cubesat.common.states import EndReason, MissionState, Persistence, Profile
+from cubesat.common.states import EndReason, MissionMode, MissionState, Persistence, Profile
 from cubesat.common.topics import TOPICS
 from cubesat.hal import i2c
 from cubesat.obc import commands, deploy, mission_machine, power_policy
@@ -323,6 +323,12 @@ class ObcService(Service):
     def _check_health(self) -> None:
         if self.mission.state in (MissionState.BOOT, MissionState.SAFE, MissionState.CRITICAL):
             return
+        if self.profile_machine.settling:
+            # HOSTD is stopping and starting units on OBC's own request right
+            # now: a goodbye arriving mid-switch is the switch, not a fault.
+            # The first hardware run latched SAFE on exactly this — ADCS's last
+            # will beat host_status by four seconds (2026-08-28).
+            return
         lost = self.health.lost()
         if lost:
             self._enter_safe(f"subsystem(s) lost: {', '.join(lost)}", latch=True)
@@ -344,6 +350,15 @@ class ObcService(Service):
             self.log.info("power recovery withheld: SAFE is latched by a fault")
             return
         self._fault_latched = False
+        spec = self.profile_machine.spec
+        if spec is not None and spec.mission is not MissionMode.ACTIVE:
+            # Recovered inside a profile that asks for no mission is idle, not
+            # flying: a HOSTED satellite brought out of SAFE must land in
+            # STANDBY — NOMINAL there would beacon every minute on a desk that
+            # asked for silence (bench-found 2026-08-28, the first `recover`
+            # ever sent to the hardware).
+            self.mission.fire(mission_machine.STAND_DOWN)
+            return
         self.mission.fire(mission_machine.RECOVER)
 
     def _enter_critical(self) -> None:
@@ -422,6 +437,14 @@ class ObcService(Service):
         genuinely unknown and is published as null with persistence ``none``.
         Naming the default profile here instead would be a guess, and a guess
         that happens to permit writing telemetry rows against the wrong profile.
+
+        ``subsystems`` is OBC's own health verdict, published so the ground can
+        tell "off because the profile never started it" from "expected and
+        silent" — without it a dashboard has to guess, and both guesses are
+        wrong somewhere: FAIL on a service HOSTED never launched, or a grey
+        shrug on a service that died. ``lost`` is empty while a profile switch
+        is settling, for the same reason _check_health suppresses the verdict
+        then: a goodbye arriving mid-switch is the switch, not a fault.
         """
         spec = self.profile_machine.spec
         self.publish(
@@ -432,4 +455,8 @@ class ObcService(Service):
             cadence_scale=spec.power.cadence_scale if spec else 1.0,
             persistence=(spec.persistence if spec else Persistence.NONE).value,
             mission_label=self.profile_machine.label,
+            subsystems={
+                "watched": sorted(self.health.watched),
+                "lost": [] if self.profile_machine.settling else list(self.health.lost()),
+            },
         )

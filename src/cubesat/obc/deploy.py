@@ -51,6 +51,11 @@ from cubesat.hal import i2c
 #: than by the order in which OBC happens to evaluate them.
 DEPLOY_TIMEOUT_SEC = 20.0
 
+#: How often a missing address is re-probed while the window is open. Often
+#: enough to pass a healthy bring-up promptly; seldom enough not to contend for
+#: a 10 kHz bus the subsystems are reading their own devices over.
+RESWEEP_INTERVAL_SEC = 1.0
+
 #: The I2C addresses each service needs to find. Keyed by service so that the
 #: sweep follows the profile rather than the address map: adding a profile must
 #: not mean editing this table.
@@ -144,19 +149,32 @@ class DeploySelfTest:
         self.gnss_fix: bool | None = None
         self._deadline: float | None = None
         self._swept = False
+        self._last_sweep: float | None = None
 
     # ── the two checks ──────────────────────────────────────────────────────
 
     def begin(self) -> None:
-        """Sweep the bus and start the clock on the report wait."""
+        """Sweep the bus and start the clock on the report wait.
+
+        A miss here is **pending, not fatal**: the profile change has only just
+        started the service that owns the device, and bring-up may have it
+        mid-reset — the BNO055 stops ACKing its own address for ~650 ms during
+        the soft reset ADCS opens with, which is exactly when this sweep hit it
+        on the bench (2026-08-28). Missing addresses are re-probed once a
+        second by ``evaluate`` and fail the self-test only when the window
+        closes with them still silent.
+        """
         self._deadline = self._clock() + self._timeout
+        self._last_sweep = self._clock()
         self.missing_addresses = [
             addr for addr in self.expected_addresses if not self._present(addr)
         ]
         self._swept = True
         for addr in self.missing_addresses:
-            self.log.error(
-                "DEPLOY: nothing answers at %#04x (%s)", addr, DEVICE_NAMES.get(addr, "unknown")
+            self.log.warning(
+                "DEPLOY: nothing answers at %#04x (%s) yet; will re-probe",
+                addr,
+                DEVICE_NAMES.get(addr, "unknown"),
             )
         self.log.info(
             "DEPLOY: swept %d address(es), waiting for %s",
@@ -195,11 +213,26 @@ class DeploySelfTest:
         """Where the bring-up stands. Safe to call as often as you like."""
         if not self._swept:
             return Outcome.PENDING
-        if self.missing_addresses:
-            return Outcome.FAILED
-        if not self.silent:
+        if self.missing_addresses and not self.expired:
+            self._resweep()
+        if not self.missing_addresses and not self.silent:
             return Outcome.PASSED
         return Outcome.FAILED if self.expired else Outcome.PENDING
+
+    def _resweep(self) -> None:
+        """Re-probe the addresses still missing, at most once a second."""
+        now = self._clock()
+        if self._last_sweep is not None and now - self._last_sweep < RESWEEP_INTERVAL_SEC:
+            return
+        self._last_sweep = now
+        still = [addr for addr in self.missing_addresses if not self._present(addr)]
+        for addr in set(self.missing_addresses) - set(still):
+            self.log.info(
+                "DEPLOY: %#04x (%s) answered on re-probe",
+                addr,
+                DEVICE_NAMES.get(addr, "unknown"),
+            )
+        self.missing_addresses = still
 
     @property
     def failures(self) -> tuple[str, ...]:

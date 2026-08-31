@@ -215,8 +215,12 @@ def test_giving_up_raises_a_radio_error_naming_the_port(bench, radio):
 
 
 def test_a_missing_meshtastic_library_says_how_to_run_without_hardware(monkeypatch):
-    monkeypatch.delitem(sys.modules, "meshtastic.serial_interface", raising=False)
-    monkeypatch.delitem(sys.modules, "meshtastic", raising=False)
+    # None in sys.modules makes the lazy import raise ImportError even on a
+    # machine where meshtastic IS installed (the Pi) — deleting the entry only
+    # works where the library is genuinely absent, which made this test pass on
+    # a laptop and fail on the satellite.
+    monkeypatch.setitem(sys.modules, "meshtastic", None)
+    monkeypatch.setitem(sys.modules, "meshtastic.serial_interface", None)
     with pytest.raises(RadioError, match="CUBESAT_MOCK_HARDWARE=1"):
         MeshtasticRadio(port="/dev/serial0").send("hello")
 
@@ -344,6 +348,26 @@ def test_a_packet_carrying_neither_is_taken_anyway_with_nulls(bench, radio):
     bench.pub.deliver({"decoded": {"portnum": TEXT_PORTNUM, "text": "hello"}})
     message = radio.poll()[0]
     assert (message.sender, message.snr) == (None, None)
+    assert (message.rssi, message.hops) == (None, None)
+
+
+def test_link_quality_fields_ride_along_when_the_packet_carries_them(bench, radio):
+    # hops = hopStart − hopLimit is inferred from the library, not yet
+    # bench-verified — the check is a packet relayed through a third node
+    # reading 1 here. 0 means heard directly.
+    radio.probe()
+    bench.pub.deliver(text_packet("hello", rxSnr=6.0, rxRssi=-96, hopStart=3, hopLimit=2))
+    message = radio.poll()[0]
+    assert message.rssi == -96
+    assert message.hops == 1
+
+
+def test_an_implausible_hop_arithmetic_is_withheld_rather_than_recorded(bench, radio):
+    # A hopLimit above hopStart would read as negative hops: not a measurement,
+    # a packet shaped differently from anything the inference understands.
+    radio.probe()
+    bench.pub.deliver(text_packet("hello", hopStart=1, hopLimit=5))
+    assert radio.poll()[0].hops is None
 
 
 @pytest.mark.parametrize(

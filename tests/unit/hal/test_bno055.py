@@ -78,6 +78,9 @@ class FakeBno055Bus:
 
     def __init__(self, registers: dict[int, int] | None = None) -> None:
         self.registers = dict(registers or BENCH_REGISTERS)
+        #: register → value served on the next read of it, once. Models the
+        #: 10 kHz bit-flip corruption, which hits one read and not the retry.
+        self.serve_once: dict[int, int] = {}
         self.writes: list[tuple[int, int]] = []
         self.sleeps: list[float] = []
         self.depth_at_sleep: list[int] = []
@@ -115,6 +118,8 @@ class FakeBno055Bus:
             if self.chip_id_delay > 0:
                 self.chip_id_delay -= 1
                 return 0x00
+        if register in self.serve_once:
+            return self.serve_once.pop(register)
         return self.registers.get(register, 0)
 
     def read_block(self, address: int, register: int, length: int) -> list[int]:
@@ -163,8 +168,11 @@ def test_the_bench_reading_decodes_to_the_bench_numbers(imu):
     device.read()
     calibrate(bus)
     reading = device.read()
-    assert reading.roll == pytest.approx(27.19, abs=HALF_LSB_DEGREE)
-    assert reading.pitch == pytest.approx(7.06, abs=HALF_LSB_DEGREE)
+    # The bench registers put 27.19 in Bosch-roll and 7.06 in Bosch-pitch;
+    # Bosch's names mirror the aerospace convention (two controlled tilts,
+    # 2026-08-28), so this driver publishes pitch = −EUL_ROLL, roll = +EUL_PITCH.
+    assert reading.pitch == pytest.approx(-27.19, abs=HALF_LSB_DEGREE)
+    assert reading.roll == pytest.approx(7.06, abs=HALF_LSB_DEGREE)
     assert reading.yaw == pytest.approx(0.00, abs=HALF_LSB_DEGREE)
     assert reading.quaternion.w == pytest.approx(0.970, abs=0.001)
     assert reading.quaternion.x == pytest.approx(-0.057, abs=0.001)
@@ -298,11 +306,51 @@ def test_calib_stat_unpacks_into_four_two_bit_fields(imu):
 
 def test_negative_values_are_decoded_as_signed(imu):
     device, bus = imu
-    bus.registers.update(_words(bno055.REG_EUL_DATA, [0, _euler(-90.0), 0]))
+    bus.registers.update(_words(bno055.REG_EUL_DATA, [0, _euler(-90.0), _euler(-45.0)]))
     bus.registers[bno055.REG_TEMP] = 0xF6  # -10 °C
     reading = device.read()
-    assert reading.roll == pytest.approx(-90.0, abs=HALF_LSB_DEGREE)
+    assert reading.pitch == pytest.approx(90.0, abs=HALF_LSB_DEGREE)  # −EUL_ROLL
+    assert reading.roll == pytest.approx(-45.0, abs=HALF_LSB_DEGREE)  # +EUL_PITCH
     assert reading.temperature == -10.0
+
+
+@pytest.mark.parametrize(
+    ("register", "named"),
+    [
+        (bno055.REG_EUL_DATA + 1, "heading"),  # heading high byte
+        (bno055.REG_EUL_DATA + 3, "pitch"),  # Bosch-roll high byte → our pitch
+        (bno055.REG_EUL_DATA + 5, "roll"),  # Bosch-pitch high byte → our roll
+        (bno055.REG_QUA_DATA + 3, "quaternion"),  # quat x high byte
+        (bno055.REG_ACC_DATA + 1, "accel"),  # accel x high byte: ±33 g
+        (bno055.REG_GYR_DATA + 1, "gyro"),  # gyro x high byte: ±2048 dps
+        (bno055.REG_TEMP, "temperature"),
+    ],
+)
+def test_a_bit_flipped_read_is_rejected_and_reread(imu, caplog, register, named):
+    # The 10 kHz bus still flips bit 7 of one byte roughly once in ten reads
+    # (bench, 2026-08-28; seen live in the Euler, accel and quaternion blocks).
+    # A flipped high byte is half the 16-bit range — a confident impossibility —
+    # so the sample is validated, named in the log, and re-read.
+    device, bus = imu
+    bus.serve_once[register] = bus.registers.get(register, 0) ^ 0x80
+    with caplog.at_level("WARNING"):
+        reading = device.read()
+    assert named in caplog.text
+    assert "re-reading" in caplog.text
+    # The retry got the honest value: the remapped bench angles, unpolluted.
+    assert reading.pitch == pytest.approx(-27.19, abs=HALF_LSB_DEGREE)
+    assert reading.roll == pytest.approx(7.06, abs=HALF_LSB_DEGREE)
+
+
+def test_a_bus_that_returns_only_garbage_raises_rather_than_publishing_it(imu):
+    # Persistent corruption exhausts the retries and becomes an I2CError — the
+    # established failure mode ADCS already logs and survives. What must never
+    # happen is +33 g reaching the bus as a measurement.
+    device, bus = imu
+    high = bno055.REG_ACC_DATA + 1
+    bus.registers[high] = bus.registers.get(high, 0) ^ 0x80
+    with pytest.raises(I2CError, match="corrupted"):
+        device.read()
 
 
 def test_the_heading_is_withheld_until_the_magnetometer_is_fully_calibrated(imu):
@@ -334,8 +382,8 @@ def test_roll_and_pitch_survive_an_uncalibrated_magnetometer(imu):
     device, bus = imu
     calibrate(bus, 0)
     reading = device.read()
-    assert reading.roll == pytest.approx(27.19, abs=HALF_LSB_DEGREE)
-    assert reading.pitch == pytest.approx(7.06, abs=HALF_LSB_DEGREE)
+    assert reading.pitch == pytest.approx(-27.19, abs=HALF_LSB_DEGREE)
+    assert reading.roll == pytest.approx(7.06, abs=HALF_LSB_DEGREE)
 
 
 def test_a_withheld_heading_is_explained_once_not_twice_a_second(imu, caplog):

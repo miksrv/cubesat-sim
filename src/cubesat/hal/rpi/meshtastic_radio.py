@@ -65,6 +65,10 @@ to lean on, and that ``pub.subscribe(..., "meshtastic.receive")`` delivers.
   the same thing this way is read from the library, not from a bench run. If it
   is wrong the messages land on the public primary channel — visible to every
   node in range rather than lost, which is why it is worth naming here.
+* **``hopStart``/``hopLimit``.** The hop count in ``RadioMessage`` is their
+  difference, read from the library's documentation — see ``_hops``. The bench
+  check is a packet relayed through a third node reading 1; every packet so far
+  has been heard directly.
 * **Reading the node id and the region back.** Both are cosmetic: they populate
   ``comms_status`` so an operator can see which node answered. Every accessor is
   best-effort and yields None rather than raising, because a status field is not
@@ -314,6 +318,8 @@ class MeshtasticRadio:
                 # rxRssi is absent on some packets; rxSnr is the one that is
                 # always there, and it is the better number for a link margin.
                 snr=packet.get("rxSnr"),
+                rssi=packet.get("rxRssi"),
+                hops=_hops(packet),
             )
         except Exception:
             # A packet shaped differently from anything seen on the bench must
@@ -323,6 +329,24 @@ class MeshtasticRadio:
             return
         with self._lock:
             self._inbox.append(message)
+
+
+def _hops(packet: Any) -> int | None:
+    """Mesh hops this packet took, or None when the fields are not both there.
+
+    Inferred, not bench-verified: the library documents ``hopStart`` as the
+    hop limit the sender transmitted with and ``hopLimit`` as what remains on
+    arrival, so their difference is the hops taken — 0 means heard directly.
+    The bench check that would confirm it is a packet relayed through a third
+    node showing 1 here. Until then the value is best-effort and None whenever
+    either field is missing or the difference is not a sane hop count.
+    """
+    start = packet.get("hopStart")
+    limit = packet.get("hopLimit")
+    if not isinstance(start, int) or not isinstance(limit, int):
+        return None
+    hops = start - limit
+    return hops if 0 <= hops <= 7 else None
 
 
 def _pub() -> Any:

@@ -157,9 +157,21 @@ MAX_RADIO_MESSAGE_BYTES = 240
 
 @dataclass(frozen=True)
 class RadioMessage:
+    """One inbound text message, with what the radio observed about the link.
+
+    Every link field is optional and None when the node did not report it —
+    withheld rather than substituted, like every other reading in this project.
+    ``snr`` is the field the bench showed to be always present; ``rssi`` is
+    sometimes absent, and ``hops`` is derived from packet fields the bench has
+    not exercised yet (see the driver), so both lean on None freely.
+    """
+
     text: str
     sender: str | None = None
     snr: float | None = None
+    rssi: float | None = None
+    #: Mesh hops this packet took to arrive: 0 means heard directly.
+    hops: int | None = None
 
 
 @runtime_checkable

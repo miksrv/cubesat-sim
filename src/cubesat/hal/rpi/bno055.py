@@ -37,28 +37,42 @@ Everything in ``docs/hardware-bno055-bmp280-imu.md`` is bench-verified on the
 assembled satellite: the configuration and diagnostic registers below, the reset
 sequence, the ``CALIB_STAT`` bit layout and every scale factor.
 
-The following are **taken from the Bosch datasheet that document links to, and
-are not in our bench notes.** They are called out because a reader cannot
-otherwise tell them apart from the verified constants, and each would fail
-quietly rather than loudly:
+**Bench-verified 2026-08-28, first hardware run (closes ROADMAP V1 and V4):**
 
-- the data register addresses ``REG_ACC_DATA``, ``REG_GYR_DATA``,
-  ``REG_EUL_DATA``, ``REG_QUA_DATA`` and ``REG_TEMP``;
-- that each of those blocks is two bytes per axis, LSB first, signed;
-- **the order of the Euler block — heading, roll, pitch.** This is the one to
-  distrust most: a swapped roll and pitch would look entirely plausible on a
-  dashboard, and nothing in the notes would catch it;
-- the conversion of acceleration to g. The document's scale is 100 LSB per m/s²;
-  ``Attitude.accel_g`` is in g, so the driver divides by standard gravity.
+- The data register addresses and the two-bytes-per-axis LSB-first signed layout
+  produce physically consistent readings across all five blocks.
+- The Euler block order is heading, roll, pitch as the datasheet says — **but
+  Bosch's roll and pitch name the mirror of the aerospace convention.** Two
+  controlled tilts settled it: camera (nose) up 45° moved ``EUL_ROLL`` to −36
+  while ``EUL_PITCH`` sat still; right side up 45° moved ``EUL_PITCH`` to −40
+  while ``EUL_ROLL`` sat still. The datasheet agrees once you look at the
+  ranges: Bosch roll is ±90° (the asin-shaped one — aerospace *pitch*) and
+  Bosch pitch ±180° (aerospace *roll*). So this driver publishes
+  ``pitch = −EUL_ROLL`` and ``roll = +EUL_PITCH``, giving nose-up-positive
+  pitch and right-side-down-positive roll. The quaternion needs no remap: the
+  standard ZYX extraction from it matched the tilts as-is.
+- The acceleration scale: at rest ``|a|`` ≈ 0.97 g with the accelerometer still
+  uncalibrated — a wrong factor would be off by 2× or 100×, not 3 %.
+- Sensor axes on the frame: **+X points away from the camera, +Y to the right
+  side (viewed from behind the camera), +Z up.**
 
-One bench print would settle all four: run ``~/test/bno055_bmp280_read.py``
-beside this driver, tilt the board nose-up and confirm that ``pitch`` moves while
-``roll`` does not, then check ``|a|`` against 9.8 m/s² at rest.
+**The 10 kHz bus still corrupts reads — rarely.** The bit-7 failure that forced
+the bus down from 100 kHz (see the hardware doc) is not entirely gone at
+10 kHz: during the bench session roughly one read in ten came back with bit 7
+of one high byte flipped, observed in the Euler, acceleration *and* quaternion
+blocks. A flipped high-byte bit 7 moves a value by half the 16-bit range —
++33 g on an accelerometer axis, −2000° on an angle, ±2 on a quaternion
+component — which is why ``read()`` validates every block against physical
+plausibility and re-reads on failure rather than publishing a confident
+impossibility. A flipped *low* byte bit 7 (an error of 8°, 0.13 g, 0.008 in a
+quaternion component) slips through undetected; it is bounded and rare, and no
+range check can catch it.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Callable
 
@@ -86,7 +100,7 @@ REG_SYS_TRIGGER = 0x3F
 #: signed 16-bit per axis. See "Verified versus inferred" above.
 REG_ACC_DATA = 0x08  # x, y, z
 REG_GYR_DATA = 0x14  # x, y, z
-REG_EUL_DATA = 0x1A  # heading, roll, pitch — the order to distrust
+REG_EUL_DATA = 0x1A  # heading, then Bosch-roll, then Bosch-pitch — see the remap note
 REG_QUA_DATA = 0x20  # w, x, y, z
 REG_TEMP = 0x34  # single signed byte
 
@@ -120,6 +134,30 @@ GYRO_LSB_PER_DPS = 16.0
 #: a definition rather than a calibration constant, but the *decision* to publish
 #: g is ours and not in the bench notes — see "Verified versus inferred" above.
 STANDARD_GRAVITY = 9.80665
+
+#: How many times ``read()`` tries before conceding the bus is not cooperating.
+#: The detectable-corruption rate reached ~20 % of reads in one bench session —
+#: reproduced with a bare ``i2cget`` (one word read in four came back with the
+#: low byte's bit 7 flipped: 0x167F → 0x16FF), so this is the bus, not this
+#: driver's transaction pattern.
+READ_ATTEMPTS = 5
+
+#: The pause between attempts, growing per attempt. Not a courtesy: the flips
+#: are phase-correlated, not independent — the same byte came back corrupted on
+#: five back-to-back reads (temperature 0x21 → 0xA1, bench 2026-08-28), because
+#: an immediate retry lands on the same alignment against the chip's 100 Hz
+#: fusion cycle, whose register updates are when it stretches the clock. A
+#: growing, non-multiple-of-10-ms pause walks the retry across that phase.
+RETRY_BACKOFF_SEC = 0.023
+
+#: Plausibility bounds for the corruption check. A flipped bit 7 in a high byte
+#: moves a value by half the 16-bit range, far outside anything a handheld
+#: satellite can physically do — these are deliberately loose so no honest
+#: reading is ever rejected.
+MAX_ACCEL_G = 8.0
+MAX_GYRO_DPS = 1000.0
+QUATERNION_NORM_TOLERANCE = 0.15
+TEMPERATURE_RANGE_C = (-40.0, 85.0)  # the chip's own operating range
 
 #: The power-on reset takes about 650 ms; a full second is the value that was
 #: used on the bench. The mode change needs a further moment to settle.
@@ -261,14 +299,41 @@ class BNO055:
         )
 
     def read(self) -> Attitude:
-        """One coherent attitude sample.
+        """One coherent attitude sample, validated before it is believed.
+
+        The 10 kHz bus still flips bit 7 of a byte about once in ten reads (see
+        the module docstring), and a flipped high byte is half the 16-bit range
+        — a confident impossibility that no consumer could tell from a
+        measurement. So every block is checked against physical plausibility
+        and the whole sample is re-read on failure; only after ``READ_ATTEMPTS``
+        consecutive corrupted reads does this raise, at which point the bus
+        genuinely is not cooperating.
+        """
+        self._ensure_configured()
+        problem: str | None = "unread"
+        for attempt in range(READ_ATTEMPTS):
+            if attempt:
+                # Decorrelate from the chip's fusion cycle — see RETRY_BACKOFF_SEC.
+                self._sleep(RETRY_BACKOFF_SEC * attempt)
+            heading, attitude = self._read_once()
+            problem = _corruption(heading, attitude)
+            if problem is None:
+                return attitude
+            logger.warning("BNO055 corrupted read (%s); re-reading", problem)
+        raise I2CError(
+            f"BNO055 returned corrupted data on {READ_ATTEMPTS} consecutive reads ({problem})"
+        )
+
+    def _read_once(self) -> tuple[float, Attitude]:
+        """One raw sample. The heading comes back separately because the
+        ``Attitude`` may honestly withhold it as ``yaw`` while the validation
+        still needs to see what the register said.
 
         Every block is read under a single transaction: an attitude assembled
         from halves taken tens of milliseconds apart is not an attitude, and at
         10 kHz that is exactly how far apart they would be. The bus lock is
         reentrant, so the inner reads nest for free.
         """
-        self._ensure_configured()
         with self._bus.transaction():
             euler = self._bus.read_block(ADDRESS, REG_EUL_DATA, 6)
             quaternion = self._bus.read_block(ADDRESS, REG_QUA_DATA, 8)
@@ -277,13 +342,17 @@ class BNO055:
             temperature = self._bus.read_byte(ADDRESS, REG_TEMP)
             calib_stat = self._bus.read_byte(ADDRESS, REG_CALIB_STAT)
 
-        heading, roll, pitch = _axes(euler, EULER_LSB_PER_DEGREE)
+        heading, bosch_roll, bosch_pitch = _axes(euler, EULER_LSB_PER_DEGREE)
         accel_x, accel_y, accel_z = _axes(accel, ACCEL_LSB_PER_M_S2 * STANDARD_GRAVITY)
         gyro_x, gyro_y, gyro_z = _axes(gyro, GYRO_LSB_PER_DPS)
         calibration = _calibration(calib_stat)
-        return Attitude(
-            roll=round(roll, 4),
-            pitch=round(pitch, 4),
+        return heading, Attitude(
+            # Bosch's names mirror the aerospace convention — bench-verified
+            # with two controlled tilts, 2026-08-28 (module docstring). This
+            # remap gives nose-up-positive pitch and right-side-down-positive
+            # roll, matching what the quaternion says under standard ZYX.
+            roll=round(bosch_pitch, 4),
+            pitch=round(-bosch_roll, 4),
             yaw=self._heading(heading, calibration),
             quaternion=Quaternion(
                 w=round(_signed16(quaternion[0], quaternion[1]) / QUATERNION_LSB, 5),
@@ -316,6 +385,39 @@ class BNO055:
                 "reported" if usable else "withheld",
             )
         return round(heading, 4) if usable else None
+
+
+def _corruption(heading: float, attitude: Attitude) -> str | None:
+    """Name what is physically impossible about this sample, or None.
+
+    Each bound is loose enough that no honest reading is ever rejected — see
+    the constants — so a hit here is evidence of the bit-flip corruption, not a
+    judgement about how the satellite is being handled.
+    """
+    if not 0.0 <= heading <= 360.0:
+        return f"heading {heading:.2f} outside 0..360"
+    # After the remap: our pitch spans Bosch-roll's ±90, our roll Bosch-pitch's ±180.
+    if not -90.0 <= attitude.pitch <= 90.0:
+        return f"pitch {attitude.pitch:.2f} outside ±90"
+    if not -180.0 <= attitude.roll <= 180.0:
+        return f"roll {attitude.roll:.2f} outside ±180"
+    q = attitude.quaternion
+    norm = math.sqrt(q.w**2 + q.x**2 + q.y**2 + q.z**2)
+    if abs(norm - 1.0) > QUATERNION_NORM_TOLERANCE:
+        return f"quaternion norm {norm:.3f}"
+    a = attitude.accel_g
+    magnitude = math.sqrt(a.x**2 + a.y**2 + a.z**2)
+    if magnitude > MAX_ACCEL_G:
+        return f"|accel| {magnitude:.1f} g"
+    g = attitude.gyro_dps
+    if max(abs(g.x), abs(g.y), abs(g.z)) > MAX_GYRO_DPS:
+        return f"gyro ({g.x:.0f}, {g.y:.0f}, {g.z:.0f}) dps"
+    low, high = TEMPERATURE_RANGE_C
+    # This driver always sets a temperature; the None in the interface belongs
+    # to sensors that may withhold one, and a withheld value is not corrupt.
+    if attitude.temperature is not None and not low <= attitude.temperature <= high:
+        return f"temperature {attitude.temperature:.0f} degC"
+    return None
 
 
 def _calibration(raw: int) -> Calibration:

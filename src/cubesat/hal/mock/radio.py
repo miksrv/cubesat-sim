@@ -37,9 +37,18 @@ class MockRadio:
         received, self._inbox = self._inbox, []
         return received
 
-    def inject(self, text: str, sender: str = "!test0001", snr: float = 6.0) -> None:
+    def inject(
+        self,
+        text: str,
+        sender: str = "!test0001",
+        snr: float = 6.0,
+        rssi: float | None = -96.0,
+        hops: int | None = 0,
+    ) -> None:
         """Test seam: pretend a message arrived over the air."""
-        self._inbox.append(RadioMessage(text=text, sender=sender, snr=snr))
+        self._inbox.append(
+            RadioMessage(text=text, sender=sender, snr=snr, rssi=rssi, hops=hops)
+        )
 
     def close(self) -> None:
         return None

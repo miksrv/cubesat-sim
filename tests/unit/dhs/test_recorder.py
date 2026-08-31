@@ -16,7 +16,14 @@ import pytest
 from cubesat.common import config
 from cubesat.common.metrics import SystemMetrics
 from cubesat.dhs import schema
-from cubesat.dhs.recorder import AttitudeBuffer, Recorder, build_attitude, build_row
+from cubesat.dhs.recorder import (
+    AttitudeBuffer,
+    RadioBuffer,
+    Recorder,
+    build_attitude,
+    build_radio_event,
+    build_row,
+)
 
 LOG = logging.getLogger("test-dhs")
 
@@ -390,3 +397,95 @@ def test_attitude_is_counted_apart_from_telemetry_rows(conn, recorder):
     assert (recorder.written, recorder.attitude_written) == (1, 2)
     # count() is still the telemetry table: one row, not three.
     assert recorder.count() == 1
+
+
+# ── the radio buffer and its writes ───────────────────────────────────────────
+
+
+def radio_row(t, *, mission_id=42, direction="rx", **overrides):
+    event = {
+        "mission_id": mission_id,
+        "t": t,
+        "direction": direction,
+        "kind": None,
+        "text": "!pos",
+        "bytes": 4,
+        "sender": "!e2f1a4c8",
+        "snr": 6.25,
+        "rssi": -96.0,
+        "hops": 0,
+        "sent": None,
+    }
+    event.update(overrides)
+    return event
+
+
+def test_the_radio_buffer_takes_everything_and_never_decimates():
+    # Attitude is a continuous signal where a sample stands for its neighbours;
+    # a radio session is discrete events, and the one packet dropped would be
+    # the uplink somebody is trying to find in the log.
+    buf = RadioBuffer(capacity=10)
+    for t in (1000.0, 1000.1, 1000.2):
+        assert buf.offer(radio_row(t)) is True
+    assert len(buf) == 3
+    assert buf.offer(None) is False
+
+
+def test_the_radio_buffer_is_bounded_and_drops_the_oldest():
+    buf = RadioBuffer(capacity=2)
+    for t in (1.0, 2.0, 3.0):
+        buf.offer(radio_row(t))
+    assert buf.overflowed == 1
+    assert [e["t"] for e in buf.drain()] == [2.0, 3.0]
+
+
+def test_a_restored_radio_batch_keeps_its_order():
+    buf = RadioBuffer(capacity=10)
+    buf.offer(radio_row(3.0))
+    buf.restore([radio_row(1.0), radio_row(2.0)])
+    assert [e["t"] for e in buf.drain()] == [1.0, 2.0, 3.0]
+
+
+def test_radio_events_are_written_in_one_batch(conn, recorder):
+    batch = [radio_row(1.0), radio_row(2.0, direction="tx", kind="beacon", sent=1)]
+    assert recorder.write_radio(batch) is True
+    assert recorder.radio_written == 2
+    stored = conn.execute("SELECT * FROM radio_log ORDER BY t").fetchall()
+    assert [row["direction"] for row in stored] == ["rx", "tx"]
+    assert stored[0]["snr"] == 6.25
+    assert stored[1]["kind"] == "beacon" and stored[1]["sent"] == 1
+
+
+def test_an_empty_radio_batch_is_a_success_that_touches_nothing(recorder):
+    assert recorder.write_radio([]) is True
+    assert recorder.radio_written == 0
+
+
+def test_a_radio_batch_that_fails_lands_none_of_it(conn, recorder, caplog):
+    batch = [radio_row(1.0), radio_row(2.0, mission_id=999), radio_row(3.0)]
+    with caplog.at_level(logging.ERROR):
+        assert recorder.write_radio(batch) is False
+    assert conn.execute("SELECT COUNT(*) AS n FROM radio_log").fetchone()["n"] == 0
+    assert recorder.failed == 1
+    assert "3 event(s) held" in caplog.text
+
+
+def test_build_radio_event_refuses_what_cannot_name_a_direction():
+    assert build_radio_event(None, mission_id=42, now=1000.0) is None
+    assert (
+        build_radio_event({"timestamp": 1.0, "text": "?"}, mission_id=42, now=1000.0)
+        is None
+    )
+    assert (
+        build_radio_event(
+            {"timestamp": 1.0, "direction": "sideways"}, mission_id=42, now=1000.0
+        )
+        is None
+    )
+
+
+def test_build_radio_event_falls_back_to_now_only_when_the_event_carries_no_time():
+    event = build_radio_event({"direction": "rx"}, mission_id=42, now=1234.0)
+    assert event is not None and event["t"] == 1234.0
+    # And everything unsaid is null, never substituted.
+    assert event["snr"] is None and event["sent"] is None and event["text"] is None

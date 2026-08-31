@@ -117,6 +117,7 @@ def test_dhs_subscribes_to_every_source_it_assembles_a_row_from(dhs):
         TOPICS["adcs_status"],
         TOPICS["payload_data"],
         TOPICS["host_status"],
+        TOPICS["comms_radio"],
     }
 
 
@@ -762,3 +763,110 @@ def test_the_floor_is_a_ceiling_on_every_profile_including_diag(dhs, monkeypatch
     service.tick()
 
     assert [row["t"] for row in attitude_in(config.DIAG_DB_PATH)] == [2000.0, 2001.0]
+
+
+# ── the radio log ─────────────────────────────────────────────────────────────
+
+
+def radio_in(path, mission_id=None):
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        sql = "SELECT * FROM radio_log"
+        args: tuple = ()
+        if mission_id is not None:
+            sql += " WHERE mission_id = ?"
+            args = (mission_id,)
+        return [dict(row) for row in conn.execute(sql + " ORDER BY t", args)]
+    finally:
+        conn.close()
+
+
+def rx_event(t, text="!pos", snr=6.25, rssi=-96.0, hops=0):
+    """A comms_radio event as COMMS publishes one per received message."""
+    return {
+        "timestamp": t,
+        "direction": "rx",
+        "text": text,
+        "bytes": len(text.encode("utf-8")),
+        "sender": "!e2f1a4c8",
+        "snr": snr,
+        "rssi": rssi,
+        "hops": hops,
+    }
+
+
+def tx_event(t, kind="beacon", sent=True, text="CS t=1 st=NOMINAL"):
+    return {
+        "timestamp": t,
+        "direction": "tx",
+        "kind": kind,
+        "text": text,
+        "bytes": len(text.encode("utf-8")),
+        "sent": sent,
+    }
+
+
+def test_radio_events_arrive_between_ticks_and_land_in_one_batch(dhs):
+    service, client = dhs
+    obc(client)
+    client.deliver(TOPICS["comms_radio"], rx_event(1000.0))
+    client.deliver(TOPICS["comms_radio"], tx_event(1010.0, kind="ack"))
+    assert len(service._radio) == 2
+    assert radio_in(config.DB_PATH) == []
+    service.tick()
+
+    stored = radio_in(config.DB_PATH)
+    assert [row["direction"] for row in stored] == ["rx", "tx"]
+    assert stored[0]["text"] == "!pos"
+    assert stored[0]["snr"] == 6.25 and stored[0]["rssi"] == -96.0 and stored[0]["hops"] == 0
+    assert stored[0]["sent"] is None and stored[0]["kind"] is None
+    assert stored[1]["kind"] == "ack" and stored[1]["sent"] == 1
+    assert status(client)["radio"] == {"written": 2, "buffered": 0}
+
+
+def test_radio_traffic_outside_a_mission_belongs_to_nothing_and_is_dropped(dhs):
+    # The table answers "what did the radio do on this trip"; a HOSTED desk
+    # listening has no trip for a row to belong to.
+    service, client = dhs
+    client.deliver(TOPICS["comms_radio"], rx_event(1000.0))
+    obc(client)
+    client.deliver(TOPICS["comms_radio"], rx_event(1002.0))
+    service.tick()
+
+    assert [row["t"] for row in radio_in(config.DB_PATH)] == [1002.0]
+
+
+def test_a_closing_mission_takes_its_buffered_radio_events_with_it(dhs):
+    service, client = dhs
+    obc(client)
+    mission_id = status(client)["mission"]["id"]
+    client.deliver(TOPICS["comms_radio"], tx_event(1000.0, kind="down"))
+    obc(client, state=MissionState.STANDBY)
+
+    assert [row["kind"] for row in radio_in(config.DB_PATH, mission_id)] == ["down"]
+
+
+def test_a_failed_radio_write_holds_the_events_for_the_next_tick(dhs, monkeypatch):
+    service, client = dhs
+    obc(client)
+    client.deliver(TOPICS["comms_radio"], rx_event(1000.0))
+
+    real_write = service._recorder.write_radio
+    monkeypatch.setattr(service._recorder, "write_radio", lambda batch: False)
+    service.tick()
+    assert status(client)["radio"]["buffered"] == 1
+    assert radio_in(config.DB_PATH) == []
+
+    monkeypatch.setattr(service._recorder, "write_radio", real_write)
+    service.tick()
+    assert [row["t"] for row in radio_in(config.DB_PATH)] == [1000.0]
+
+
+def test_an_event_with_no_direction_is_noise_and_is_not_buffered(dhs):
+    # A session log entry that cannot say whether the satellite was talking or
+    # listening is not an entry.
+    service, client = dhs
+    obc(client)
+    client.deliver(TOPICS["comms_radio"], {"timestamp": 1000.0, "text": "?"})
+    assert len(service._radio) == 0

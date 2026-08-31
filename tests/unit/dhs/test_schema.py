@@ -82,11 +82,12 @@ def test_a_version_1_database_is_migrated_in_place_with_its_history_intact(db_pa
     with caplog.at_level(logging.INFO):
         conn = schema.connect(db_path, LOG)
 
-    assert user_version(conn) == schema.SCHEMA_VERSION == 3
+    assert user_version(conn) == schema.SCHEMA_VERSION == 4
     # Step 1 is not re-run; only the steps this file had never had.
     assert "applying schema migration 1" not in caplog.text
     assert "applying schema migration 2" in caplog.text
     assert "applying schema migration 3" in caplog.text
+    assert "applying schema migration 4" in caplog.text
     # And the reason any of this matters: a walk to work happened once.
     assert conn.execute("SELECT COUNT(*) AS n FROM telemetry").fetchone()["n"] == 3
     mission = conn.execute("SELECT * FROM missions").fetchone()
@@ -99,6 +100,8 @@ def test_a_version_1_database_is_migrated_in_place_with_its_history_intact(db_pa
     # attitude existed has no attitude, and inventing rows from the telemetry
     # columns would be a replay of something nobody measured.
     assert conn.execute("SELECT COUNT(*) AS n FROM attitude").fetchone()["n"] == 0
+    # And so does radio_log: traffic that predates the table was not observed.
+    assert conn.execute("SELECT COUNT(*) AS n FROM radio_log").fetchone()["n"] == 0
     conn.close()
 
 

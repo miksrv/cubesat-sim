@@ -11,8 +11,16 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="${PROJECT_DIR}/venv"
 ALWAYS_ON=(cubesat-hostd.service cubesat@obc.service cubesat@eps.service)
 
+echo "==> apt prerequisites"
+# libcamera's Python bindings exist only as apt packages, and on kernels ≥ 6.6
+# the RPi.GPIO API is provided by the rpi-lgpio shim — neither is installable
+# from PyPI, which is why the venv below shares the system site-packages.
+sudo apt-get install -y python3-picamera2 python3-rpi-lgpio
+
 echo "==> Python environment"
-python3 -m venv "${VENV}"
+# --system-site-packages: picamera2, libcamera and the RPi.GPIO shim come from
+# apt (above); everything pip-installable still lands in the venv.
+python3 -m venv --system-site-packages "${VENV}"
 "${VENV}/bin/pip" install --quiet --upgrade pip
 # The rpi extra carries the hardware-only packages; they are expected to fail on
 # anything that is not a Raspberry Pi.
@@ -24,7 +32,11 @@ echo "==> mosquitto listeners"
 # broker directly, so there is no MQTT-to-WebSocket bridge in this project —
 # see config/mosquitto/cubesat.conf for why the split is per-listener.
 sudo cp "${PROJECT_DIR}/config/mosquitto/cubesat.conf" /etc/mosquitto/conf.d/cubesat.conf
-sudo cp "${PROJECT_DIR}/config/mosquitto/acl.conf" /etc/mosquitto/conf.d/cubesat-acl.conf
+# The ACL file deliberately does NOT go into conf.d/: mosquitto parses every
+# file there as broker configuration, and an ACL file read that way kills the
+# broker at startup ("Invalid bridge configuration" on the first topic line).
+sudo cp "${PROJECT_DIR}/config/mosquitto/acl.conf" /etc/mosquitto/cubesat-acl.conf
+sudo rm -f /etc/mosquitto/conf.d/cubesat-acl.conf
 # Restarted rather than reloaded: mosquitto does not pick up a new listener on
 # SIGHUP. Fails loudly on a bad config file, which is the wanted behaviour — a
 # broker that did not come back is the one failure that strands everything.

@@ -88,8 +88,11 @@ cadence:
 # something is wrong is a satellite nobody can help; safe mode exists to stay
 # contactable, not to hide.
 beacon:
-  NOMINAL: 30
-  SCIENCE: 30
+  # 60 rather than 30: the beacon is proof of life with a position, and the
+  # query commands (!sys, !env, !pos, !mission) now answer on demand — routine
+  # airtime on a shared mesh was not buying anything a minute would not.
+  NOMINAL: 60
+  SCIENCE: 60
   LOW_POWER: 300
   SAFE: 600
 
@@ -114,6 +117,10 @@ dhs:
   # long enough to ride out a card that comes back, bounded so that one that
   # does not cannot take the process with it.
   attitude_buffer: 7200
+  # The same bound for radio events (see cubesat/comms/radio). Radio traffic
+  # is sparse — a beacon a minute in NOMINAL — so this covers hours of a
+  # failing card before the oldest events start to go.
+  radio_buffer: 512
 
 retention:
   # How long a telemetry row lives. Missions themselves are kept: a purged
@@ -144,6 +151,15 @@ camera:
   # interval below is a floor, not a default — a ground command chooses the
   # rate, and anything faster than this is clamped rather than refused.
   min_timelapse_interval_sec: 1.0
+  # How long the camera stays open after its last use. An open Picamera2 runs
+  # the whole ISP pipeline continuously — auto-exposure and white balance never
+  # sleep — which is measurable SoC heat on a satellite that may not take a
+  # photo for hours. After this many seconds of no captures the sensor is given
+  # back; the next capture re-opens it (about a second). A timelapse faster
+  # than this keeps the camera warm; a slower one lets it cool between frames,
+  # which is the right trade at the intervals where reopening is cheap
+  # relative to the wait. 0 keeps the camera open forever, as before.
+  idle_close_sec: 60.0
 
 science:
   # SEN0501 board revision: v1 (LTR390) or v3 (S12DS). Unset means the UV index

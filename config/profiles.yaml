@@ -25,8 +25,16 @@ default_profile: HOSTED
 # the desk and another only during a demonstration. Naming a unit that is not
 # registered here fails at load; whatever a profile does not ask for is stopped,
 # so the field is read as the whole intent and never as a change to it.
+# Verified against the Pi 2026-08-28: these are the unit names as they exist
+# there. A registered unit that does not exist fails `systemctl start`, and one
+# failure marks the whole profile as partially applied — so this list must
+# mirror `systemctl list-unit-files`, not intentions.
 external_units:
-  - unit: telegram-bot.service
+  - unit: tars-bot.service
+    requires_internet: true
+  - unit: telegram-business-bot.service
+    requires_internet: true
+  - unit: telegram-support-bot.service
     requires_internet: true
   - unit: starmap.service
     requires_internet: true
@@ -43,7 +51,10 @@ profiles:
   # says nothing on its own.
   HOSTED:
     mission: standby
-    network: { mode: client }
+    # advertise_mdns matters here more than anywhere: HOSTED is where every
+    # boot lands, and without avahi `cubesat.local` — the only name SSH and
+    # the desk tooling know — goes dark (bench-found 2026-08-28).
+    network: { mode: client, advertise_mdns: true }
     external_units: start
     services: [comms]
     dashboard: false
@@ -118,7 +129,9 @@ profiles:
   # human who is already connected some other way.
   MAINTENANCE:
     mission: none
-    network: { mode: client }
+    # A human is on this box over the network by definition here, and losing
+    # `cubesat.local` mid-maintenance is losing the session.
+    network: { mode: client, advertise_mdns: true }
     external_units: stop
     services: []
     dashboard: false

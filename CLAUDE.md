@@ -201,12 +201,15 @@ All topic strings live in `src/cubesat/common/topics.py` as `TOPICS` — always 
 | `dhs_status` | `cubesat/dhs/status` | DHS | **yes** |
 | `comms_status` | `cubesat/comms/status` | COMMS | **yes** |
 | `comms_data` | `cubesat/comms/data` | COMMS | on-demand only |
+| `comms_radio` | `cubesat/comms/radio` | COMMS | no |
 | `heartbeat` | `cubesat/heartbeat` | **every service** | no |
 
 `cubesat/obc/status` carries `timestamp`, `status` (the mission state — not `state`), `profile`,
-`cadence_scale`, `persistence` and `mission_label`. The last three are there so a subsystem needs no
-second channel: cadence for everyone, persistence and label for DHS to open a mission from this one
-retained message.
+`cadence_scale`, `persistence`, `mission_label` and `subsystems`. The middle three are there so a
+subsystem needs no second channel: cadence for everyone, persistence and label for DHS to open a
+mission from this one retained message. `subsystems` (`watched`/`lost`) is OBC's health verdict for
+the ground segment — it is what lets a dashboard tell "off because the profile never started it"
+from "expected and silent" without guessing.
 
 **Browsers talk to the broker directly.** `config/mosquitto/` gives it two listeners — TCP on
 localhost for the satellite's own services, WebSockets on 9001 for browsers — with an ACL on the

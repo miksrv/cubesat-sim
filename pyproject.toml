@@ -22,11 +22,17 @@ dependencies = [
 
 [project.optional-dependencies]
 # Only on a Raspberry Pi: these either refuse to build elsewhere or are pointless.
+#
+# Deliberately absent, because they must come from apt, not PyPI (install.sh
+# installs them and creates the venv with --system-site-packages):
+#   libcamera / picamera2 — the libcamera Python bindings are not on PyPI at
+#     all; python3-picamera2 is the only working source on Raspberry Pi OS.
+#   RPi.GPIO — on kernels ≥ 6.6 the classic C extension no longer works; the
+#     API is provided by the python3-rpi-lgpio shim. A pip-installed RPi.GPIO
+#     would shadow the shim in the venv and fail at runtime, which is why it
+#     must not be listed here.
 rpi = [
     "smbus2>=0.4",
-    "RPi.GPIO>=0.7",
-    "lgpio>=0.2",
-    "picamera2>=0.3",
     "meshtastic>=2.5",
     "pyserial>=3.5",
 ]

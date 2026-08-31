@@ -125,6 +125,38 @@ creates. The service reads from disk per request, so a redeploy needs no restart
 can usefully do is be installed on the Pi — see the verification table below, and V8/V9 in
 particular, which are what confirm the decision this whole service is shaped around.
 
+### Widgets pass and the radio session log — 2026-08-29
+
+A ground-segment session that turned out to be half satellite work, because twice the dashboard
+needed data the bus did not carry. **Written and tested (100 % coverage, ruff/mypy clean), not yet
+run on the Pi and not yet deployed** — the client changes land with the next
+`deploy-dashboard.sh`, the service changes with the next install/restart, and `comms.db` picks up
+schema migration 4 automatically on first open.
+
+- **`obc_status` now carries `subsystems: {watched, lost}`** — OBC's own health verdict, published
+  so the ground can tell "off because the profile never started it" from "expected and silent".
+  `lost` is published empty while a profile switch settles, matching `_check_health`'s own
+  suppression. The dashboard's Subsystem Status widget renders it as OK/WARN/**FAIL**/**OFF**
+  (FAIL only on OBC's verdict, OFF for profile-stopped services), and the MQTT Bus Monitor greys
+  out and stops animating OFF nodes.
+- **`cubesat/comms/radio`** (not retained): one event per radio transaction — every message heard
+  (text verbatim, bytes, sender, SNR/RSSI/hops) and every transmission attempted (`kind` =
+  beacon/ack/down, `sent` — a failed transmit is published, not suppressed). COMMS observes,
+  publishes, and still persists nothing.
+- **DHS records the traffic into `radio_log`** (schema migration 4): mission-scoped like attitude,
+  buffered and batch-flushed like attitude, but **never decimated** — radio traffic is discrete
+  events, and the one packet dropped would be the uplink somebody is looking for. Same retention
+  horizon; `dhs_status` gains `radio: {written, buffered}`. Traffic outside a mission is
+  deliberately not recorded.
+- **`RadioMessage` gained `rssi` and `hops`** in the HAL. `hops = hopStart − hopLimit` is inferred
+  from the library, not bench-verified — see V10 below.
+- On the other side: the **Radio Link Log** widget (its own grid row), a `subscribeRadio` channel
+  and a `radio` capability on the data-source interface, and the demo recording format extended
+  with a `radio` array — the placeholder generator now writes plausible traffic (beacon per minute,
+  two queries with their 10 s acks, one failed transmit) and `ReplaySource` replays it in step with
+  the playhead. **Stage 7's export must include the mission's `radio_log` rows**; the client-side
+  loader already accepts them.
+
 ### Agreed: the radio reply contract
 
 Designed and agreed 2026-08-24; the full contract, with the reasoning, is
@@ -136,8 +168,8 @@ no `request_id` echo over the radio, and deliberately no `poweroff` command.
 
 | # | Work | Status |
 |---|---|---|
-| R1 | Compact `!` syntax in COMMS: translate to canonical JSON *before* the relay; unknown `!` lines answered `re=? ok=0 err=unknown` instead of silence | `[ ]` |
-| R2 | The ack rule: every accepted uplink schedules one out-of-schedule beacon ~10 s later carrying `re=<command>`; `re`/`ok`/`err` join the never-dropped core in `beacon.py` | `[ ]` |
+| R1 | Compact `!` syntax in COMMS: translate to canonical JSON *before* the relay; unknown `!` lines answered `re=? ok=0 err=unknown` instead of silence. **Done 2026-08-28** (`comms/compact.py`); deliberately narrower than the agreed table — `!pos`, `!mission`, `!restart` stay `err=unknown` until R3/R5 write their handlers, because a silent relay into an empty bus is the silence R1 exists to end | `[x]` |
+| R2 | The ack rule: every accepted uplink schedules one out-of-schedule beacon ~10 s later carrying `re=<command>`; `re`/`ok`/`err` join the never-dropped core in `beacon.py`. **Done 2026-08-28**, plus `!ping` answered immediately (the trivial half of R3); one pending slot collapses bursts, acks obey `lora_enabled` and need no beacon-table row — a satellite listening in HOSTED/STANDBY may answer a ping | `[x]` |
 | R3 | Query commands in COMMS: `ping` (an immediate beacon), `get_position` (with `age=`, may honestly report a stale fix), `get_mission` (from the DHS cache); `take_photo` ack fields (frame number, free MB) | `[ ]` |
 | R4 | The event-transmission budget: one per 10 s, extras collapse into the latest; `down=1` exempt; all of it gated on `lora_enabled` | `[ ]` |
 | R5 | `restart_service` through OBC → HOSTD, validated against the known services — the allowlist and the denied set already bound what it can reach | `[ ]` |
@@ -148,8 +180,44 @@ no `request_id` echo over the radio, and deliberately no `poweroff` command.
 `ruff` and `mypy` clean. `P0` is closed: the radio is a compact beacon over Meshtastic, and the split that put
 persistence in `DHS` and left `COMMS` as the link alone is complete on both sides.
 
-What is left: the `cubesat` CLI that `P2` still wants, and what `P6`–`P8` deliver. And the thing no
-amount of green tests substitutes for — **not one line of this has run on the Raspberry Pi.** The verification table above is the list of what only the bench can settle.
+What is left: the `cubesat` CLI that `P2` still wants, and what `P6`–`P8` deliver.
+
+### First hardware run — 2026-08-28
+
+The stack ran on the satellite for the first time: install, always-on tier, profile switches over
+MQTT (`HOSTED`, `DEMO`, `DIAG`, `MAINTENANCE`), a full DEPLOY→NOMINAL bring-up, missions recorded
+into both databases with orphan recovery observed working, a photo taken by MQTT command, V8/V9
+passed from an external WebSocket client. Every service read its real hardware on the first try.
+What 100 % mock coverage did *not* catch — each found live, fixed, and pinned by a test:
+
+| Found | Fix |
+|---|---|
+| mosquitto parses **every** file in `conf.d/` as broker config, so the ACL file there kills the broker at startup — the exact V8 prediction | ACL moved to `/etc/mosquitto/cubesat-acl.conf` (`install.sh`, `cubesat.conf`) |
+| `HOSTED`/`MAINTENANCE` had no `advertise_mdns`, so applying the default profile stopped avahi and took `cubesat.local` — the desk's only name for the box — off the air | `advertise_mdns: true` in both (`profiles.yaml`) |
+| The unit registry named `telegram-bot.service`, which does not exist on the Pi; one failed start marks the whole profile partially applied | registry now mirrors `systemctl list-unit-files` (three real bots) |
+| A service that **survives** the profile switch (COMMS by design; all four in DEMO→EXPO) publishes status only on change, so DEPLOY saw no fresh evidence and latched SAFE | `Service.report_in()` hook, fired on entering DEPLOY; COMMS and PAYLOAD override it |
+| PAYLOAD's first camera probe imports picamera2 — 35 s cold on a Pi 4, longer than the whole DEPLOY window | staged start: the sensor reports in first, camera honestly `null` until probed |
+| The one-shot bus sweep hit the BNO055 inside the ~650 ms soft-reset window ADCS opens with, failing DEPLOY in 70 ms | missing addresses are re-probed once a second and fail only when the window closes |
+| HOSTD stops the old profile's units on OBC's own request, and their last wills beat `host_status` by ~4 s — read as "subsystem lost", latching SAFE mid-switch | `ProfileMachine.settling`: subsystem-loss is suppressed while a request is in flight, bounded at 30 s |
+| `pip install lgpio` needs swig and serves nothing — no code imports it; pip's `picamera2`/`RPi.GPIO` cannot work on Trixie (libcamera is apt-only, classic RPi.GPIO is dead on kernel ≥ 6.6) | venv with `--system-site-packages` over apt `python3-picamera2` + `python3-rpi-lgpio`; the `rpi` extra trimmed to what PyPI can actually provide |
+| hostd tests read the shipped `profiles.yaml` — the rule from CLAUDE.md broken again, caught by the registry edit above | hostd fixtures pin their own registry; the same sweep over the obc/common tests still to do |
+
+**V1 closed the same evening, by hand.** Two controlled tilts (camera-up 45°, right-side-up 45°)
+against the registers and the quaternion settled it: Bosch's Euler names mirror the aerospace
+convention, so the driver now publishes `pitch = −EUL_ROLL`, `roll = +EUL_PITCH` — the swap the
+check existed to catch. Sensor axes on the frame: +X away from the camera, +Y right, +Z up.
+
+**And the tilt caught something V-table never listed: the 10 kHz bus still flips bit 7.** The
+clock-stretch corruption that forced the bus down from 100 kHz is not gone at 10 kHz — up to ~20 %
+of reads in a bad stretch, hitting the Euler, accel and quaternion blocks alike, reproduced with a
+bare `i2cget` (0x167F → 0x16FF). The driver now validates every block against physical plausibility
+and re-reads (5 attempts); a flipped *low* byte (±8° / 0.13 g / 0.008 quat) still slips through.
+Candidate real fix, needs a bench pass: `dtoverlay=i2c-gpio` — the software bus has no clock-stretch
+bug at all; measuring both corruption rates belongs in `DIAG` (P7).
+
+Still open on the bench: V2–V3 need a walk (carry the antenna), V5 stays by design, V6's AP path
+and V7's UV reading were out of scope for a session that had to keep Wi-Fi up. The camera also
+needs physically re-aiming: the test frame is mostly two of the satellite's own frame struts.
 
 ### Bench checks the code is waiting on
 
@@ -158,15 +226,17 @@ produces plausible data rather than an error, which is why none of them can be s
 
 | # | Check | Why it is not settled |
 |---|---|---|
-| V1 | **BNO055 Euler field order** (heading, roll, pitch). Run `~/test/bno055_bmp280_read.py` beside the driver, tilt the satellite nose-up, confirm `pitch` moves while `roll` does not | Taken from the Bosch datasheet, not from our bench notes. Swapped roll and pitch would look entirely plausible on a dashboard |
+| ~~V1~~ | ~~**BNO055 Euler field order**~~ **Done 2026-08-28, two controlled tilts:** the predicted swap was real — Bosch's roll/pitch mirror the aerospace names (their ranges give it away: roll ±90 is the asin-shaped one). Driver now remaps `pitch = −EUL_ROLL`, `roll = +EUL_PITCH`; the quaternion needed no remap | fixed + verified |
 | V2 | **TEL0157 knots → m/s factor.** One moving fix — a walk with the antenna out | The bench reading was 0.00 knots at rest, and zero converts to zero, so no measurement pins the factor |
 | V3 | **TEL0157 altitude triplet high byte.** The same walk, somewhere above 255 m | The bench altitude of 116.59 m fits in one byte, so the big-endian high byte has never been exercised |
-| V4 | **BNO055 accelerometer scale.** `\|a\|` ≈ 9.8 m/s² at rest | The 100 LSB per m/s² figure is documented; the conversion to g is ours |
+| ~~V4~~ | ~~**BNO055 accelerometer scale.** `\|a\|` ≈ 9.8 m/s² at rest~~ **Done 2026-08-28, first hardware run:** at rest `accel_g` = (0.035, −0.073, 0.968), \|a\| ≈ 0.97 g with the accelerometer still uncalibrated (`calib.accel = 0`) — a wrong scale factor would be off by 2× or 100×, not 3 % | measured |
 | V5 | **BNO055 calibration save/restore.** Deliberately not implemented: the profile register block is not in the verified docs, and writing unverified registers into the fusion engine on every boot is what produced the `SYS_ERR = 9` session already recorded there | Without it the magnetometer must be re-calibrated after every reset, so `yaw` is withheld for a while after each restart |
 | V7 | **SEN0501 board revision.** Read the silkscreen, or compare the pair of candidate values the driver logs against a known UV source | One raw register, two formulas: at raw 14 they give 0.00 and 84.35. `uv_index` stays null until this is settled |
 | V6 | **NetworkManager client mode.** `nmcli connection down Hotspot` with a pinned `wlan0` | Written against the documentation, never run on the Pi. `EXPO` depends on it |
-| V8 | **The mosquitto WebSocket listener.** `sudo systemctl restart mosquitto` after `install.sh`, then connect a browser to `ws://cubesat.local:9001` and confirm the retained statuses arrive on subscribe | The whole config is written from the documentation. `per_listener_settings true`, `protocol websockets` and the per-listener `acl_file` are each plausible-looking and untried, and mosquitto fails a bad config by not starting — which strands everything |
-| V9 | **The browser ACL actually denies.** From the page's own MQTT connection, publish to `cubesat/host/command` and to `cubesat/eps/status` and confirm both are refused while `cubesat/command` is accepted | This is the whole safety argument for talking to the broker from a browser. An ACL that silently permits looks exactly like one that works: everything the dashboard does succeeds either way |
+| ~~V8~~ | ~~**The mosquitto WebSocket listener.**~~ **Done 2026-08-28.** The predicted failure happened: the ACL file in `conf.d/` is parsed as broker config and kills mosquitto at startup ("Invalid bridge configuration" on the first `topic` line). Moved to `/etc/mosquitto/cubesat-acl.conf`; after that a WebSocket client on :9001 receives all six retained statuses on subscribe, and :1883 is unreachable from off the satellite | fixed + verified |
+| V10 | **Meshtastic hop count.** `hops = hopStart − hopLimit` is read from the library's documentation, not from a bench run. The check: a packet relayed through a third node should arrive with `hops = 1`; everything heard so far has been direct | Every direct packet reads 0 whichever interpretation is right, so no traffic to date can falsify it. Wrong arithmetic would put a plausible small integer in `radio_log.hops` |
+| ~~V9~~ | ~~**The browser ACL actually denies.**~~ **Done 2026-08-28**, from an external WebSocket client: publishes to `cubesat/host/command` and a forged `cubesat/eps/status` were silently dropped (confirmed by a subscribed witness), `cubesat/command` passed — and COMMS answered the `get_telemetry` it carried on `comms_data`, so the whole ground loop works from a browser's vantage point | verified |
+| V11 | **Exposure of the first capture after an idle close.** The camera now gives the sensor back after `camera.idle_close_sec` of no captures (the ISP pipeline is SoC heat while open), so a cold `take_photo` re-opens and shoots within about a second. Whether Picamera2's AE/AWB have converged by then is read from nothing — the lores stream exists precisely to run those loops, but how long they need after `start()` is not in our docs. The check: one photo warm, one photo cold, same scene | A dark or colour-cast first frame is plausible wrong data, not an error; if the bench shows it, the fix is a short settle delay after a cold open, and its length is a measurement, not a guess |
 
 ---
 

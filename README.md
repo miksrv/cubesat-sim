@@ -361,6 +361,27 @@ A sample is written only when there is orientation to write. Nine nulls would lo
 
 Timestamps are trustworthy offline: the DS1307 RTC on the X728 is enabled, so a track recorded with no network is not stamped from the last boot epoch.
 
+**Table `radio_log` — the radio's session log.** One row per radio transaction during a mission:
+every message received on the channel and every transmission attempted, observed by `COMMS` on
+`cubesat/comms/radio` and recorded here — `COMMS` itself persists nothing, exactly as with every
+sensor.
+
+| Column group | Fields |
+|---|---|
+| Timing | `id`, `t` (epoch seconds, **from the COMMS event** — when the radio transacted) |
+| Context | `mission_id` → [`missions`](#mission-sessions), `direction` (`rx`/`tx`) |
+| The traffic | `text` (the line verbatim), `bytes` |
+| Link quality (rx) | `sender`, `snr`, `rssi`, `hops` — each null where the node did not report it |
+| Outcome (tx) | `kind` (`beacon`/`ack`/`down`), `sent` (0/1 — a failed transmit is recorded, not hidden) |
+
+Unlike `attitude` it is **never decimated** — attitude is a continuous signal where any sample
+stands for its neighbours, while radio traffic is discrete events, and the one packet dropped
+would be the uplink somebody is trying to find. It shares the attitude buffer's other properties:
+bounded (`dhs.radio_buffer`), flushed in one batch on the tick, held rather than dropped when a
+write fails, and aged out by the same retention horizon. Traffic outside a mission — a `HOSTED`
+desk listening — is deliberately not recorded: the table answers "what did the radio do on this
+trip".
+
 `DHS` also owns the `missions` table and the session lifecycle — see [Mission Sessions](#mission-sessions).
 
 ### COMMS
@@ -591,6 +612,7 @@ All topic strings are defined in `src/cubesat/common/topics.py` (`TOPICS` dict).
 | `dhs_status` | `cubesat/dhs/status` | DHS | OBC, DASHBOARD | **yes** |
 | `comms_status` | `cubesat/comms/status` | COMMS | OBC, DASHBOARD | **yes** |
 | `comms_data` | `cubesat/comms/data` | COMMS | ground clients | on-demand only |
+| `comms_radio` | `cubesat/comms/radio` | COMMS | DHS, DASHBOARD | no |
 | `heartbeat` | `cubesat/heartbeat` | **every service** | OBC, DASHBOARD | no |
 
 Retained topics let a newly started service learn the current situation immediately instead of waiting a cycle for the next publish — which is exactly how `OBC` recovers the active profile after a restart.
@@ -649,14 +671,26 @@ Consumers read `status` for the mission state and `profile` for the platform pro
   "profile": "EXPO",
   "cadence_scale": 1.0,
   "persistence": "mission_db",
-  "mission_label": "walk to work"
+  "mission_label": "walk to work",
+  "subsystems": {
+    "watched": ["adcs", "comms", "dhs", "eps", "payload"],
+    "lost": []
+  }
 }
 ```
 
-The last three fields exist so that a subsystem needs no second channel to do its job from this
-one retained message: `cadence_scale` lets every service derive its own poll interval,
+The last three scalar fields exist so that a subsystem needs no second channel to do its job from
+this one retained message: `cadence_scale` lets every service derive its own poll interval,
 and `persistence` plus `mission_label` are everything DHS needs to open a mission. `mission_label`
 is null unless the operator supplied one with the profile.
+
+`subsystems` is OBC's own health verdict, for the ground segment. `watched` is the set of services
+the active profile expects to be running (the health monitor's watch list — always including
+`eps`), and `lost` names the watched services whose heartbeats have stopped or that announced a
+goodbye. A dashboard needs this to tell an intentional silence from a fault: a service absent from
+`watched` is off because the profile says so, while one in `lost` is the failure OBC latched `SAFE`
+over. `lost` is published empty while a profile switch is settling, matching OBC's own refusal to
+read mid-switch goodbyes as faults.
 
 ### `cubesat/eps/status`
 
@@ -752,6 +786,13 @@ a row, or the free-space floor. Without it, a satellite that quietly stopped tak
 exactly like one nobody asked to start.
 
 `mission_id` is null, and `photo_dir` ends in `photos/unfiled/`, whenever DHS has no mission open.
+
+**The camera is opened on demand and given back when idle.** An open Picamera2 runs its ISP loops —
+metering, white balance, the preview stream — continuously, which is SoC heat on a satellite that
+may not take a photo for hours. After `camera.idle_close_sec` (default 60 s) without a capture the
+sensor is closed; the next capture re-opens it, which costs about a second. A timelapse faster than
+that window keeps the camera warm; a slower one lets it cool between frames. Whether the first
+frame after a cold open is properly exposed is a bench check (V11 in `ROADMAP.md`).
 
 ### `cubesat/payload/data`
 
@@ -899,6 +940,42 @@ It still beacons in `SAFE` rather than going quiet, because the beacon *is* how 
 the satellite is in `SAFE`. A satellite that falls silent exactly when something is wrong is one
 nobody can help; safe mode exists to stay contactable, not to hide.
 
+### `cubesat/comms/radio`
+
+One event per radio transaction, published as it happens — a received message, or a transmission
+attempt with whether it left. Not retained: this is a log line, not a state. DHS records these
+into `radio_log` while a mission is open; the dashboard renders them live.
+
+```json
+{
+  "timestamp": 1741863600.0,
+  "direction": "rx",
+  "text": "!pos",
+  "bytes": 4,
+  "sender": "!e2f1a4c8",
+  "snr": 6.25,
+  "rssi": -96,
+  "hops": 0
+}
+```
+
+```json
+{
+  "timestamp": 1741863610.0,
+  "direction": "tx",
+  "kind": "ack",
+  "text": "CS t=1741863610 st=NOMINAL pr=FLIGHT b=87 re=pos lat=56.8352 lon=60.6128 fix=1 age=2",
+  "bytes": 86,
+  "sent": true
+}
+```
+
+Link-quality fields are null where the node did not report them — `rssi` is absent on some
+packets, and `hops` (mesh hops to arrival, 0 = heard directly) is derived from packet fields not
+yet exercised on the bench. A failed transmission is published with `sent: false` rather than
+suppressed: it spent no airtime, but it says something about the link that a log without it would
+paper over.
+
 ### `cubesat/dhs/status`
 
 Retained. Recording:
@@ -913,9 +990,14 @@ Retained. Recording:
   "db_size_bytes": 24117248,
   "last_write": 1741863595.0,
   "retention_days": 30,
+  "attitude": {"written": 2283, "buffered": 0, "min_interval_sec": 1.0},
+  "radio": {"written": 57, "buffered": 0},
   "photos": {"unfiled_bytes": 4718592, "free_mb": 21493.7, "min_free_mb": 512}
 }
 ```
+
+`attitude.buffered` and `radio.buffered` growing is the one signal that the card has stopped
+accepting writes while the recorder is still, correctly, alive.
 
 Not recording — published on connect, before the retained `obc_status` has said which profile is
 active, and again whenever a mission closes or a database is refused:

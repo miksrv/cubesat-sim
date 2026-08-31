@@ -47,14 +47,22 @@ def last_profile(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def build(service_factory):
-    """Build HOSTD over a recording executor, optionally with units already up."""
+def build(service_factory, tmp_path):
+    """Build HOSTD over a recording executor, optionally with units already up.
+
+    The default profile document pins the unit registry to ``EXTERNAL_UNITS``
+    rather than loading the shipped one: the registry in config/profiles.yaml
+    mirrors whatever host the satellite is deployed on, so its unit names are
+    deployment data — and a test that reads deployment data breaks the moment
+    the deployment legitimately changes (which it did, 2026-08-28).
+    """
 
     def make(states=None, profile_config=None):
         executor = ScriptedExecutor(states=states)
         service, client = service_factory(
             HostdService,
-            profiles=profile_config or profiles.load(),
+            profiles=profile_config
+            or profiles_yaml(tmp_path / "profiles.yaml", EXTERNAL_UNITS),
             executor=executor,
             socket_path=None,
             clock=lambda: NOW,

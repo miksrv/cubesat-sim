@@ -24,10 +24,30 @@ def test_the_four_mission_services_and_the_dashboard_are_permitted():
     assert not allowlist.permits(unit_for("eps"))
 
 
-def test_the_registry_in_profiles_yaml_is_what_widens_it():
-    allowlist = Allowlist.from_profiles(profiles.load())
+def test_the_registry_in_profiles_yaml_is_what_widens_it(tmp_path):
+    # A registry of this test's own, not the shipped config/profiles.yaml: the
+    # registry there mirrors whatever host the satellite is deployed on, so its
+    # unit names are deployment data that legitimately change.
+    path = tmp_path / "profiles.yaml"
+    path.write_text(
+        """
+default_profile: HOSTED
+external_units:
+  - unit: telegram-bot.service
+  - unit: starmap.service
+profiles:
+  HOSTED:
+    mission: standby
+    network: { mode: client }
+    external_units: start
+    services: [comms]
+    persistence: none
+"""
+    )
+    allowlist = Allowlist.from_profiles(profiles.load(path))
     assert allowlist.permits("telegram-bot.service")
     assert allowlist.permits("starmap.service")
+    assert not allowlist.permits("sshd.service")
 
 
 def test_a_unit_nobody_named_is_refused_without_a_process():

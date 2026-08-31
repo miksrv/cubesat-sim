@@ -25,6 +25,7 @@ from cubesat.common.topics import TOPICS
 from cubesat.hostd.allowlist import DASHBOARD_UNIT, unit_for
 from cubesat.hostd.executor import RecordingExecutor
 from cubesat.hostd.service import HostdService
+from tests.unit.hostd.test_service import EXTERNAL_UNITS, profiles_yaml
 
 MISSION_UNITS = tuple(unit_for(name) for name in ("adcs", "comms", "dhs", "payload"))
 
@@ -46,11 +47,18 @@ def last_profile(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def hostd(service_factory, monkeypatch, socket_path):
-    """HOSTD running for real, against a recording executor and a fake broker."""
+def hostd(service_factory, monkeypatch, socket_path, tmp_path):
+    """HOSTD running for real, against a recording executor and a fake broker.
+
+    The unit registry is pinned to the test's own names — the one in the
+    shipped profiles.yaml is deployment data and legitimately changes.
+    """
     executor = RecordingExecutor()
     service, client = service_factory(
-        HostdService, profiles=profiles.load(), executor=executor, socket_path=socket_path
+        HostdService,
+        profiles=profiles_yaml(tmp_path / "profiles.yaml", EXTERNAL_UNITS),
+        executor=executor,
+        socket_path=socket_path,
     )
     monkeypatch.setattr(config, "HEARTBEAT_INTERVAL_SEC", 0.01)
     client.connect_ok()

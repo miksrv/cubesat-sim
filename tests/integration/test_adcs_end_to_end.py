@@ -142,8 +142,10 @@ def test_the_bench_registers_arrive_on_mqtt_as_the_documented_payload(service_fa
     service.tick()
 
     payload = client.last(TOPICS["adcs_status"])
-    assert payload["roll"] == 27.1875
-    assert payload["pitch"] == 7.0625
+    # The bench registers hold 27.19 in Bosch-roll and 7.06 in Bosch-pitch; the
+    # driver remaps them to the aerospace convention (tilt-verified 2026-08-28).
+    assert payload["roll"] == 7.0625
+    assert payload["pitch"] == -27.1875
     assert payload["imu_temp"] == 31.0
     assert payload["gnss"] == {
         "lat": 37.676896,
@@ -191,7 +193,7 @@ def test_a_receiver_that_falls_off_the_bus_does_not_silence_the_subsystem(servic
     service.tick()
 
     payload = client.last(TOPICS["adcs_status"])
-    assert payload["roll"] == 27.1875
+    assert payload["roll"] == 7.0625
     # A read that failed outright, so there is no last known fix to fall back on.
     assert payload["gnss"] == {
         "lat": None, "lon": None, "alt": None, "speed": None, "fix": False, "satellites": 0

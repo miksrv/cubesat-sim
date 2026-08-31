@@ -105,13 +105,18 @@ def test_the_first_status_arrives_without_waiting_a_whole_cadence(
     run_briefly(service, seconds=0.1)
 
     status = client.payloads(TOPICS["payload_status"])
-    assert len(status) == 1
+    # Two, staged: the sensor's answer goes out before the camera probe, which
+    # on a cold Pi costs longer than the whole DEPLOY window, with the camera
+    # honestly null — "not probed yet" is not the same claim as "absent".
+    assert len(status) == 2
     assert status[0]["sensor"]["present"] is True
-    assert status[0]["camera"]["present"] is True
+    assert status[0]["camera"]["present"] is None
+    assert status[1]["sensor"]["present"] is True
+    assert status[1]["camera"]["present"] is True
     # And it says where the photos would go and whether there is room for them,
     # read from the real filesystem this test is running on.
-    assert status[0]["storage"]["blocked"] is False
-    assert status[0]["timelapse"] == {
+    assert status[1]["storage"]["blocked"] is False
+    assert status[1]["timelapse"] == {
         "active": False, "interval_sec": None, "frames": 0, "reason": None
     }
 

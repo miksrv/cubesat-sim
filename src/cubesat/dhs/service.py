@@ -87,7 +87,10 @@ class DhsService(Service):
     #: ``host_status`` is not a source of row data. It is the corroborating
     #: signal that the profile a mission is being recorded under has actually
     #: gone away; see ``_on_host_status``.
-    subscriptions = ("eps_status", "adcs_status", "payload_data", "host_status")
+    #: ``comms_radio`` is the radio session log: COMMS observes the traffic and
+    #: publishes one event per transaction, DHS records it — the same division
+    #: of labour as every sensor, because COMMS persists nothing.
+    subscriptions = ("eps_status", "adcs_status", "payload_data", "host_status", "comms_radio")
 
     def __init__(self) -> None:
         super().__init__()
@@ -133,6 +136,9 @@ class DhsService(Service):
         self._attitude = recorder_module.AttitudeBuffer(
             config.DHS_ATTITUDE_MIN_INTERVAL_SEC, config.DHS_ATTITUDE_BUFFER, self.log
         )
+        #: Radio events, kept between ticks exactly as attitude is — a beacon
+        #: and its ack happen seconds apart, and a row per tick would keep one.
+        self._radio = recorder_module.RadioBuffer(config.DHS_RADIO_BUFFER)
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
@@ -151,6 +157,7 @@ class DhsService(Service):
         with self._lock:
             self._reconcile()
             self._flush_attitude()
+            self._flush_radio()
             self._write_row()
             self._maybe_purge()
             self._publish_status()
@@ -175,6 +182,8 @@ class DhsService(Service):
                 self._offer_attitude(data)
             elif topic == TOPICS["payload_data"]:
                 self._science = data
+            elif topic == TOPICS["comms_radio"]:
+                self._offer_radio(data)
             elif topic == TOPICS["host_status"]:
                 self._on_host_status(data)
 
@@ -278,6 +287,7 @@ class DhsService(Service):
         # Before the mission stops being the open one: these samples are its,
         # and writing them afterwards would place them past its own ended_at.
         self._flush_attitude()
+        self._flush_radio()
         # Cleared before the write is attempted: whatever the database does
         # next, DHS has stopped recording, and OBC's CRITICAL grace is waiting
         # on that flag rather than on the UPDATE landing.
@@ -399,6 +409,38 @@ class DhsService(Service):
             # limit.
             self._attitude.restore(batch)
 
+    # ── the radio log ───────────────────────────────────────────────────────
+
+    def _offer_radio(self, data: dict[str, Any]) -> None:
+        """Buffer one radio event, if there is a mission for it to belong to.
+
+        The mission id is stamped here, as for attitude: an event belongs to
+        the mission that was open when the radio transacted. Traffic outside a
+        mission — a HOSTED desk listening — is deliberately not recorded: the
+        table answers "what did the radio do on this trip", and rows belonging
+        to no trip would be unreachable by the only question anyone asks it.
+        """
+        if self._mission is None:
+            return
+        self._radio.offer(
+            recorder_module.build_radio_event(
+                data, mission_id=self._mission.id, now=time.time()
+            )
+        )
+
+    def _flush_radio(self) -> None:
+        """Write everything buffered, or put it back if the write failed."""
+        if self._recorder is None:
+            return
+        batch = self._radio.drain()
+        if not batch:
+            return
+        if not self._recorder.write_radio(batch):
+            # Held rather than dropped, exactly as attitude is: the buffer is
+            # bounded, so holding a failing card's backlog cannot grow without
+            # limit.
+            self._radio.restore(batch)
+
     # ── the row ─────────────────────────────────────────────────────────────
 
     def _write_row(self) -> None:
@@ -472,6 +514,13 @@ class DhsService(Service):
                 "written": self._recorder.attitude_written if self._recorder else 0,
                 "buffered": len(self._attitude),
                 "min_interval_sec": config.DHS_ATTITUDE_MIN_INTERVAL_SEC,
+            },
+            # The radio session log, same shape and same diagnostic value:
+            # `buffered` growing is the card refusing writes while the
+            # recorder is still, correctly, alive.
+            radio={
+                "written": self._recorder.radio_written if self._recorder else 0,
+                "buffered": len(self._radio),
             },
             photos={
                 # Retention never covers these: they belong to no mission, so no

@@ -38,7 +38,13 @@ from collections import deque
 from typing import Any
 
 from cubesat.common.metrics import SystemMetrics
-from cubesat.dhs.schema import ATTITUDE_COLUMNS, TELEMETRY_COLUMNS, transaction, utc_iso
+from cubesat.dhs.schema import (
+    ATTITUDE_COLUMNS,
+    RADIO_COLUMNS,
+    TELEMETRY_COLUMNS,
+    transaction,
+    utc_iso,
+)
 
 #: Built from the schema's own column tuple rather than written out again. Both
 #: halves come from a frozen module-level constant and never from a payload.
@@ -50,6 +56,11 @@ _INSERT = "INSERT INTO telemetry ({columns}) VALUES ({placeholders})".format(
 _INSERT_ATTITUDE = "INSERT INTO attitude ({columns}) VALUES ({placeholders})".format(
     columns=", ".join(ATTITUDE_COLUMNS),
     placeholders=", ".join(f":{column}" for column in ATTITUDE_COLUMNS),
+)
+
+_INSERT_RADIO = "INSERT INTO radio_log ({columns}) VALUES ({placeholders})".format(
+    columns=", ".join(RADIO_COLUMNS),
+    placeholders=", ".join(f":{column}" for column in RADIO_COLUMNS),
 )
 
 
@@ -126,6 +137,47 @@ class AttitudeBuffer:
         return len(self._samples)
 
 
+class RadioBuffer:
+    """Radio events between two flushes. Bounded, never decimated.
+
+    No ``min_interval``, unlike :class:`AttitudeBuffer`, and that is the point
+    of keeping them separate: attitude is a continuous signal where any sample
+    stands for its neighbours, while a radio session is discrete events — the
+    one packet dropped by decimation could be the uplink somebody is trying to
+    find in the log. The bound alone protects memory; radio traffic is a beacon
+    a minute in ``NOMINAL``, so the cap is hours of a failing card away. Past
+    it the *oldest* events go, as in the attitude buffer and for the same
+    reason.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        self._events: deque[dict[str, Any]] = deque(maxlen=capacity)
+        #: Dropped for overflowing the cap — the card not keeping up.
+        self.overflowed = 0
+
+    def offer(self, event: dict[str, Any] | None) -> bool:
+        """Take one event. Returns whether it was kept."""
+        if event is None:
+            return False
+        if len(self._events) == self._events.maxlen:
+            self.overflowed += 1
+        self._events.append(event)
+        return True
+
+    def drain(self) -> list[dict[str, Any]]:
+        """Everything buffered, in arrival order, leaving the buffer empty."""
+        drained = list(self._events)
+        self._events.clear()
+        return drained
+
+    def restore(self, events: list[dict[str, Any]]) -> None:
+        """Put a failed batch back, oldest first, respecting the cap."""
+        self._events.extendleft(reversed(events))
+
+    def __len__(self) -> int:
+        return len(self._events)
+
+
 class Recorder:
     """Writes rows into one open database, and counts what it has written."""
 
@@ -143,6 +195,8 @@ class Recorder:
         #: that added them up would say the recorder is doing sixty times more
         #: than it is.
         self.attitude_written = 0
+        #: Radio events, apart from both for the same reason.
+        self.radio_written = 0
 
     def write(self, row: dict[str, Any]) -> bool:
         """Write one assembled row. Returns whether it landed.
@@ -191,6 +245,29 @@ class Recorder:
             )
             return False
         self.attitude_written += len(samples)
+        return True
+
+    def write_radio(self, events: list[dict[str, Any]]) -> bool:
+        """Write a batch of radio events. Returns whether the batch landed.
+
+        One transaction, all or nothing — the same contract as
+        :meth:`write_attitude`, and for the same reason: a partial batch leaves
+        the caller with nothing sayable about which events to put back.
+        """
+        if not events:
+            return True
+        try:
+            with transaction(self._conn) as conn:
+                conn.executemany(_INSERT_RADIO, events)
+        except (sqlite3.Error, OSError):
+            self.failed += 1
+            self._log.exception(
+                "radio-log write failed (%d failures in this session); %d event(s) held",
+                self.failed,
+                len(events),
+            )
+            return False
+        self.radio_written += len(events)
         return True
 
     def count(self) -> int:
@@ -314,6 +391,47 @@ def build_attitude(
     if all(value is None for value in values.values()):
         return None
     return {"mission_id": mission_id, "t": _number(adcs.get("timestamp")) or now, **values}
+
+
+#: The tx kinds COMMS publishes today. An unknown kind is stored as it arrived
+#: rather than dropped — the log is a record of what was said on the air, and a
+#: build that predates a new kind should still record the traffic.
+RADIO_DIRECTIONS = frozenset({"rx", "tx"})
+
+
+def build_radio_event(
+    event: dict[str, Any] | None, *, mission_id: int, now: float
+) -> dict[str, Any] | None:
+    """One radio_log row out of a ``comms_radio`` payload, or ``None``.
+
+    ``None`` when the payload does not say which direction it is — a session
+    log entry that cannot say whether the satellite was talking or listening
+    is not an entry, it is noise wearing a schema.
+
+    ``t`` is the event's own timestamp — when the radio transacted — falling
+    back to now only if the message carried none, exactly as attitude does.
+    """
+    if event is None:
+        return None
+    direction = event.get("direction")
+    if direction not in RADIO_DIRECTIONS:
+        return None
+    text = event.get("text")
+    kind = event.get("kind")
+    sender = event.get("sender")
+    return {
+        "mission_id": mission_id,
+        "t": _number(event.get("timestamp")) or now,
+        "direction": direction,
+        "kind": kind if isinstance(kind, str) else None,
+        "text": text if isinstance(text, str) else None,
+        "bytes": _integer(event.get("bytes")),
+        "sender": sender if isinstance(sender, str) else None,
+        "snr": _number(event.get("snr")),
+        "rssi": _number(event.get("rssi")),
+        "hops": _integer(event.get("hops")),
+        "sent": _flag(event.get("sent")),
+    }
 
 
 def _sub(payload: dict[str, Any] | None, key: str) -> dict[str, Any]:

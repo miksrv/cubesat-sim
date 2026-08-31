@@ -149,6 +149,21 @@ ATTITUDE_COLUMNS: tuple[str, ...] = (
     "gyro_z",
 )
 
+#: Written in this order, in one executemany per flush — same rule as above.
+RADIO_COLUMNS: tuple[str, ...] = (
+    "mission_id",
+    "t",
+    "direction",
+    "kind",
+    "text",
+    "bytes",
+    "sender",
+    "snr",
+    "rssi",
+    "hops",
+    "sent",
+)
+
 _MISSIONS_DDL = """
 CREATE TABLE missions (
     -- AUTOINCREMENT, not a bare rowid alias: a mission id becomes a photo
@@ -282,6 +297,43 @@ _ATTITUDE_INDEX_DDL = (
     'CREATE INDEX idx_attitude_t ON attitude (t)',
 )
 
+_RADIO_DDL = """
+CREATE TABLE radio_log (
+    id         INTEGER PRIMARY KEY,
+    mission_id INTEGER NOT NULL REFERENCES missions(id),
+    -- Epoch seconds from the COMMS event's own timestamp — when the radio
+    -- transacted, not when DHS got around to writing. A float like attitude.t,
+    -- and for the same reason: an ack follows its beacon by seconds.
+    t          REAL NOT NULL,
+    -- 'rx' or 'tx'. Everything below is nullable because the two directions
+    -- observe different things: link quality exists only for what was heard,
+    -- an outcome only for what was said.
+    direction  TEXT NOT NULL,
+    -- tx only: 'beacon', 'ack' or 'down'. What the transmission was for.
+    kind       TEXT,
+    -- The line as it crossed the air, verbatim — a session log that re-encoded
+    -- its traffic would be one more place for two sides to disagree.
+    text       TEXT,
+    bytes      INTEGER,
+    -- rx only: the sending node and what the radio observed about the link.
+    -- Null where the node did not report a value, never a substitute.
+    sender     TEXT,
+    snr        REAL,
+    rssi       REAL,
+    hops       INTEGER,
+    -- tx only, 0/1: whether the transmission actually left. A failed send
+    -- spent no airtime but says something about the link worth keeping.
+    sent       INTEGER
+)
+"""
+
+_RADIO_INDEX_DDL = (
+    # The dashboard's question: this mission's radio traffic, in order.
+    'CREATE INDEX idx_radio_log_mission_time ON radio_log (mission_id, t)',
+    # Retention deletes by time across every mission, as for the other tables.
+    'CREATE INDEX idx_radio_log_t ON radio_log (t)',
+)
+
 _PURGED_AT_DDL = (
     # Set when a mission's last telemetry row passes the retention horizon.
     #
@@ -302,6 +354,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=1, statements=(_MISSIONS_DDL, _TELEMETRY_DDL, *_INDEX_DDL)),
     Migration(version=2, statements=_PURGED_AT_DDL),
     Migration(version=3, statements=(_ATTITUDE_DDL, *_ATTITUDE_INDEX_DDL)),
+    Migration(version=4, statements=(_RADIO_DDL, *_RADIO_INDEX_DDL)),
 )
 
 #: What a database this build can write looks like.

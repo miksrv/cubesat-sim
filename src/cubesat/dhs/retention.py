@@ -98,6 +98,8 @@ class PurgeResult:
     #: thousands of them against a few dozen telemetry rows, and one total would
     #: be a number about attitude wearing a telemetry label.
     attitude: int = 0
+    #: Radio events, apart from both for the same reason.
+    radio: int = 0
     missions: tuple[int, ...] = field(default=())
     files: int = 0
     bytes_reclaimed: int = 0
@@ -134,6 +136,7 @@ def purge(
             # float against a float; converting it to the ISO string would
             # compare a number with text and silently match nothing.
             dropped = tx.execute("DELETE FROM attitude WHERE t < ?", (horizon,)).rowcount
+            radio = tx.execute("DELETE FROM radio_log WHERE t < ?", (horizon,)).rowcount
             purged = _fully_aged_out(tx, cutoff)
             tx.executemany(
                 "UPDATE missions SET purged_at = ? WHERE id = ?",
@@ -143,11 +146,13 @@ def purge(
         log.exception("retention pass failed; the telemetry table is not bounded this cycle")
         return PurgeResult()
 
-    if deleted or dropped:
+    if deleted or dropped or radio:
         log.info(
-            "retention: %d telemetry row(s) and %d attitude sample(s) older than %s deleted",
+            "retention: %d telemetry row(s), %d attitude sample(s) and %d radio "
+            "event(s) older than %s deleted",
             deleted,
             dropped,
+            radio,
             cutoff,
         )
     if not purge_photos:
@@ -160,7 +165,7 @@ def purge(
                 "(retention.purge_photos is off, so the card is unbounded)",
                 len(purged),
             )
-        return PurgeResult(rows=deleted, attitude=dropped, missions=purged)
+        return PurgeResult(rows=deleted, attitude=dropped, radio=radio, missions=purged)
 
     files = 0
     reclaimed = 0
@@ -171,6 +176,7 @@ def purge(
     return PurgeResult(
         rows=deleted,
         attitude=dropped,
+        radio=radio,
         missions=purged,
         files=files,
         bytes_reclaimed=reclaimed,

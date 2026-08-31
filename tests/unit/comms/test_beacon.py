@@ -227,10 +227,25 @@ def test_the_going_down_marker_is_never_dropped():
 def test_every_field_is_either_droppable_or_declared_core():
     # So a field added without a decision about its priority fails here rather
     # than silently becoming un-droppable.
-    emitted = set(read(beacon.build(mission_id=42, going_down=True, **FULL)))
+    everything = beacon.build(
+        mission_id=42, going_down=True, reply={"re": "x", "ok": "0", "err": "unknown"}, **FULL
+    )
+    emitted = set(read(everything))
     droppable = {key for group in beacon.DROP_ORDER for key in group}
     assert emitted == droppable | set(beacon.CORE_KEYS)
     assert not droppable & set(beacon.CORE_KEYS)
+
+
+def test_the_reply_fields_are_never_dropped():
+    # An ack that dropped the name of the command it acknowledges is an
+    # ordinary beacon that cost the airtime and answered nothing.
+    reply = {"re": "set_profile", "ok": "0", "err": "unknown"}
+    whole = beacon.build(mission_id=42, reply=reply, **FULL)
+    for limit in range(1, size(whole) + 1):
+        fields = read(beacon.build(mission_id=42, reply=reply, limit=limit, **FULL))
+        assert fields["re"] == "set_profile"
+        assert fields["ok"] == "0"
+        assert fields["err"] == "unknown"
 
 
 # ── the size limit ──────────────────────────────────────────────────────────

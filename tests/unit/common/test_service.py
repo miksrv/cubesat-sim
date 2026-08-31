@@ -191,6 +191,35 @@ def test_a_throwing_state_hook_does_not_propagate(service_factory):
     assert service.mission_state is MissionState.SAFE
 
 
+def test_deploy_asks_the_service_to_report_in(service_factory):
+    # The bring-up self-test counts only fresh status messages, and a service
+    # that survived the profile switch produces none on its own — so entering
+    # DEPLOY, and only DEPLOY, asks for one.
+    class Reporting(Probe):
+        reports = 0
+
+        def report_in(self):
+            self.reports += 1
+
+    service, client = service_factory(Reporting)
+    client.deliver(TOPICS["obc_status"], {"status": "DEPLOY"})
+    assert service.reports == 1
+    client.deliver(TOPICS["obc_status"], {"status": "NOMINAL"})
+    assert service.reports == 1
+    client.deliver(TOPICS["obc_status"], {"status": "DEPLOY"})
+    assert service.reports == 2
+
+
+def test_a_throwing_report_in_does_not_propagate(service_factory):
+    class Angry(Probe):
+        def report_in(self):
+            raise RuntimeError("boom")
+
+    service, client = service_factory(Angry)
+    client.deliver(TOPICS["obc_status"], {"status": "DEPLOY"})
+    assert service.mission_state is MissionState.DEPLOY
+
+
 # ── the run loop ─────────────────────────────────────────────────────────────
 
 

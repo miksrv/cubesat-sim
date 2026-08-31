@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 import pytest
 
 from cubesat.common import config
+from cubesat.common import metrics as metrics_module
 from cubesat.common import profiles as profiles_module
 from cubesat.common.profiles import ProfileConfig
 from cubesat.common.states import MissionState, Profile
@@ -471,6 +473,20 @@ def test_entering_critical_transmits_once_immediately(comms):
     assert " b=8.1" in line
 
 
+def test_a_deploy_the_service_survived_republishes_the_status(comms):
+    # COMMS runs across every profile switch by design, so the DEPLOY after one
+    # finds a service whose status has not changed since its own bring-up — and
+    # a status published only on change would leave OBC's self-test with no
+    # fresh evidence at all. The very first hardware run failed exactly here.
+    service, client = comms()
+    obc(client)  # the steady state the switch is made from
+    before = len(client.payloads(TOPICS["comms_status"]))
+
+    obc(client, state=MissionState.DEPLOY)
+
+    assert len(client.payloads(TOPICS["comms_status"])) == before + 1
+
+
 def test_critical_never_gets_a_repeating_schedule(comms):
     # There is nothing to repeat in a state that lasts ten seconds, so CRITICAL
     # stays out of the beacon table and the wake loop transmits nothing there.
@@ -624,6 +640,235 @@ def test_an_uplink_refreshes_the_status_so_the_ground_can_see_it_landed(comms):
     service._mesh._radio.inject(RECOVER)
     service.tick()
     assert status(client)["last_uplink"] is not None
+
+
+def sent_replies(service):
+    return [line for line in service._mesh._radio.sent if " re=" in line]
+
+
+def test_an_accepted_uplink_is_answered_ten_seconds_later(comms):
+    # The ack rule: one out-of-schedule beacon carrying re=<command>, delayed so
+    # the st= and pr= fields it carries are the outcome, not the intention.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    service._mesh._radio.inject(RECOVER)
+    service.tick()
+    assert sent_replies(service) == []  # not yet: the effect has to land first
+
+    clock.advance(10.1)
+    service.tick()
+
+    replies = sent_replies(service)
+    assert len(replies) == 1
+    assert " re=recover" in replies[0]
+
+
+def test_a_compact_line_is_relayed_as_canonical_json(comms):
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject("!profile demo")
+    service.tick()
+    assert relayed(client) == [{"command": "set_profile", "params": {"profile": "DEMO"}}]
+
+
+def test_ping_is_answered_immediately_and_never_relayed(comms):
+    # Proof of life on demand — and COMMS is the thing being asked, so there is
+    # nothing to relay and nothing to wait for.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client, state=MissionState.STANDBY, profile=Profile.HOSTED)
+    service._mesh._radio.inject("!ping")
+    service.tick()
+
+    assert relayed(client) == []
+    replies = sent_replies(service)
+    assert len(replies) == 1
+    assert " re=ping" in replies[0]
+    # STANDBY has no row in the beacon table, and that is the point: the ack
+    # needs only the profile's permission, or a satellite listening in HOSTED
+    # could hear a ping and not be allowed to answer it.
+
+
+def test_a_line_nobody_wrote_is_answered_not_dropped(comms, caplog):
+    # The sender is a person in a field wondering why nothing happened.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    service._mesh._radio.inject("!launch")
+    with caplog.at_level(logging.WARNING):
+        service.tick()
+    assert relayed(client) == []
+    assert "unknown compact uplink" in caplog.text
+
+    clock.advance(10.1)
+    service.tick()
+
+    replies = sent_replies(service)
+    assert len(replies) == 1
+    assert " re=? ok=0 err=unknown" in replies[0]
+
+
+def test_sys_answers_immediately_with_the_hosts_own_health(comms):
+    # Local psutil reads: no bus time, no cache, no staleness to admit to.
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject("!sys")
+    service.tick()
+
+    replies = sent_replies(service)
+    assert len(replies) == 1
+    line = replies[0]
+    assert " re=sys " in line
+    for key in ("cpu=", "ram=", "disk=", "up="):
+        assert f" {key}" in line
+    assert line.split(" up=")[1].split()[0].endswith("h")
+
+
+def test_env_answers_from_the_science_cache_with_its_age(comms):
+    service, client = comms()
+    obc(client)
+    client.deliver(
+        TOPICS["payload_data"],
+        {"timestamp": time.time() - 30, **SCIENCE},
+    )
+    service._mesh._radio.inject("!env")
+    service.tick()
+
+    line = sent_replies(service)[0]
+    assert " re=env " in line
+    assert " tc=23.4 " in line
+    assert " rh=45 " in line
+    assert " hpa=1013 " in line
+    assert " lux=412 " in line
+    age = int(line.split(" age=")[1].split()[0])
+    assert 29 <= age <= 32
+
+
+def test_a_query_with_an_empty_cache_says_nodata_rather_than_zeros(comms):
+    # PAYLOAD never reported: a line of zeros would be a measured-looking lie.
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject("!env")
+    service.tick()
+    assert " re=env ok=0 err=nodata" in sent_replies(service)[0]
+
+
+def test_sys_reports_the_cpu_temperature_where_the_host_exposes_one(comms, monkeypatch):
+    # The suite runs on machines without a thermal sensor psutil can see, so
+    # the tc= branch needs the reading pinned rather than hoped for.
+    monkeypatch.setattr(
+        metrics_module,
+        "collect",
+        lambda path: metrics_module.SystemMetrics(
+            cpu_percent=12.0,
+            ram_percent=40.0,
+            swap_percent=0.0,
+            disk_percent=55.0,
+            uptime_seconds=7200.0,
+            cpu_temperature=51.24,
+        ),
+    )
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject("!sys")
+    service.tick()
+    assert " tc=51.2" in sent_replies(service)[0]
+
+
+def test_pos_with_an_empty_cache_says_nodata_rather_than_zeros(comms):
+    # ADCS never reported: 0.0000, 0.0000 is a real place in the Gulf of
+    # Guinea, which is exactly the measured-looking lie nodata exists to avoid.
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject("!pos")
+    service.tick()
+    assert " re=pos ok=0 err=nodata" in sent_replies(service)[0]
+
+
+def test_mission_with_no_mission_open_says_nodata(comms):
+    # DHS never reported a mission: m=0 would read as a recorded session.
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject("!mission")
+    service.tick()
+    assert " re=mission ok=0 err=nodata" in sent_replies(service)[0]
+
+
+def test_a_cache_with_no_timestamp_reports_an_unknown_age(comms):
+    # age=? rather than a fabricated zero: an age that cannot be computed is
+    # withheld the same way a value that cannot be justified is.
+    service, client = comms()
+    obc(client)
+    client.deliver(TOPICS["payload_data"], dict(SCIENCE))
+    service._mesh._radio.inject("!env")
+    service.tick()
+    assert " age=? " in sent_replies(service)[0] + " "
+
+
+def test_pos_reports_a_fixless_position_with_its_age(comms):
+    # The lost-satellite query: unlike the scheduled beacon, a stale or
+    # fixless coordinate is reported, because age= and fix= say exactly how
+    # much to trust it.
+    service, client = comms()
+    obc(client)
+    stale = {"timestamp": time.time() - 120, "gnss": {**FIX, "fix": False}}
+    client.deliver(TOPICS["adcs_status"], stale)
+    service._mesh._radio.inject("!pos")
+    service.tick()
+
+    line = sent_replies(service)[0]
+    assert " re=pos " in line
+    assert " lat=55.7558 " in line
+    assert " fix=0 " in line
+    assert 118 <= int(line.split(" age=")[1].split()[0]) <= 123
+    # And the reply's coordinate survives even though the schedule would have
+    # withheld a fixless position: the reply fields are never dropped.
+
+
+def test_mission_answers_with_the_id_and_rows_dhs_reported(comms):
+    service, client = comms()
+    obc(client)
+    client.deliver(TOPICS["dhs_status"], {"mission": {"id": 7, "rows": 42}})
+    service._mesh._radio.inject("!mission")
+    service.tick()
+    line = sent_replies(service)[0]
+    assert " re=mission " in line
+    assert " m=7 " in line or line.endswith(" m=7")
+    assert " rows=42" in line
+
+
+def test_a_burst_of_commands_collapses_into_one_reply(comms):
+    # One pending slot is the whole airtime budget: extras collapse into the
+    # latest rather than queueing up transmissions.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    service._mesh._radio.inject(RECOVER)
+    service._mesh._radio.inject('{"command": "safe_mode"}')
+    service.tick()
+    clock.advance(10.1)
+    service.tick()
+
+    replies = sent_replies(service)
+    assert len(replies) == 1
+    assert " re=safe_mode" in replies[0]
+
+
+def test_a_satellite_told_to_be_quiet_is_quiet_in_its_answers_too(comms):
+    # Replies obey lora_enabled like every other transmission — dropped, not
+    # queued for a louder day. Listening continues: the uplink still relays.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    command(client, "set_comms_config", params={"lora_enabled": False})
+    service._mesh._radio.inject(RECOVER)
+    service.tick()
+    clock.advance(10.1)
+    service.tick()
+
+    assert relayed(client) == [{"command": "recover"}]
+    assert sent_replies(service) == []
 
 
 def test_a_profile_with_no_radio_polls_nothing(comms):
@@ -854,3 +1099,85 @@ def test_stopping_gives_the_radio_back(comms):
     service.on_start()
     service.on_stop()
     assert closed == [True]
+
+
+# ── the radio session log ─────────────────────────────────────────────────────
+
+
+def radio_events(client):
+    return [json.loads(p.payload) for p in client.published if p.topic == TOPICS["comms_radio"]]
+
+
+def test_every_received_message_is_a_radio_event_even_gibberish(comms):
+    # Published before the relay decides anything: a session log that only held
+    # the messages that parsed would hide exactly the traffic being debugged.
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject("not even json", sender="!e2f1a4c8", snr=6.25, rssi=-96.0, hops=0)
+    service.tick()
+
+    event = [e for e in radio_events(client) if e["direction"] == "rx"][-1]
+    assert event == {
+        "timestamp": event["timestamp"],
+        "direction": "rx",
+        "text": "not even json",
+        "bytes": len(b"not even json"),
+        "sender": "!e2f1a4c8",
+        "snr": 6.25,
+        "rssi": -96.0,
+        "hops": 0,
+    }
+
+
+def test_link_fields_the_node_did_not_report_are_null_not_invented(comms):
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject(RECOVER, rssi=None, hops=None)
+    service.tick()
+
+    event = [e for e in radio_events(client) if e["direction"] == "rx"][-1]
+    assert event["rssi"] is None and event["hops"] is None
+    assert event["snr"] == 6.0
+
+
+def test_a_beacon_that_left_is_a_tx_event_with_the_line_verbatim(comms):
+    service, client = comms()
+    obc(client)
+    service.tick()
+
+    event = [e for e in radio_events(client) if e["direction"] == "tx"][-1]
+    assert event["kind"] == "beacon"
+    assert event["sent"] is True
+    assert event["text"] == service._mesh._radio.sent[-1]
+    assert event["bytes"] == len(event["text"].encode("utf-8"))
+
+
+def test_an_ack_and_a_going_down_beacon_carry_their_kind(comms):
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    service._mesh._radio.inject(RECOVER)
+    service.tick()
+    clock.advance(10.1)
+    service.tick()
+    kinds = [e["kind"] for e in radio_events(client) if e["direction"] == "tx"]
+    assert "ack" in kinds
+
+    service.on_state_change(MissionState.NOMINAL, MissionState.CRITICAL)
+    assert [e["kind"] for e in radio_events(client) if e["direction"] == "tx"][-1] == "down"
+
+
+def test_a_failed_transmission_is_on_the_record_as_unsent(comms):
+    # It spent no airtime, but it says something about the link that a log
+    # without it would silently paper over.
+    class Broken(MockRadio):
+        def send(self, payload):
+            raise OSError("the Heltec browned out")
+
+    service, client = comms(radio=Broken())
+    obc(client)
+    service.tick()
+
+    event = [e for e in radio_events(client) if e["direction"] == "tx"][-1]
+    assert event["sent"] is False
+    assert event["kind"] == "beacon"

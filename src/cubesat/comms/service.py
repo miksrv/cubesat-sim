@@ -86,6 +86,7 @@ because *mosquitto* bounced. ``on_connected`` costs one message and closes that.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -98,7 +99,7 @@ from cubesat.common.profiles import DownlinkSpec, ProfileConfig, ProfileError
 from cubesat.common.service import Service
 from cubesat.common.states import MissionState, Profile
 from cubesat.common.topics import TOPICS
-from cubesat.comms import beacon, mesh
+from cubesat.comms import beacon, compact, mesh
 from cubesat.comms.mesh import MeshChannel
 from cubesat.hal import registry
 from cubesat.hal.interfaces import Radio
@@ -129,6 +130,24 @@ RETIRED_PARAMS = {
 #: status, COMMS does not know which envelope it is inside, and assuming the
 #: permissive one would transmit under a profile that forbids transmitting.
 NO_DOWNLINK = DownlinkSpec()
+
+#: How long after an accepted uplink the ack beacon goes out — long enough for
+#: the command's effect to land, so the ``st=`` and ``pr=`` fields it carries
+#: *are* the verdict (docs/concept.md → The radio command contract). One
+#: pending slot, so extras collapse into the latest: that is the whole event
+#: budget for now. Queries skip the wait — they ask about the present, and the
+#: present delayed by ten seconds is a different present.
+ACK_DELAY_SEC = 10.0
+
+#: The commands COMMS answers itself, mapped to the short ``re=`` name a phone
+#: reader sees — the verb they typed, not the canonical command it became.
+QUERIES = {
+    "ping": "ping",
+    "get_position": "pos",
+    "get_system": "sys",
+    "get_environment": "env",
+    "get_mission": "mission",
+}
 
 
 class CommsService(Service):
@@ -183,8 +202,15 @@ class CommsService(Service):
         self._science: dict[str, Any] | None = None
         #: From ``dhs_status``. None until DHS opens a mission.
         self._mission_id: Any = None
+        #: Rows recorded so far, same source — what ``!mission`` answers with.
+        self._mission_rows: int | None = None
 
         self._last_uplink: float | None = None
+        #: The one scheduled reply: (ack fields, monotonic due time). A single
+        #: slot rather than a queue, so a burst of commands costs one
+        #: transmission carrying the latest — the airtime budget by
+        #: construction rather than by bookkeeping.
+        self._pending_ack: tuple[dict[str, str], float] | None = None
         #: When the last beacon actually reached the air, on the monotonic
         #: clock. None means one has never gone out, and the first permitted
         #: wake transmits: a satellite that has just come up should say so.
@@ -259,10 +285,25 @@ class CommsService(Service):
         with self._lock:
             # Inbound first: a command that has been sitting in the radio's
             # inbox should be acted on this cycle, not after the beacon that is
-            # about to spend the airtime.
+            # about to spend the airtime. The ack goes before the scheduled
+            # beacon on purpose: an ack *is* a full beacon, so sending it
+            # satisfies the schedule and the schedule then defers itself.
             self._collect_uplink()
+            self._maybe_ack()
             self._maybe_beacon()
             self._publish_status()
+
+    def report_in(self) -> None:
+        """DEPLOY wants fresh evidence, and this status publishes only on change.
+
+        COMMS survives every profile switch by design — the radio listens in
+        all profiles but ``MAINTENANCE`` — so it is the one service whose
+        ``on_start`` report predates every DEPLOY after the first. Without
+        this, a healthy radio failed the very first hardware bring-up: nothing
+        about it had changed, so nothing was published, so it "never reported".
+        """
+        with self._lock:
+            self._publish_status(force=True)
 
     def on_state_change(self, previous: MissionState | None, current: MissionState) -> None:
         """Say goodbye on the way into ``CRITICAL``.
@@ -375,6 +416,8 @@ class CommsService(Service):
         """
         mission = data.get("mission")
         self._mission_id = mission.get("id") if isinstance(mission, dict) else None
+        rows = mission.get("rows") if isinstance(mission, dict) else None
+        self._mission_rows = rows if isinstance(rows, int) else None
 
     def _on_command(self, data: dict[str, Any]) -> None:
         name = data.get("command")
@@ -439,6 +482,21 @@ class CommsService(Service):
             self.log.info(
                 "LoRa message from %s (snr %s)", message.sender or "an unknown node", message.snr
             )
+            # Before the relay, so a message that turns out to be gibberish is
+            # still on the record: a radio session log that only holds the
+            # messages that parsed would hide exactly the traffic somebody is
+            # trying to debug. Link-quality fields are None where the node did
+            # not report them, never substituted.
+            self.publish(
+                "comms_radio",
+                direction="rx",
+                text=message.text,
+                bytes=len(message.text.encode("utf-8")),
+                sender=message.sender,
+                snr=message.snr,
+                rssi=message.rssi,
+                hops=message.hops,
+            )
             self._relay("lora", message.text)
 
     def _relay(self, source: str, text: str) -> None:
@@ -447,13 +505,184 @@ class CommsService(Service):
         Verbatim matters more than it looks. A field this build does not know
         about still reaches the service that does, and there is no re-encoding
         step that can quietly disagree with whoever composed the message.
+
+        A ``!`` line is the one exception, translated to canonical JSON *here*,
+        once, on the way in (see ``compact.py``) — and answered when it is
+        gibberish, because the sender is a person in a field, not a program
+        that checks return codes.
         """
+        if compact.is_compact(text):
+            self._relay_compact(text)
+            return
         command = mesh.uplink_command(text, self.log, source=source)
         if command is None:
             return
         self._last_uplink = time.time()
         self.publish_raw("command", command, qos=1)
         self.log.info("relayed a command from the %s channel onto %s", source, TOPICS["command"])
+        self._schedule_ack(self._command_name(command))
+
+    def _relay_compact(self, text: str) -> None:
+        translated = compact.translate(text)
+        if translated is None:
+            self.log.warning("unknown compact uplink: %r", text[:120])
+            self._schedule_ack("?", ok="0", err="unknown")
+            return
+        self._last_uplink = time.time()
+        if translated.command in QUERIES:
+            # Answered from COMMS' own caches, immediately and without a relay:
+            # the radio is the thing being asked. The beacon the answer rides
+            # already carries state, battery and position, so a query reply is
+            # the ordinary proof of life plus the fields that were asked for.
+            short = QUERIES[translated.command]
+            self._schedule_ack(short, extra=self._query_reply(translated.command), immediate=True)
+            return
+        self.publish_raw("command", translated.json, qos=1)
+        self.log.info("relayed %r as %s", text, translated.json)
+        self._schedule_ack(translated.command)
+
+    @staticmethod
+    def _command_name(command_json: str) -> str:
+        # uplink_command has already vetted the JSON, so this cannot fail —
+        # but the ack must never be the thing that breaks a relay.
+        try:
+            return str(json.loads(command_json)["command"])
+        except Exception:  # pragma: no cover — vetted upstream
+            return "?"
+
+    def _schedule_ack(
+        self,
+        re: str,
+        *,
+        ok: str | None = None,
+        err: str | None = None,
+        extra: dict[str, str] | None = None,
+        immediate: bool = False,
+    ) -> None:
+        """One out-of-schedule beacon, ``ACK_DELAY_SEC`` from now, saying ``re=``.
+
+        The delay is what lets the ack carry the *outcome*: by the time it goes
+        out, ``st=`` and ``pr=`` show what the command actually did, which is
+        more honest than an ``ok=1`` COMMS cannot vouch for. ``ok``/``err``
+        appear only where COMMS itself is the handler and actually knows.
+        ``extra`` is a query's answer, riding the same slot.
+        """
+        fields = {"re": re}
+        if ok is not None:
+            fields["ok"] = ok
+        if err is not None:
+            fields["err"] = err
+        if extra:
+            fields.update(extra)
+        self._pending_ack = (fields, self._clock() + (0.0 if immediate else ACK_DELAY_SEC))
+
+    # ── the queries ─────────────────────────────────────────────────────────
+
+    def _query_reply(self, command: str) -> dict[str, str]:
+        """The fields a query answers with, from the caches COMMS already keeps.
+
+        Every value that cannot be justified is absent, and an empty cache is
+        ``ok=0 err=nodata`` rather than a line of zeros — the same
+        withhold-rather-than-fabricate rule as everywhere else. ``age=`` is
+        whole seconds since the source subsystem published, which is what makes
+        a stale answer honest: PAYLOAD stopped by the profile still answers,
+        with an age that says exactly how stale.
+        """
+        if command == "ping":
+            return {}
+        if command == "get_system":
+            return self._system_reply()
+        if command == "get_position":
+            return self._position_reply()
+        if command == "get_environment":
+            return self._environment_reply()
+        return self._mission_reply()
+
+    def _system_reply(self) -> dict[str, str]:
+        # Local psutil reads: no bus time, no cache, no age — always current.
+        system = metrics_module.collect(str(config.DATA_DIR))
+        fields = {
+            "cpu": f"{system.cpu_percent:.0f}",
+            "ram": f"{system.ram_percent:.0f}",
+            "disk": f"{system.disk_percent:.0f}",
+            "up": f"{system.uptime_seconds / 3600:.1f}h",
+        }
+        if system.cpu_temperature is not None:
+            fields["tc"] = f"{system.cpu_temperature:.1f}"
+        return fields
+
+    def _position_reply(self) -> dict[str, str]:
+        gnss = (self._adcs or {}).get("gnss")
+        if not isinstance(gnss, dict) or not isinstance(gnss.get("lat"), (int, float)):
+            return {"ok": "0", "err": "nodata"}
+        # Unlike the scheduled beacon, a stale or fixless position is reported —
+        # this is the lost-satellite query — because age= and fix= are here to
+        # say precisely how much to trust it. The scheduled beacon has no room
+        # for an age, so it stays live-fix-only.
+        fields = {
+            "lat": f"{gnss['lat']:.4f}",
+            "lon": f"{gnss['lon']:.4f}",
+            "fix": "1" if gnss.get("fix") else "0",
+            "age": self._age_of(self._adcs),
+        }
+        if isinstance(gnss.get("alt"), (int, float)):
+            fields["alt"] = f"{gnss['alt']:.0f}"
+        if isinstance(gnss.get("satellites"), int):
+            fields["sat"] = str(gnss["satellites"])
+        return fields
+
+    def _environment_reply(self) -> dict[str, str]:
+        science = self._science
+        if not isinstance(science, dict) or science.get("temperature") is None:
+            return {"ok": "0", "err": "nodata"}
+        fields = {"age": self._age_of(science)}
+        for key, source, digits in (
+            ("tc", "temperature", 1),
+            ("rh", "humidity", 0),
+            ("hpa", "pressure", 0),
+            ("lux", "light", 0),
+        ):
+            value = science.get(source)
+            if isinstance(value, (int, float)):
+                fields[key] = f"{value:.{digits}f}"
+        return fields
+
+    def _mission_reply(self) -> dict[str, str]:
+        if self._mission_id is None:
+            return {"ok": "0", "err": "nodata"}
+        fields = {"m": str(self._mission_id)}
+        if self._mission_rows is not None:
+            fields["rows"] = str(self._mission_rows)
+        return fields
+
+    @staticmethod
+    def _age_of(payload: dict[str, Any] | None) -> str:
+        """Whole seconds since the cached payload was published, as text."""
+        timestamp = (payload or {}).get("timestamp")
+        if not isinstance(timestamp, (int, float)):
+            return "?"
+        return str(max(0, round(time.time() - timestamp)))
+
+    def _maybe_ack(self) -> None:
+        """Transmit the pending reply, if it is due and speaking is permitted.
+
+        The slot is cleared before the permission check: a satellite told to be
+        quiet is quiet in its answers too — the reply is dropped, not queued
+        for a louder day. A failed send is dropped for the same reason the
+        going-down beacon steps over one: the next scheduled beacon carries the
+        same state fields anyway.
+        """
+        if self._pending_ack is None:
+            return
+        fields, due = self._pending_ack
+        if self._clock() < due:
+            return
+        self._pending_ack = None
+        if not self.lora_enabled:
+            return
+        if self._beacon(reply=fields):
+            self.log.info("ack sent: re=%s", fields["re"])
+            self._last_beacon = self._clock()
 
     # ── the two channels ────────────────────────────────────────────────────
 
@@ -503,7 +732,7 @@ class CommsService(Service):
         if self._beacon():
             self._last_beacon = now
 
-    def _beacon(self, *, going_down: bool = False) -> bool:
+    def _beacon(self, *, going_down: bool = False, reply: dict[str, str] | None = None) -> bool:
         """One line, one complete observation. See ``beacon.py`` for the format."""
         line = beacon.build(
             now=time.time(),
@@ -513,8 +742,22 @@ class CommsService(Service):
             adcs=self._adcs,
             mission_id=self._mission_id,
             going_down=going_down,
+            reply=reply,
         )
-        if not self._mesh.send(line):
+        sent = self._mesh.send(line)
+        # Both outcomes go on the record: a transmission that failed spent no
+        # airtime but says something about the link that a session log without
+        # it would silently paper over. Publishing is not persistence — DHS
+        # decides whether a row is written, exactly as it does for telemetry.
+        self.publish(
+            "comms_radio",
+            direction="tx",
+            kind="down" if going_down else "ack" if reply else "beacon",
+            text=line,
+            bytes=len(line.encode("utf-8")),
+            sent=sent,
+        )
+        if not sent:
             return False
         self.log.debug("beacon sent (%d bytes): %s", len(line.encode("utf-8")), line)
         return True

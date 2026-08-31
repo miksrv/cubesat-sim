@@ -128,8 +128,11 @@ DROP_ORDER: tuple[tuple[str, ...], ...] = (
 #: rather than silently becoming un-droppable. Without ``t`` the line says
 #: nothing at all, and a beacon that says nothing is worse than no beacon
 #: because it still costs the airtime; without ``down`` the going-down beacon
-#: is indistinguishable from any other.
-CORE_KEYS = ("t", "down")
+#: is indistinguishable from any other. ``re``, ``ok`` and ``err`` are the
+#: reply contract (docs/concept.md → The radio command contract): an ack that
+#: dropped the name of the command it acknowledges is an ordinary beacon that
+#: cost the airtime and answered nothing.
+CORE_KEYS = ("t", "down", "re", "ok", "err")
 
 
 def build(
@@ -141,6 +144,7 @@ def build(
     adcs: dict[str, Any] | None = None,
     mission_id: Any = None,
     going_down: bool = False,
+    reply: dict[str, str] | None = None,
     limit: int = MAX_RADIO_MESSAGE_BYTES,
 ) -> str:
     """Assemble one beacon line from whatever the caches actually hold.
@@ -159,6 +163,17 @@ def build(
         # fields of telemetry: this is the one line where what happened matters
         # more than what was measured.
         _put(fields, "down", "1")
+    if reply:
+        # The ack and query fields, right after the headline slot and before
+        # the telemetry: ``re=`` is what makes this transmission an answer, and
+        # a person on a phone reads left to right. Every reply field is core by
+        # construction — never dropped, and never overwritten by the routine
+        # telemetry below (``_put`` keeps the first writer; a ``!pos`` answer's
+        # ``lat=`` with its honest age must not be replaced or dropped in
+        # favour of the schedule's version of the same key). When the line will
+        # not fit, the routine telemetry gives way instead.
+        for key, value in reply.items():
+            _put(fields, key, value)
     _put(fields, "pr", profile)
 
     if isinstance(eps, dict):
@@ -176,7 +191,7 @@ def build(
         _put(fields, "sat", _integer(gnss.get("satellites")))
 
     _put(fields, "m", _integer(mission_id))
-    return _fit(fields, limit)
+    return _fit(fields, limit, protected=frozenset(reply or ()))
 
 
 def _put(fields: dict[str, str], key: str, value: Any) -> None:
@@ -187,7 +202,10 @@ def _put(fields: dict[str, str], key: str, value: Any) -> None:
     that did would split the line into fields nobody wrote — the same class of
     fault as truncation, arriving by a different door.
     """
-    if value is None:
+    if value is None or key in fields:
+        # First writer wins: reply fields land before the routine telemetry,
+        # and a query's answer must not be overwritten by the schedule's
+        # version of the same key.
         return
     text = str(value)
     if not text or any(character.isspace() for character in text):
@@ -236,8 +254,13 @@ def _size(line: str) -> int:
     return len(line.encode("utf-8"))
 
 
-def _fit(fields: dict[str, str], limit: int) -> str:
+def _fit(fields: dict[str, str], limit: int, *, protected: frozenset[str] = frozenset()) -> str:
     """Drop whole fields until the line fits. Never cut one in half.
+
+    ``protected`` names the reply fields: a query's answer may share a key with
+    the routine telemetry (``!pos`` answers with ``lat=``), and the drop order
+    must sacrifice the schedule's furniture, never the parcel that was asked
+    for.
 
     If even the core does not fit, the core goes out anyway. A limit below
     ``CSAT t=…`` is a programming error rather than a situation to degrade
@@ -250,7 +273,8 @@ def _fit(fields: dict[str, str], limit: int) -> str:
         return line
     for group in DROP_ORDER:
         for key in group:
-            fields.pop(key, None)
+            if key not in protected:
+                fields.pop(key, None)
         line = _render(fields)
         if _size(line) <= limit:
             return line

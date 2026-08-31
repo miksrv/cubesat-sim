@@ -90,14 +90,49 @@ def test_eps_is_swept_but_not_waited_for(spec_for, clock):
     assert "eps" not in test.awaited_services
 
 
-def test_a_silent_address_fails_the_bring_up(spec_for, clock, caplog):
+def test_a_silent_address_fails_the_bring_up_only_when_the_window_closes(spec_for, clock, caplog):
+    # Not immediately: the profile change has only just started the service
+    # that owns the device, and bring-up may have it mid-reset — the BNO055
+    # stops ACKing its own address for ~650 ms during ADCS's soft reset, which
+    # is exactly when the one-shot sweep hit it on the bench.
     bus = FakeBus(present=(0x36, 0x22, 0x20))  # the BNO055 is not answering
     test = check(spec_for(Profile.EXPO), bus, clock)
-    with caplog.at_level("ERROR"):
+    with caplog.at_level("WARNING"):
         test.begin()
-    assert test.evaluate() is Outcome.FAILED
     assert "0x28" in caplog.text
+    assert test.evaluate() is Outcome.PENDING
+    clock.advance(deploy.DEPLOY_TIMEOUT_SEC + 1)
+    assert test.evaluate() is Outcome.FAILED
     assert "BNO055 orientation at 0x28 did not answer" in test.failures
+
+
+def test_an_address_that_answers_on_a_re_probe_passes(spec_for, clock):
+    # The reset-window case above, played to its healthy ending.
+    bus = FakeBus(present=(0x36, 0x22, 0x20))
+    test = check(spec_for(Profile.DEMO), bus, clock)
+    test.begin()
+    satisfy(test, "adcs", "payload", "dhs", "comms")
+    assert test.evaluate() is Outcome.PENDING
+
+    bus.answers.add(0x28)  # the soft reset finished
+    clock.advance(deploy.RESWEEP_INTERVAL_SEC + 0.1)
+
+    assert test.evaluate() is Outcome.PASSED
+
+
+def test_a_re_probe_is_rationed_to_spare_the_bus(spec_for, clock):
+    # Four processes share one 10 kHz bus; evaluate() may be called on every
+    # message, and each probe costs tens of milliseconds under the shared lock.
+    bus = FakeBus(present=(0x36, 0x22, 0x20))
+    test = check(spec_for(Profile.DEMO), bus, clock)
+    test.begin()
+    probes = len(bus.probed)
+    for _ in range(50):
+        test.evaluate()
+    assert len(bus.probed) == probes  # not a second sooner than the interval
+    clock.advance(deploy.RESWEEP_INTERVAL_SEC + 0.1)
+    test.evaluate()
+    assert len(bus.probed) == probes + 1  # the one missing address, once
 
 
 def test_a_missing_address_fails_even_once_everyone_has_reported(spec_for, clock):
@@ -105,6 +140,7 @@ def test_a_missing_address_fails_even_once_everyone_has_reported(spec_for, clock
     test = check(spec_for(Profile.DEMO), bus, clock)
     test.begin()
     satisfy(test, "adcs", "payload", "dhs", "comms")
+    clock.advance(deploy.DEPLOY_TIMEOUT_SEC + 1)
     assert test.evaluate() is Outcome.FAILED
 
 

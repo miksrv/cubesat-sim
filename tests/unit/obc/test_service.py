@@ -188,6 +188,7 @@ def test_before_hostd_speaks_the_profile_is_null_and_nothing_may_be_recorded(obc
         "cadence_scale": 1.0,
         "persistence": Persistence.NONE.value,
         "mission_label": None,
+        "subsystems": {"watched": ["eps"], "lost": []},
     }
 
 
@@ -369,8 +370,13 @@ def test_a_silent_device_fails_the_bring_up(service_factory, clock, caplog):
         wall_clock=clock,
     )
     service.on_start()
-    with caplog.at_level("ERROR"):
+    with caplog.at_level("WARNING"):
         host_status(client, "DEMO")
+        # Pending, not failed: the device may be mid-reset under the service
+        # that has just been started. The verdict lands when the window closes.
+        assert service.mission.state is MissionState.DEPLOY
+        clock.advance(21.0)
+        service.tick()
     assert service.mission.state is MissionState.SAFE
     assert "0x28" in caplog.text
 
@@ -681,6 +687,57 @@ def test_a_subsystem_that_goes_quiet_drops_the_state_to_safe(obc):
     assert service.mission.state is MissionState.SAFE
 
 
+def test_recover_in_a_standby_profile_lands_in_standby_not_nominal(obc):
+    # The first `recover` ever sent to the hardware landed a HOSTED satellite
+    # in NOMINAL — a "flying" state on a desk that asked for silence, beaconing
+    # every minute. Recovery honours the profile's mission mode.
+    service, client, _ = obc
+    service.on_start()
+    host_status(client, "HOSTED")
+    assert service.mission.state is MissionState.STANDBY
+    beat(client, "comms", alive=False)
+    service.tick()
+    assert service.mission.state is MissionState.SAFE
+
+    beat(client, "comms")  # the subsystem is back; only the latch remains
+    command(client, "recover")
+
+    assert service.mission.state is MissionState.STANDBY
+
+
+def test_a_goodbye_during_a_profile_switch_is_the_switch_not_a_fault(obc):
+    # OBC asked HOSTD for a new profile, and HOSTD stops the old profile's
+    # units to apply it. Their last wills reach OBC before host_status does —
+    # by four seconds on the first hardware run — and reading that as a lost
+    # subsystem latched a healthy satellite into SAFE mid-switch.
+    service, client, _ = obc
+    bring_up(service, client)
+
+    command(client, "set_profile", params={"profile": "MAINTENANCE"})
+    beat(client, "adcs", alive=False)
+    service.tick()
+
+    assert service.mission.state is not MissionState.SAFE
+    host_status(client, "MAINTENANCE")
+    assert service.mission.state is MissionState.STANDBY
+
+
+def test_a_switch_that_never_completes_gives_health_its_say_back(obc):
+    # The settling window is bounded: a request HOSTD never answers must not
+    # suppress the health monitor forever. After the heartbeat-loss window the
+    # goodbye counts again.
+    service, client, clock = obc
+    bring_up(service, client)
+
+    command(client, "set_profile", params={"profile": "MAINTENANCE"})
+    beat(client, "adcs", alive=False)
+    clock.advance(31.0)
+    beat(client, "eps", "payload", "dhs", "comms")
+    service.tick()
+
+    assert service.mission.state is MissionState.SAFE
+
+
 def test_a_service_this_profile_never_started_is_not_missed(obc):
     # MAINTENANCE runs OBC and EPS and nothing else. Putting a healthy satellite
     # in SAFE for not running what it was told not to run would be absurd.
@@ -692,6 +749,38 @@ def test_a_service_this_profile_never_started_is_not_missed(obc):
         beat(client, "eps")
         service.tick()
     assert service.mission.state is MissionState.STANDBY
+
+
+def test_the_status_names_what_the_profile_watches(obc):
+    # The ground segment's only way to tell "off because the profile never
+    # started it" from "expected and silent": without this list a dashboard has
+    # to guess, and both guesses are wrong somewhere.
+    service, client, _ = obc
+    bring_up(service, client, "DEMO")
+    assert status(client)["subsystems"] == {
+        "watched": ["adcs", "comms", "dhs", "eps", "payload"],
+        "lost": [],
+    }
+
+
+def test_a_lost_subsystem_is_named_in_the_status(obc):
+    service, client, _ = obc
+    bring_up(service, client, "DEMO")
+    beat(client, "adcs", alive=False)
+    assert status(client)["status"] == "SAFE"
+    assert status(client)["subsystems"]["lost"] == ["adcs"]
+
+
+def test_a_goodbye_during_a_profile_switch_is_not_published_as_lost(obc):
+    # The same suppression _check_health applies, on the wire: a dashboard
+    # flashing FAIL for every unit HOSTD is deliberately stopping would be
+    # reporting the switch as a fault.
+    service, client, _ = obc
+    bring_up(service, client)
+    command(client, "set_profile", params={"profile": "MAINTENANCE"})
+    beat(client, "adcs", alive=False)
+    service.tick()
+    assert status(client)["subsystems"]["lost"] == []
 
 
 def test_a_lost_subsystem_is_not_recovered_by_the_battery(obc):

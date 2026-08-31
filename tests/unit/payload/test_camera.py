@@ -327,6 +327,79 @@ def test_closing_gives_the_camera_back(controller):
     assert device.closed is True
 
 
+# ── the idle close ───────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def idle_window(monkeypatch):
+    """Set the idle-close window. Patched, never read from the shipped config."""
+
+    def set_to(seconds):
+        monkeypatch.setattr(config, "CAMERA_IDLE_CLOSE_SEC", seconds)
+
+    return set_to
+
+
+def test_an_idle_camera_is_given_back_after_the_window(idle_window, controller):
+    # An open Picamera2 runs its ISP loops continuously — heat for nothing on a
+    # satellite that photographs on demand — so the sensor goes back by itself.
+    idle_window(0.02)
+    control, device = controller
+    control.capture(nominal(mission_id="42"))
+    assert device.closed is False
+    assert wait_until(lambda: device.closed)
+
+
+def test_a_probe_alone_also_arms_the_idle_close(idle_window, controller):
+    # The DEPLOY probe opens the camera; without this, a DEMO that never takes
+    # a photo would keep the sensor streaming until the profile changed.
+    idle_window(0.02)
+    control, device = controller
+    assert control.probe() is True
+    assert wait_until(lambda: device.closed)
+
+
+def test_a_failed_capture_still_arms_the_idle_close(idle_window, controller):
+    idle_window(0.02)
+    control, device = controller
+    device.fail = True
+    with pytest.raises(OSError):
+        control.capture(nominal(mission_id="42"))
+    assert wait_until(lambda: device.closed)
+
+
+def test_a_stale_timer_declines_to_close_a_camera_that_was_just_used(idle_window, controller):
+    # cancel() cannot reach a timer that has already started firing; the
+    # generation check is what stops that timer closing the sensor immediately
+    # after the capture that re-armed it.
+    idle_window(0)  # no real timers: the race is exercised by hand
+    control, device = controller
+    control.capture(nominal(mission_id="42"))
+    stale = control._idle_generation - 1
+    control._idle_close(stale)
+    assert device.closed is False
+    control._idle_close(control._idle_generation)
+    assert device.closed is True
+
+
+def test_a_zero_window_keeps_the_camera_open_forever(idle_window, controller):
+    idle_window(0)
+    control, device = controller
+    control.capture(nominal(mission_id="42"))
+    assert control._idle_timer is None
+    assert device.closed is False
+
+
+def test_closing_cancels_the_pending_idle_close(idle_window, controller):
+    idle_window(60.0)
+    control, device = controller
+    control.capture(nominal(mission_id="42"))
+    assert control._idle_timer is not None
+    control.close()
+    assert control._idle_timer is None
+    assert device.closed is True
+
+
 # ── the timelapse ───────────────────────────────────────────────────────────
 
 

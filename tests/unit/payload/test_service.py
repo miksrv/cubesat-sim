@@ -145,6 +145,35 @@ def test_the_status_says_the_sensor_answered_not_that_the_process_started(payloa
     assert status["camera"]["present"] is True
 
 
+def test_the_sensor_reports_in_before_the_camera_probe_finishes(payload):
+    # The camera probe imports picamera2, which on a cold Pi costs longer than
+    # the whole DEPLOY window (35 s measured, 2026-08-28) — so the sensor's
+    # answer goes out first, with the camera honestly null: "not probed yet"
+    # is a different claim from "absent".
+    service, client, _, _ = payload
+    service.on_start()
+    first, last = (
+        client.payloads(TOPICS["payload_status"])[0],
+        client.payloads(TOPICS["payload_status"])[-1],
+    )
+    assert first["sensor"]["present"] is True
+    assert first["camera"]["present"] is None
+    assert last["camera"]["present"] is True
+
+
+def test_a_deploy_the_service_survived_republishes_the_status(payload):
+    # A DEMO→EXPO switch keeps PAYLOAD running, and a status published only on
+    # change would leave that DEPLOY with no fresh evidence inside its window.
+    service, client, _, _ = payload
+    service.on_start()
+    nominal(client)
+    before = len(client.payloads(TOPICS["payload_status"]))
+
+    nominal(client, state=MissionState.DEPLOY)
+
+    assert len(client.payloads(TOPICS["payload_status"])) == before + 1
+
+
 def test_the_status_carries_the_mission_the_photos_are_being_filed_under(payload, tmp_path):
     service, client, _, _ = payload
     client.deliver(TOPICS["dhs_status"], {"mission": {"id": 42}})
@@ -669,7 +698,7 @@ def test_the_real_drivers_are_used_when_none_are_given(service_factory):
     # rather than the drivers themselves.
     service, _ = service_factory(PayloadService)
     assert service._sensor.probe() is True
-    assert service._controller.camera.probe() is True
+    assert service._controller.probe() is True
 
 
 def test_it_subscribes_to_the_topics_it_needs_and_no_others(payload):

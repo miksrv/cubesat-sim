@@ -11,7 +11,7 @@ the satellite honest.
 
 **Photos are the reason this module matters more than a row purge would.** The
 camera is the only unbounded writer on this satellite: a telemetry row is small
-and now has a horizon, while a timelapse has neither. With nothing bounding the
+and now has a horizon, while a mission's photographs have neither. With nothing bounding the
 images, the card fills, and the first write to fail on a full card is the
 telemetry row the mission exists to record. PAYLOAD's free-space floor
 (``config.PHOTOS_MIN_FREE_MB``, 512 MB) and this horizon are the same headroom
@@ -47,9 +47,12 @@ so it is fenced on every side:
   pass** is ever removed. Never a glob, never a pattern, never a sweep of
   ``photos/``, and never a name that came from listing the directory — the ids
   come from the database, and a name that is not one of them is not touched.
-* ``photos/unfiled/`` is never touched under any circumstances. Those images
-  belong to no mission, so no rule here covers when they stop being wanted;
-  their size is reported in ``dhs_status`` and a person decides.
+* Nothing that is not a mission directory is touched, and since 2026-09-01
+  there is nothing else there to touch: a photograph taken with no mission open
+  is written to a tmpfs, published as pixels and deleted, so ``photos/unfiled/``
+  no longer exists. It is worth remembering why it went — retention was
+  forbidden to clean it, so the one directory on the card guaranteed to grow
+  without limit held the photographs least likely to be wanted.
 * Every deletion is logged at INFO with the mission id, the file count and the
   bytes reclaimed. A deletion an operator cannot find afterwards in the log did
   not happen, as far as they can ever tell.
@@ -60,8 +63,8 @@ so it is fenced on every side:
 Setting ``retention.purge_photos`` to false in ``config.yaml`` turns the last
 part off. That is a real choice with a real consequence, and it is worth saying
 plainly: **the database stays bounded and the card does not.** Nothing else
-removes an image, so on a satellite that takes timelapses the card then fills on
-its own schedule, and what stops first is the recorder.
+removes an image, so on a satellite whose missions photograph themselves the
+card then fills on its own schedule, and what stops first is the recorder.
 """
 
 from __future__ import annotations
@@ -82,13 +85,6 @@ SECONDS_PER_DAY = 86_400.0
 BYTES_PER_MB = 1024 * 1024
 
 #: Where PAYLOAD files a photo taken while no mission was open. Named here as
-#: well as in ``payload/camera.py`` on purpose: the guard that protects it has
-#: to be readable in the file that does the deleting, and the two cannot drift
-#: into deleting each other's directory because a mission id is an integer and
-#: this is not one.
-UNFILED = "unfiled"
-
-
 @dataclass(frozen=True)
 class PurgeResult:
     """What one pass removed. Reported by the caller, asserted by the tests."""
@@ -239,10 +235,11 @@ def photo_dir(root: Path, mission_id: int | str) -> Path | None:
     An allowlist rather than a denylist, which is the only version of this worth
     having: the name must be a run of digits, because that is what a mission id
     out of the database is and what nothing else under ``photos/`` ever is.
-    ``unfiled`` fails it, and so would a name carrying a path separator or a
-    ``..`` if one ever reached here. Listing what may be deleted is a fence that
-    holds against inputs nobody thought of; listing what may not is a fence that
-    holds only against the ones somebody did.
+    A name carrying a path separator or a ``..`` fails it, and so would any
+    directory a future version of PAYLOAD invents under ``photos/`` without
+    telling this module. Listing what may be deleted is a fence that holds
+    against inputs nobody thought of; listing what may not is a fence that holds
+    only against the ones somebody did.
     """
     name = str(mission_id)
     if not name.isdigit():
@@ -253,10 +250,9 @@ def photo_dir(root: Path, mission_id: int | str) -> Path | None:
 def directory_size(directory: Path) -> tuple[int, int]:
     """How many files are under ``directory`` and how many bytes they occupy.
 
-    Counted before a deletion so the log can say what was reclaimed, and used
-    for the unfiled total in ``dhs_status``. A file that disappears mid-walk is
-    skipped rather than raising: the number is for a human to read, and an
-    approximate one beats an exception out of a status publish.
+    Counted before a deletion so the log can say what was reclaimed. A file that
+    disappears mid-walk is skipped rather than raising: the number is for a human
+    to read, and an approximate one beats an exception out of a status publish.
     """
     files = 0
     total = 0
@@ -268,14 +264,6 @@ def directory_size(directory: Path) -> tuple[int, int]:
         except OSError:
             continue
     return (files, total)
-
-
-def unfiled_bytes(root: Path) -> int:
-    """Bytes sitting in ``photos/unfiled/``, which retention never removes."""
-    directory = root / UNFILED
-    if not directory.is_dir():
-        return 0
-    return directory_size(directory)[1]
 
 
 def free_mb(path: Path) -> float | None:

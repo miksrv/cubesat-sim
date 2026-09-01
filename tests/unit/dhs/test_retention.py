@@ -177,16 +177,19 @@ def test_a_purged_mission_takes_its_photo_directory_with_it(conn, photos, caplog
     assert "2 file(s), 200 bytes reclaimed" in caplog.text
 
 
-def test_unfiled_photos_are_never_touched(conn, photos):
-    # They belong to no mission, so no retention rule here covers when they stop
-    # being wanted. Their size is reported in dhs_status and a person decides.
+def test_a_directory_that_is_not_a_mission_is_never_touched(conn, photos):
+    # The fence is an allowlist of mission ids, so anything else under photos/
+    # survives a purge whether or not this module has heard of it. photos/unfiled/
+    # used to be the case in point; it no longer exists — a photograph taken with
+    # no mission open goes to a tmpfs and is deleted — but the fence has to hold
+    # for whatever a future PAYLOAD invents without telling retention.
     aged_mission(conn, days_ago=31)
-    unfiled = with_photos(photos, retention.UNFILED, count=3)
+    stray = with_photos(photos, "notes", count=3)
 
     purge(conn, photos)
 
-    assert unfiled.exists()
-    assert len(list(unfiled.iterdir())) == 3
+    assert stray.exists()
+    assert len(list(stray.iterdir())) == 3
 
 
 def test_only_the_directory_of_a_mission_purged_in_this_pass_is_deleted(conn, photos):
@@ -287,21 +290,12 @@ def test_only_a_run_of_digits_can_name_a_directory_this_module_will_delete(photo
     # where a list of forbidden names would only hold against the ones somebody
     # did — and being wrong here costs somebody their photographs.
     assert retention.photo_dir(photos, 42) == photos / "42"
-    assert retention.photo_dir(photos, retention.UNFILED) is None
+    assert retention.photo_dir(photos, "notes") is None
     assert retention.photo_dir(photos, "../../etc") is None
     assert retention.photo_dir(photos, "") is None
 
 
 # ── reporting ───────────────────────────────────────────────────────────────
-
-
-def test_the_size_of_the_unfiled_directory_is_reported_rather_than_acted_on(photos):
-    with_photos(photos, retention.UNFILED, count=4)
-    assert retention.unfiled_bytes(photos) == 400
-
-
-def test_an_absent_unfiled_directory_is_zero_bytes_and_not_an_error(photos):
-    assert retention.unfiled_bytes(photos) == 0
 
 
 def test_a_file_that_vanishes_mid_walk_is_skipped_rather_than_raised(photos, monkeypatch):

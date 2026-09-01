@@ -21,6 +21,15 @@ would mean ``FLIGHT``, the profile whose entire purpose is recording a track,
 recorded nothing unless somebody remembered to send ``science_start`` before
 leaving the house.
 
+**The row is assembled and published whether or not it is written**, on
+``cubesat/dhs/telemetry``. Since 2026-09-01 only ``FLIGHT`` and ``DIAG`` persist
+(Q7): a demonstration on a desk has no track worth a card write, while the
+dashboard those two profiles exist to show still needs a history for its charts
+and the host's own CPU, RAM and disk for its status panel — and this row is the
+only thing that carries the latter anywhere. So DHS runs in ``DEMO`` and
+``EXPO`` as the assembler it always was, and DASHBOARD keeps a bounded ring of
+these messages in memory instead of reading them back off the card.
+
 **Missions are opened and closed here, and recovered here.** A mission opens
 when a profile that permits persistence reaches a recording state, and closes on
 a profile change, a graceful shutdown or ``CRITICAL``. Nothing closes it on a
@@ -158,7 +167,7 @@ class DhsService(Service):
             self._reconcile()
             self._flush_attitude()
             self._flush_radio()
-            self._write_row()
+            self._row_tick()
             self._maybe_purge()
             self._publish_status()
 
@@ -443,21 +452,60 @@ class DhsService(Service):
 
     # ── the row ─────────────────────────────────────────────────────────────
 
-    def _write_row(self) -> None:
-        if self._mission is None or self._recorder is None:
-            return
+    def _row_tick(self) -> None:
+        """Assemble one telemetry row, publish it, and record it if permitted.
+
+        Assembly and publication are unconditional; only the write is gated.
+        Those used to be one step, because every profile that ran DHS also
+        recorded — and then ``DEMO`` and ``EXPO`` stopped recording (Q7, decided
+        2026-09-01) while keeping the dashboard, whose charts are drawn from
+        exactly this row.
+
+        Gating the assembly would have cost more than the charts. ``metrics``
+        below is the only place anything reads the host's own CPU, RAM, swap,
+        disk, uptime and SoC temperature, and this row is the only message that
+        carries them, so a profile that does not record would have had no way to
+        report the state of the machine it is running on.
+        """
         row = recorder_module.build_row(
-            mission_id=self._mission.id,
-            profile=self._mission.profile,
+            # With no mission open, the profile still has to come from
+            # somewhere: the mission is where it is normally read, because a
+            # mission cannot outlive the profile that opened it.
+            mission_id=self._mission.id if self._mission is not None else None,
+            profile=(
+                self._mission.profile
+                if self._mission is not None
+                else (self.profile.value if self.profile else None)
+            ),
             obc_state=self.mission_state.value if self.mission_state else None,
             eps=self._eps,
             adcs=self._adcs,
             science=self._science,
             metrics=metrics_module.collect(str(config.DATA_DIR)),
         )
+        self._publish_row(row)
+        if self._mission is None or self._recorder is None:
+            return
         if self._recorder.write(row):
             self._mission_rows += 1
             self._last_write = time.time()
+
+    def _publish_row(self, row: dict[str, Any]) -> None:
+        """Put the assembled row on the bus for the dashboard.
+
+        Nested under ``row`` rather than spread across the envelope, because the
+        envelope's ``timestamp`` is a Unix float stamped at publication and the
+        row's is an ISO string stamped at assembly. Flattening them would have
+        one silently overwrite the other.
+
+        ``raw_json`` is dropped. In the database it is the audit copy of the
+        payloads the row was flattened from; on the wire it would double the
+        message to repeat what the same message already carries field by field.
+        """
+        self.publish(
+            "dhs_telemetry",
+            row={key: value for key, value in row.items() if key != "raw_json"},
+        )
 
     # ── retention ───────────────────────────────────────────────────────────
 
@@ -523,10 +571,11 @@ class DhsService(Service):
                 "buffered": len(self._radio),
             },
             photos={
-                # Retention never covers these: they belong to no mission, so no
-                # rule here can say when they stop being wanted. Reported so a
-                # person can decide.
-                "unfiled_bytes": retention.unfiled_bytes(config.PHOTOS_DIR),
+                # `unfiled_bytes` was reported here until 2026-09-01, when the
+                # directory it measured stopped existing: a photograph taken
+                # with no mission open never reaches the card now. Nothing
+                # replaced it — there is no longer a pile of files on the card
+                # that no policy covers.
                 "free_mb": _rounded(retention.free_mb(config.DATA_DIR)),
                 "min_free_mb": config.PHOTOS_MIN_FREE_MB,
             },

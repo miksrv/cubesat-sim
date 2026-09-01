@@ -277,7 +277,7 @@ class Recorder:
 
 def build_row(
     *,
-    mission_id: int,
+    mission_id: int | None,
     profile: str | None,
     obc_state: str | None,
     eps: dict[str, Any] | None,
@@ -291,6 +291,14 @@ def build_row(
     Every column is present on every row, null where the subsystem that owns it
     has said nothing yet. A missing key and a null would otherwise mean the same
     thing to a consumer while being different things to a writer.
+
+    ``mission_id`` is nullable here while the column is ``NOT NULL`` in the
+    schema, and that is not a contradiction: since 2026-09-01 this row is also
+    published on ``cubesat/dhs/telemetry`` for the dashboard's charts, and in
+    ``DEMO``/``EXPO`` there is no mission to belong to. A row with a null
+    ``mission_id`` is publishable and deliberately not writable — the database
+    itself refuses it, which is the check being relied on rather than a comment
+    asking the caller to be careful.
     """
     quaternion = _sub(adcs, "quaternion")
     accel = _sub(adcs, "accel_g")

@@ -125,14 +125,15 @@ def test_the_status_reports_the_headroom_payload_is_watching_from_the_other_side
     # PAYLOAD's floor and this horizon are the same headroom seen from two
     # sides, so both numbers are in one message and can be compared without ssh.
     service, client = dhs
-    (tmp_path / "photos" / retention.UNFILED).mkdir(parents=True)
-    (tmp_path / "photos" / retention.UNFILED / "orphan.jpg").write_bytes(b"x" * 512)
     service.on_start()
 
     photos = status(client)["photos"]
-    assert photos["unfiled_bytes"] == 512
     assert photos["min_free_mb"] == config.PHOTOS_MIN_FREE_MB
     assert photos["free_mb"] > 0
+    # `unfiled_bytes` was here until 2026-09-01 and is deliberately not replaced:
+    # a photograph taken with no mission open never reaches the card now, so
+    # there is no longer a pile of files no policy covers.
+    assert "unfiled_bytes" not in photos
 
 
 # ── opening a mission ───────────────────────────────────────────────────────

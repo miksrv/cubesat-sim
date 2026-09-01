@@ -200,9 +200,10 @@ def test_a_satellite_in_safe_can_still_be_recovered_over_the_radio(comms):
         (Profile.EXPO, True),
         (Profile.FLIGHT, True),
         (Profile.HOSTED, True),
-        # The two deaf ones: DIAG has the LAN and transmits nothing, and
-        # MAINTENANCE needs /dev/serial0 free to reflash the Heltec.
-        (Profile.DIAG, False),
+        (Profile.DIAG, True),
+        # The only deaf one: MAINTENANCE needs /dev/serial0 free to reflash the
+        # Heltec. DIAG was deaf too until it became a rehearsal of FLIGHT
+        # (2026-09-01) — and the beacon is one of the things being rehearsed.
         (Profile.MAINTENANCE, False),
     ],
 )
@@ -1000,11 +1001,12 @@ def test_a_ground_command_can_turn_a_permitted_channel_off(comms):
 
 def test_a_ground_command_cannot_turn_a_forbidden_channel_on(comms):
     # The profile is the envelope. A command that could widen it would make the
-    # profile a suggestion, and DIAG says lora:false because the bench has the
-    # LAN — not as a preference. The request is remembered, so that returning to
-    # a profile that permits the radio honours what the ground last asked for.
+    # profile a suggestion, and MAINTENANCE says lora:false because the serial
+    # port is being used to reflash the radio — not as a preference. The request
+    # is remembered, so that returning to a profile that permits the radio
+    # honours what the ground last asked for.
     service, client = comms()
-    obc(client, profile=Profile.DIAG)
+    obc(client, profile=Profile.MAINTENANCE)
     command(client, "set_comms_config", params={"lora_enabled": True})
 
     assert service.lora_enabled is False

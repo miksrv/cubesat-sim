@@ -108,14 +108,6 @@ def _science(args: list[str]) -> Compact | None:
     return None
 
 
-def _timelapse(args: list[str]) -> Compact | None:
-    if args == ["stop"]:
-        return _command("stop_timelapse")
-    if len(args) == 1 and args[0].isdigit():
-        return _command("start_timelapse", interval_sec=int(args[0]))
-    return None
-
-
 def _lora(args: list[str]) -> Compact | None:
     if args == ["on"]:
         return _command("set_comms_config", lora_enabled=True)
@@ -140,6 +132,5 @@ _TABLE = {
     "safe": _bare("safe_mode"),
     "profile": _profile,
     "science": _science,
-    "timelapse": _timelapse,
     "lora": _lora,
 }

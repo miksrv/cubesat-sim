@@ -78,13 +78,19 @@ def test_lora_is_the_only_downlink_a_profile_can_name():
     assert {f.name for f in fields(DownlinkSpec)} == {"lora"}
 
 
-def test_only_the_bench_profiles_are_deaf_on_lora():
-    # MAINTENANCE frees the serial port for reflashing the Heltec; DIAG sends
-    # nothing anywhere by design. Everywhere else the radio listens, so a
-    # satellite is reachable over LoRa without SSH in any operational profile.
+def test_exactly_one_profile_is_deaf_on_lora():
+    # MAINTENANCE frees the serial port for reflashing the Heltec, and that is
+    # the only reason a profile may be deaf: everywhere else the radio listens,
+    # so a satellite is reachable over LoRa without SSH — including from SAFE,
+    # which FLIGHT can descend into with no other way in.
+    #
+    # DIAG used to be here too, on the argument that the bench has the LAN. It
+    # was removed when DIAG became a rehearsal of FLIGHT (2026-09-01): the
+    # beacon and the uplink are precisely what FLIGHT cannot show you, so a
+    # rehearsal with the radio off rehearses the wrong thing.
     cfg = profiles.load()
     deaf = {p for p in Profile if not cfg.get(p).downlink.lora}
-    assert deaf == {Profile.DIAG, Profile.MAINTENANCE}
+    assert deaf == {Profile.MAINTENANCE}
 
 
 def test_expo_brings_its_own_network_with_an_ssid():
@@ -93,10 +99,29 @@ def test_expo_brings_its_own_network_with_an_ssid():
     assert expo.network.ssid
 
 
-def test_diag_polls_faster_than_nominal_and_uses_its_own_database():
-    diag = profiles.load().get(Profile.DIAG)
-    assert diag.power.cadence_scale < 1.0
+def test_diag_rehearses_flight_into_a_database_of_its_own():
+    """DIAG is FLIGHT with the network and the dashboard kept.
+
+    Asserted as agreement with FLIGHT rather than against literals, because the
+    point of the profile is that it behaves like the one it rehearses: a
+    rehearsal that polls at a different rate, or with the radio off, is a
+    rehearsal of something else. What it must *not* share is the database — a
+    desk run has no business in the archive of real trips.
+    """
+    cfg = profiles.load()
+    diag = cfg.get(Profile.DIAG)
+    flight = cfg.get(Profile.FLIGHT)
+
+    assert diag.power.cadence_scale == flight.power.cadence_scale
+    assert diag.downlink.lora == flight.downlink.lora
+    assert diag.services == flight.services
+    assert diag.mission is flight.mission
+
     assert diag.persistence is Persistence.DIAG_DB
+    assert flight.persistence is Persistence.MISSION_DB
+    # The two differences that make it watchable at all.
+    assert diag.dashboard and not flight.dashboard
+    assert diag.network.mode is not flight.network.mode
 
 
 def test_allowlist_is_exactly_the_declared_external_units():

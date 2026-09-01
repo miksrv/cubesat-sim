@@ -75,7 +75,6 @@ class ProfileSpec:
     downlink: DownlinkSpec
     power: PowerSpec
     ttl_minutes: int | None = None
-    timelapse: bool = False
 
     @property
     def records(self) -> bool:
@@ -214,7 +213,6 @@ def _spec(name: str, raw: dict[str, Any], known_units: tuple[str, ...]) -> Profi
         downlink=DownlinkSpec(lora=bool(down_raw.get("lora", False))),
         power=PowerSpec(governor=governor, cadence_scale=scale),
         ttl_minutes=ttl,
-        timelapse=bool(raw.get("timelapse", False)),
     )
 
 

@@ -27,9 +27,38 @@ TOPICS: dict[str, str] = {
     "adcs_status": "cubesat/adcs/status",
     "payload_status": "cubesat/payload/status",
     "payload_data": "cubesat/payload/data",
+    # Retained since 2026-09-01, and it is what "the dashboard shows the last
+    # photograph" rests on: DEMO and EXPO keep no photo history at all — the
+    # frame is written to a tmpfs, published here and deleted — so the broker's
+    # retained copy is the only place a page opened later can find it. mosquitto
+    # runs with `persistence false`, so that copy is RAM and never the card.
+    #
+    # Two consequences worth holding on to. The message is large for a retained
+    # topic (a 1920x1080 JPEG, base64: half a megabyte or so), which is fine in
+    # RAM and would not be on a card. And a retained frame outlives the session
+    # it was taken in, so PAYLOAD clears it when the mission changes rather than
+    # letting a visitor meet the last demo's photograph as if it were current.
     "payload_photo": "cubesat/payload/photo",
     "comms_status": "cubesat/comms/status",
     "dhs_status": "cubesat/dhs/status",
+    # The wide telemetry row, exactly as it would be written to the database —
+    # every column of dhs.schema.TELEMETRY_COLUMNS, assembled by DHS from the
+    # cached subsystem payloads on its own tick.
+    #
+    # It is on the bus rather than only in SQLite for two reasons. It is the sole
+    # carrier of the host's own CPU, RAM, swap, disk, uptime and SoC temperature:
+    # those are collected by psutil inside DHS and appear in no other message, so
+    # before this topic existed a dashboard could only learn them by polling the
+    # archive — which meant a profile that does not record could not show them at
+    # all. And since 2026-09-01 DEMO and EXPO deliberately do not record (Q7),
+    # so this is where the charts' history comes from: DASHBOARD keeps a bounded
+    # in-memory ring of these messages and serves /api/telemetry out of it.
+    #
+    # Retained, so a browser opening mid-session gets the current row at once
+    # instead of waiting a whole DHS tick — 30 s in NOMINAL — for the host
+    # metrics to appear. mission_id is null when no mission is open, which is
+    # the normal case in DEMO and EXPO.
+    "dhs_telemetry": "cubesat/dhs/telemetry",
     "comms_data": "cubesat/comms/data",
     # One event per radio transaction — a received message, or a transmission
     # attempt with whether it left. Not retained: this is a log line, not a
@@ -51,8 +80,10 @@ RETAINED = frozenset(
         TOPICS["obc_status"],
         TOPICS["eps_status"],
         TOPICS["payload_status"],
+        TOPICS["payload_photo"],
         TOPICS["comms_status"],
         TOPICS["dhs_status"],
+        TOPICS["dhs_telemetry"],
     }
 )
 

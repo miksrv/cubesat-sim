@@ -30,8 +30,6 @@ def canonical(text):
         ("!profile FLIGHT", {"command": "set_profile", "params": {"profile": "FLIGHT"}}),
         ("!science start", {"command": "science_start"}),
         ("!science stop", {"command": "science_stop"}),
-        ("!timelapse 30", {"command": "start_timelapse", "params": {"interval_sec": 30}}),
-        ("!timelapse stop", {"command": "stop_timelapse"}),
         ("!lora on", {"command": "set_comms_config", "params": {"lora_enabled": True}}),
         ("!lora off", {"command": "set_comms_config", "params": {"lora_enabled": False}}),
     ],
@@ -69,7 +67,7 @@ def test_a_phone_keyboard_leading_space_is_forgiven():
         "!profile",  # a profile command with no profile
         "!profile DEMO EXPO",  # or with two
         "!science faster",  # an argument the verb does not take
-        "!timelapse soon",  # an interval that is not a number
+        "!timelapse 30",  # the verb itself is gone: a mission photographs itself
         "!lora maybe",
         "!ping now",  # a bare verb given an argument
         # In the contract but its handler is not written (R5): an honest
@@ -94,7 +92,6 @@ def test_ordinary_chat_is_not_compact():
     [
         ("ping", {"command": "ping"}),
         ("profile FLIGHT", {"command": "set_profile", "params": {"profile": "FLIGHT"}}),
-        ("timelapse 30", {"command": "start_timelapse", "params": {"interval_sec": 30}}),
         ("lora off", {"command": "set_comms_config", "params": {"lora_enabled": False}}),
     ],
 )

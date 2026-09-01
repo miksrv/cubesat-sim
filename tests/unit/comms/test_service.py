@@ -156,23 +156,39 @@ def test_safe_keeps_waking_because_silent_must_not_mean_deaf(comms):
     assert service.interval > 0
 
 
-def test_safe_listens_ten_times_for_every_time_it_talks(comms):
-    # Asserted against the shipped configuration, because the ratio *is* the
-    # decision: listening is a memory read, transmitting is airtime on a shared
-    # duty-cycle-limited mesh and a current spike on a failing battery.
+#: How many times SAFE must listen for every time it transmits. A property of
+#: the design rather than a number out of the config: listening is a memory read,
+#: while transmitting is airtime on a shared duty-cycle-limited mesh and a
+#: current spike on a failing battery. The shipped table is far more generous
+#: than this floor — which is the point of asserting a floor.
+MIN_SAFE_LISTEN_RATIO = 5
+
+
+def test_safe_listens_far_more_often_than_it_talks(comms):
+    """The ratio is the decision; neither number is repeated here.
+
+    `SAFE` is reachable from `FLIGHT`, where the radio is the only way in, so the
+    state that most needs a `recover` must not be the one that hears least. If
+    the beacon interval is ever tuned below the wake cadence this fails — and it
+    should. If it merely moves from 600 s to 300 s, it passes, because nothing
+    was broken.
+    """
     service, client = comms()
     obc(client, state=MissionState.SAFE)
-    assert config.BEACON_INTERVALS["SAFE"] == 600
-    assert service.interval == 60
-    assert config.BEACON_INTERVALS["SAFE"] / service.interval == 10
+    beacon = config.BEACON_INTERVALS[MissionState.SAFE.value]
+
+    assert service.interval > 0, "SAFE must keep waking: quiet is not deaf"
+    assert beacon >= service.interval * MIN_SAFE_LISTEN_RATIO
 
 
 def test_the_cadence_follows_the_mission_state(comms):
+    # Read from the shipped table, not repeated: the numbers are tuning, the
+    # following is the behaviour. See the DHS test for the same treatment.
     service, client = comms()
-    obc(client, state=MissionState.NOMINAL)
-    assert service.interval == 30
-    obc(client, state=MissionState.LOW_POWER)
-    assert service.interval == 60
+    table = config.CADENCE["comms"]
+    for state in (MissionState.NOMINAL, MissionState.LOW_POWER):
+        obc(client, state=state)
+        assert service.interval == table[state.value]
     obc(client, state=MissionState.DEPLOY)
     # DEPLOY has to report in well inside OBC's bring-up window.
     assert service.interval == 2

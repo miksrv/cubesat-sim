@@ -149,6 +149,11 @@ def host_commands(client):
     return client.payloads(TOPICS["host_command"])
 
 
+def host_actions(client, action):
+    """Every host_command of one action, in order."""
+    return [payload for payload in host_commands(client) if payload.get("action") == action]
+
+
 # ── wiring ───────────────────────────────────────────────────────────────────
 
 
@@ -315,6 +320,45 @@ def test_a_profile_running_before_obc_restarted_is_adopted(obc):
     host_status(client, "EXPO")
     assert service.mission.state is MissionState.DEPLOY
     assert service.profile_machine.achieved is Profile.EXPO
+
+
+def test_a_restart_request_is_relayed_to_hostd_and_nothing_more(obc):
+    """OBC adds no check of its own, deliberately.
+
+    Which services exist is `KNOWN_SERVICES` and which units may be touched is
+    HOSTD's allowlist — both on HOSTD's side. What OBC contributes is the
+    privilege boundary: `cubesat/host/command` is root's inbox and the browser
+    ACL denies it, so a ground client asks here instead.
+    """
+    service, client, _ = obc
+    service.on_start()
+    command(client, "restart_service", params={"service": "adcs"}, request_id="req_7")
+
+    relayed = host_actions(client, "restart_service")
+    assert len(relayed) == 1
+    assert relayed[-1]["params"] == {"service": "adcs"}
+    # The id travels with it, so the satellite's logs can be read against the
+    # command that caused them.
+    assert relayed[-1]["request_id"] == "req_7"
+
+
+def test_a_restart_with_no_service_named_is_not_relayed(obc, caplog):
+    service, client, _ = obc
+    service.on_start()
+    with caplog.at_level("ERROR"):
+        command(client, "restart_service", params={})
+    assert host_actions(client, "restart_service") == []
+    assert "without a service name" in caplog.text
+
+
+def test_a_restart_of_a_name_obc_does_not_recognise_is_still_relayed(obc):
+    # Not OBC's judgement to make: a second copy of the service list here is a
+    # second thing to keep in step, and HOSTD refuses it in one place with the
+    # allowlist beside it.
+    service, client, _ = obc
+    service.on_start()
+    command(client, "restart_service", params={"service": "telegram"})
+    assert host_actions(client, "restart_service")[-1]["params"] == {"service": "telegram"}
 
 
 def test_the_profile_cadence_scale_reaches_every_service_through_the_status(

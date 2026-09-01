@@ -791,7 +791,7 @@ Ordered so that each phase is independently useful and testable.
 | **P5** | AP mode in `hostd` (NetworkManager + `dnsmasq` + mDNS); `cubesat-dashboard` service (WS + read-only REST); groundstation client reworked for a local backend; profile `EXPO` | A satellite that can be shown to a room with no internet |
 | **P6** | Power saving; profile TTL; mains-as-signal; GNSS track verified end to end; profile `FLIGHT` | The autonomous logging profile |
 | ~~**P7**~~ | ~~Profile `DIAG`: I2C sweep, full-rate polling, self-test report, separate persistence~~ **Retired 2026-09-01.** The sweep and the self-test report are what `DEPLOY` does on every ascent in every profile; the full-rate polling was `cadence_scale: 0.2`, i.e. ADCS at 10 Hz on a 10 kHz bus, and was removed rather than built on. `DIAG` keeps its separate database and becomes a rehearsal of `FLIGHT` — see the profile table | — |
-| **P8** | Docs and tests kept in line as each change lands rather than as a phase of its own. What is left of it as a task: the sweep for tests that assert a production config value instead of computing from it | Tests that do not break when a legitimate setting changes |
+| **P8** ✅ | Docs and tests kept in line as each change lands rather than as a phase of its own. Closed 2026-09-01 with the sweep that removed the last places a test asserted a shipped configuration value instead of computing from it — cadences, the SAFE listen ratio, and the power thresholds now all derive from the constant they are about | Tests that do not break when a legitimate setting changes |
 
 `ROADMAP.md` items H1–H7 (the hardware abstraction layer) stop being a nice-to-have and become
 phase P1: `hostd`, both state machines and the cadence logic are the first parts of this system

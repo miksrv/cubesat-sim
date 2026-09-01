@@ -21,9 +21,17 @@ SCIENCE_START = "science_start"
 SCIENCE_STOP = "science_stop"
 SAFE_MODE = "safe_mode"
 RECOVER = "recover"
+RESTART_SERVICE = "restart_service"
 
 #: The commands OBC answers for: the ones that are mission decisions.
-HANDLED = frozenset({SET_PROFILE, SCIENCE_START, SCIENCE_STOP, SAFE_MODE, RECOVER})
+#:
+#: ``restart_service`` is here rather than in HOSTD's own subscription for the
+#: reason the whole privilege split exists: `cubesat/host/command` is root's
+#: inbox and the browser ACL denies it outright, so a ground client must not be
+#: able to publish there. It asks OBC, which decides whether to ask HOSTD.
+HANDLED = frozenset(
+    {SET_PROFILE, SCIENCE_START, SCIENCE_STOP, SAFE_MODE, RECOVER, RESTART_SERVICE}
+)
 
 
 @dataclass(frozen=True)
@@ -31,6 +39,19 @@ class Command:
     name: str
     request_id: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RestartRequest:
+    """Which subsystem to restart. A service name, never a systemd unit.
+
+    The vocabulary on the bus talks about subsystems, and the translation into a
+    unit happens once, inside HOSTD, next to the allowlist that bounds it. A
+    ground client that could name a unit would be reaching past the vocabulary
+    into systemd.
+    """
+
+    service: str
 
 
 @dataclass(frozen=True)
@@ -72,6 +93,18 @@ def profile_request(command: Command) -> ProfileRequest | None:
         ttl_minutes=_positive_int(command.params.get("ttl_minutes")),
         mission_label=label if isinstance(label, str) and label else None,
     )
+
+
+def restart_request(command: Command) -> RestartRequest | None:
+    """Pull a ``restart_service`` request out of its params, or None if unusable.
+
+    Whether the name is a service this satellite has is HOSTD's answer, next to
+    the allowlist — this only establishes that there is a name at all.
+    """
+    service = command.params.get("service")
+    if not isinstance(service, str) or not service:
+        return None
+    return RestartRequest(service=service)
 
 
 def _positive_int(value: Any) -> int | None:

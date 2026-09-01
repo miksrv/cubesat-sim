@@ -264,14 +264,21 @@ def test_a_recorder_that_starts_up_in_low_power_still_opens_a_mission(dhs):
 
 
 def test_the_cadence_follows_the_mission_state(dhs):
+    """Read from the shipped table rather than repeated as numbers.
+
+    What is being tested is that the interval *follows the state* — the numbers
+    themselves are a tuning decision that may legitimately move, and a test that
+    spelled them out would fail on the edit rather than on a defect.
+    """
     service, client = dhs
-    obc(client, state=MissionState.NOMINAL)
-    assert service.interval == 30
-    obc(client, state=MissionState.LOW_POWER)
-    assert service.interval == 300
-    obc(client, state=MissionState.DEPLOY)
-    # DEPLOY has to report in well inside OBC's bring-up window.
-    assert service.interval == 2
+    table = config.CADENCE["dhs"]
+    for state in (MissionState.NOMINAL, MissionState.LOW_POWER, MissionState.DEPLOY):
+        obc(client, state=state)
+        assert service.interval == table[state.value]
+    # And the shape of the table is itself a decision: slow down when the battery
+    # is low, hurry while OBC's bring-up window is open.
+    assert table[MissionState.LOW_POWER.value] > table[MissionState.NOMINAL.value]
+    assert table[MissionState.DEPLOY.value] < table[MissionState.NOMINAL.value]
 
 
 # ── the row ─────────────────────────────────────────────────────────────────

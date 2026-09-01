@@ -499,6 +499,68 @@ def test_hostd_does_not_act_on_an_expiry_it_has_published(service_factory):
     assert client.last(TOPICS["host_status"])["profile"] == "FLIGHT"
 
 
+# ── restart_service ─────────────────────────────────────────────────────────
+
+
+def test_restarting_one_service_touches_only_that_unit(hostd):
+    # Why the action exists at all: re-applying a profile to restart one service
+    # would stop and start everything else the profile names, which in EXPO means
+    # taking the dashboard away from a room full of people.
+    service, client, executor = hostd
+    service.handle({"action": "apply_profile", "profile": "DEMO"})
+    executor.calls.clear()
+
+    result = service.handle({"action": "restart_service", "params": {"service": "adcs"}})
+
+    assert result["ok"] is True
+    assert ("systemctl", "restart", "cubesat@adcs.service") in executor.calls
+    restarted = [call for call in executor.calls if "restart" in call]
+    assert len(restarted) == 1
+    # And it is not a change of profile.
+    assert client.last(TOPICS["host_status"])["profile"] == "DEMO"
+
+
+def test_a_service_this_satellite_does_not_have_is_refused(hostd):
+    # Checked against the profile model rather than a string pattern, so this
+    # command can reach exactly what a profile can and nothing more.
+    service, client, executor = hostd
+    result = service.handle({"action": "restart_service", "params": {"service": "telegram"}})
+
+    assert result["ok"] is False
+    assert executor.calls == []
+    assert "unknown service 'telegram'" in client.last(TOPICS["host_status"])["errors"][0]
+
+
+def test_a_unit_name_instead_of_a_service_name_is_refused(hostd):
+    # The vocabulary on the bus names subsystems; a ground client that could name
+    # a unit would be reaching past it into systemd.
+    service, client, executor = hostd
+    result = service.handle(
+        {"action": "restart_service", "params": {"service": "cubesat@adcs.service"}}
+    )
+    assert result["ok"] is False
+    assert executor.calls == []
+
+
+def test_restart_service_with_no_service_named_is_reported(hostd):
+    service, client, executor = hostd
+    assert service.handle({"action": "restart_service"})["ok"] is False
+    assert executor.calls == []
+    assert "without a service name" in client.last(TOPICS["host_status"])["errors"][0]
+
+
+def test_a_restart_that_systemd_refuses_is_reported_not_raised(build, tmp_path):
+    # A unit that will not come back is a fact for host_status, not a traceback
+    # in the only privileged process on the satellite.
+    service, client, _executor = build()
+    service._executor.fails = (("systemctl", "restart"),)
+
+    result = service.handle({"action": "restart_service", "params": {"service": "dhs"}})
+
+    assert result["ok"] is False
+    assert "restart cubesat@dhs.service" in client.last(TOPICS["host_status"])["errors"][0]
+
+
 # ── set_governor ────────────────────────────────────────────────────────────
 
 

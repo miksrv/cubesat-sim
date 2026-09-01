@@ -21,13 +21,12 @@ happens to be exactly a command line (``ping``, and nothing else on the line)
 is a command. On a channel whose members command satellites, that is the right
 trade.
 
-The table below is deliberately **shorter than the agreed vocabulary**: it
-names only the spellings some service can actually answer for today.
-``!restart`` is in the contract but its handler is not written (ROADMAP R5),
-and translating it now would relay a command into a bus where nothing picks it
-up — silence, which is exactly what the ``!`` form exists to end. Until the
-handler lands, that spelling gets the honest ``re=? ok=0 err=unknown`` reply
-like any other line this build does not know.
+The table below names every spelling some service can answer for. It was
+deliberately shorter than the agreed vocabulary until 2026-09-01, when
+``restart`` got its handler — OBC relays it, HOSTD executes it against the
+allowlist — and joined the table. Before that, translating it would have relayed
+a command into a bus where nothing picked it up, and silence is exactly what the
+``!`` form exists to end.
 
 The query verbs — ``ping``, ``pos``, ``sys``, ``env``, ``mission`` — are
 answered by COMMS itself from its caches, immediately and without a relay:
@@ -108,6 +107,19 @@ def _science(args: list[str]) -> Compact | None:
     return None
 
 
+def _restart(args: list[str]) -> Compact | None:
+    """``restart adcs`` — one subsystem, by the name the vocabulary uses.
+
+    The name is not checked here. Which services exist is `KNOWN_SERVICES` and
+    which units may be touched is HOSTD's allowlist, both on the far side of the
+    relay; a copy of either in this file would be a copy that disagrees. What
+    this does refuse is the shape — `restart` with no name, or with two.
+    """
+    if len(args) == 1 and args[0].isalpha():
+        return _command("restart_service", service=args[0].lower())
+    return None
+
+
 def _beacon(args: list[str]) -> Compact | None:
     """``beacon on|off`` — start or stop *transmitting*, never receiving.
 
@@ -140,6 +152,7 @@ _TABLE = {
     "safe": _bare("safe_mode"),
     "profile": _profile,
     "science": _science,
+    "restart": _restart,
     "beacon": _beacon,
     # The name this verb had until 2026-09-01, kept because it may be in
     # somebody's muscle memory and answering `err=unknown` to a command that

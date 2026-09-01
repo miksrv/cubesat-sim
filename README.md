@@ -1136,7 +1136,7 @@ not here, it does not exist.
 | Temperature, humidity, pressure, light | `env` | — | `get_environment` | COMMS |
 | What is being recorded | `mission` | — | `get_mission` | COMMS |
 | The whole telemetry bundle | `telemetry` — **console only**, not over the radio: the answer is far past 240 bytes | — | `get_telemetry` | COMMS |
-| Restart one service | `restart adcs` — **accepted by neither yet** | — | `restart_service` `{service}` | not implemented (R5 in `ROADMAP.md`); until the handler exists a `!restart` line is answered `err=unknown` rather than relayed into an empty bus |
+| Restart one service | `restart adcs` | `cubesat restart adcs` | `restart_service` `{service}` | OBC relays it; HOSTD executes it against the allowlist |
 
 Three read-only commands exist in the shell alone. They publish nothing: they read the retained
 statuses the broker already holds, or the recorder's database.
@@ -1162,6 +1162,13 @@ undocumented, and kept only so a command that worked last week does not answer "
 `request_id` is optional and echoed back on whatever topic answers, so a client can tell its own
 reply from somebody else's. It is deliberately **not** echoed over the radio: the airtime costs more
 than the disambiguation is worth when there is one operator with one phone.
+
+**`restart_service` names a subsystem, never a systemd unit.** The translation into
+`cubesat@adcs.service` happens once, inside HOSTD, next to the allowlist that bounds it — a ground
+client able to name a unit would be reaching past this vocabulary into systemd, so a unit name is
+refused. `cubesat@obc`, `cubesat-hostd`, `mosquitto` and `NetworkManager` are outside reach whatever
+is asked, and re-applying a profile is still the way to restart *everything* a profile names: this
+exists so that restarting one service does not take the dashboard away from a room full of people.
 
 **There is no `poweroff` in this vocabulary, and that is deliberate.** `CRITICAL` is the only thing
 permitted to power the host down, and it decides that from the battery rather than from a button —

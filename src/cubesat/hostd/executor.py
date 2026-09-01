@@ -230,6 +230,16 @@ class HostActions:
         self._allowlist.check(unit)
         self._unit_command("stop", unit)
 
+    def restart(self, unit: str) -> None:
+        """One `systemctl restart`, through the same allowlist as everything else.
+
+        ``restart`` rather than stop-then-start, so a unit that is already down
+        comes back up: the case this exists for is a subsystem OBC has declared
+        lost, and "lost" often means the process is gone rather than wedged.
+        """
+        self._allowlist.check(unit)
+        self._unit_command("restart", unit)
+
     def _unit_command(self, verb: str, unit: str) -> None:
         result = self._executor.run(["systemctl", verb, unit])
         if not result.ok:

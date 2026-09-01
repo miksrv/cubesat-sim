@@ -70,9 +70,9 @@ def test_a_phone_keyboard_leading_space_is_forgiven():
         "!timelapse 30",  # the verb itself is gone: a mission photographs itself
         "!beacon maybe",
         "!ping now",  # a bare verb given an argument
-        # In the contract but its handler is not written (R5): an honest
-        # err=unknown today beats a silent relay into an empty bus.
-        "!restart adcs",
+        "!restart",  # which service?
+        "!restart adcs payload",  # or two of them
+        "!restart cubesat@adcs.service",  # a unit name: the vocabulary names services
     ],
 )
 def test_a_line_nobody_wrote_is_a_reply_not_a_shrug(text):
@@ -100,6 +100,21 @@ def test_the_bare_spelling_is_the_same_language(text, expected):
     # dashboard console takes works over the radio too, `!` optional.
     body, _command = canonical(text)
     assert body == expected
+
+
+def test_restart_names_a_subsystem_and_not_a_systemd_unit():
+    """`restart adcs` — the vocabulary talks about subsystems.
+
+    The translation into `cubesat@adcs.service` happens once, inside HOSTD, next
+    to the allowlist that bounds it. A ground client able to name a unit would be
+    reaching past the vocabulary into systemd, so a unit name does not parse here
+    at all — it is answered `err=unknown` like any other line.
+    """
+    assert compact.translate("restart adcs") == compact.translate("!restart adcs")
+    assert canonical("restart dhs") == (
+        {"command": "restart_service", "params": {"service": "dhs"}},
+        "restart_service",
+    )
 
 
 def test_the_verb_this_one_replaced_still_works():

@@ -13,6 +13,18 @@ SAFE = MissionState.SAFE
 CRITICAL = MissionState.CRITICAL
 
 
+#: Readings placed relative to the thresholds rather than spelled out, so a
+#: policy edit moves one constant instead of every number in this file — and a
+#: threshold that moved *without* the behaviour changing does not fail a test
+#: that was never about the number.
+JUST_UNDER = 1.0
+
+LOW_POWER_EDGE = power_policy.LOW_POWER_PERCENT - JUST_UNDER
+SAFE_EDGE = power_policy.SAFE_PERCENT - JUST_UNDER
+CRITICAL_EDGE = power_policy.CRITICAL_PERCENT - JUST_UNDER
+RECOVERED = power_policy.RECOVERY_PERCENT + JUST_UNDER
+
+
 def on_battery(percent):
     return PowerReading(battery_percent=percent, external_power=False, charge_rate=-2.0)
 
@@ -28,7 +40,7 @@ def on_mains(percent, charge_rate=1.5):
 
 @pytest.mark.parametrize("state", [DEPLOY, NOMINAL, SCIENCE])
 def test_a_battery_under_forty_percent_calls_for_low_power(state):
-    assert evaluate(on_battery(39.0), state) is LOW_POWER
+    assert evaluate(on_battery(LOW_POWER_EDGE), state) is LOW_POWER
 
 
 @pytest.mark.parametrize("state", [DEPLOY, NOMINAL, SCIENCE])
@@ -36,25 +48,25 @@ def test_a_charging_satellite_is_not_throttled(state):
     # There is no battery life to stretch while mains is present, and the rule
     # has to be symmetrical with recovery below: if plugging in recovers at 35 %,
     # descending at 35 % while plugged in would flap on every EPS message.
-    assert evaluate(on_mains(39.0), state) is None
+    assert evaluate(on_mains(LOW_POWER_EDGE), state) is None
 
 
 def test_standby_is_not_throttled():
     # A satellite that is already idle saves nothing by polling its idleness
     # more slowly, and LOW_POWER would only obscure why it is not working.
-    assert evaluate(on_battery(39.0), STANDBY) is None
+    assert evaluate(on_battery(LOW_POWER_EDGE), STANDBY) is None
 
 
 @pytest.mark.parametrize("state", list(MissionState))
 def test_a_battery_under_twenty_percent_reaches_safe_from_anywhere(state):
     expected = None if state in (SAFE, CRITICAL) else SAFE
-    assert evaluate(on_battery(19.0), state) is expected
+    assert evaluate(on_battery(SAFE_EDGE), state) is expected
 
 
 @pytest.mark.parametrize("state", list(MissionState))
 def test_a_battery_under_ten_percent_reaches_critical_from_anywhere(state):
     expected = None if state is CRITICAL else CRITICAL
-    assert evaluate(on_battery(9.0), state) is expected
+    assert evaluate(on_battery(CRITICAL_EDGE), state) is expected
 
 
 # ── mains outranks every descent ─────────────────────────────────────────────
@@ -79,7 +91,7 @@ def test_a_pack_that_keeps_falling_on_mains_still_reaches_critical():
     # one failure mode would disable every protection below.
     assert evaluate(on_mains(9.0, charge_rate=-3.0), NOMINAL) is CRITICAL
     assert evaluate(on_mains(19.0, charge_rate=-3.0), NOMINAL) is SAFE
-    assert evaluate(on_mains(39.0, charge_rate=-3.0), NOMINAL) is LOW_POWER
+    assert evaluate(on_mains(LOW_POWER_EDGE, charge_rate=-3.0), NOMINAL) is LOW_POWER
 
 
 def test_a_gauge_that_cannot_report_a_rate_is_believed_about_mains():
@@ -128,7 +140,7 @@ def test_safe_recovers_on_a_charged_pack_with_no_mains_at_all():
     # The pre-rewrite handler only ever left LOW_POWER when external power
     # appeared, which in FLIGHT meant it could never recover: there is no mains
     # on a walk no matter how much the pack has charged.
-    assert evaluate(on_battery(55.0), SAFE) is MissionState.NOMINAL
+    assert evaluate(on_battery(RECOVERED), SAFE) is MissionState.NOMINAL
 
 
 @pytest.mark.parametrize("state", [STANDBY, NOMINAL, SCIENCE, DEPLOY])

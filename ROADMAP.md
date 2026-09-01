@@ -24,34 +24,23 @@ The hardware is finished and validated; the software is being rewritten against 
 concept. Phases are ordered so each one is independently useful and testable. Full scope and
 rationale per phase: [`docs/concept.md` → Implementation plan](docs/concept.md#implementation-plan).
 
-`P0`–`P5` are done and gone from this table; `P7` was retired on 2026-09-01 (the I2C sweep and
-self-test it promised are what `DEPLOY` does on every ascent — see `docs/concept.md`). `P2` closed
-the same day with the `cubesat` CLI: `profile`, `status`, `mission list` and `beacon on|off`, written
-and tested but **not yet run on the Pi**.
+Everything except `P6` is done and gone from this table. `P7` was retired on 2026-09-01 (the I2C
+sweep and self-test it promised are what `DEPLOY` does on every ascent); `P2` closed the same day
+with the `cubesat` CLI; `P8` closed with the test sweep that removed the last places a test asserted
+a shipped configuration value instead of computing from it. The radio command contract is complete
+too — `restart_service` was its last line.
 
 | Phase | Scope | Delivers | Status |
 |---|---|---|---|
-| **P6** | Power saving; profile TTL; mains-as-signal recovery; GNSS track verified end to end; profile `FLIGHT` | The autonomous logging profile | `[ ]` |
-| **P8** | Docs and tests kept in line as each change lands, rather than as a phase of its own. What is genuinely left is the sweep for tests that assert a *production* config value instead of computing from it: `hostd` pins its own registry, and the `obc`/`common` cases were done on 2026-09-01. `comms` has at least one left — `config.BEACON_INTERVALS["SAFE"] == 600` — and each such line needs deciding rather than rewriting: some are a claim about the shipped table (SAFE must have a beacon at all), which is worth keeping, and some only repeat a number | Tests that do not break when a legitimate setting changes | `[~]` |
-
-### The radio command contract: what is left of it
-
-The contract itself is [`docs/concept.md` → The radio command
-contract](docs/concept.md#the-radio-command-contract). Shipped and gone from this table: the compact
-`!` syntax canonicalised before the relay (`comms/compact.py`, with the bare spelling accepted since
-2026-08-31), the one-ack rule, the four query verbs COMMS answers itself, and the airtime budget —
-which is one pending ack slot rather than a queue, so a burst of commands costs one transmission and
-`down=1` leaves immediately on its own thread.
-
-| # | Work | Status |
-|---|---|---|
-| R5 | `restart_service` through OBC → HOSTD, validated against the known services — the allowlist and the denied set already bound what it can reach | `[ ]` |
-| R6 | README: document the radio command table as shipped behaviour, once `R5` lands and the vocabulary stops changing | `[ ]` |
+| **P6** | **Written; what is left is a walk.** The code landed piecemeal: `powersave` on entering `LOW_POWER` and in `FLIGHT`, the profile TTL armed by HOSTD and reported as `ttl_expires_at`, the radio duty-cycled by the beacon table, and the profile itself. What no test can settle is whether the GNSS track is right — V2 and V3 below are that walk. Mains-as-signal recovery is deliberately still open as Q2 | The autonomous logging profile | `[~]` |
 
 **Where the rewrite stands.** All eight services exist, at 100 % line coverage with `ruff` and
 `mypy` clean. Four of them — `HOSTD`, `OBC`, `EPS`, `COMMS` — have run against real hardware;
 `ADCS`, `PAYLOAD`, `DHS` and `DASHBOARD` have not, which `CLAUDE.md` states as the standing caveat
-it is. What is left is the `cubesat` CLI, `P6`, `P8`, and the bench work below.
+it is. **Almost everything left is a bench check or a decision.** What can still be written without
+the satellite: the photographs missing from a mission export (which blocks the public demo), the
+archive dialog below, the chart line that should break on a gap, and an end-to-end test against the
+replay build.
 
 ### Mission archive as a real dialog — requested 2026-08-31
 

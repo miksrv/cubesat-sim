@@ -184,3 +184,40 @@ def test_the_help_leads_with_beacon_and_shows_the_old_name_as_an_alias(capsys):
     cli.main([])
     printed = capsys.readouterr().out
     assert "beacon (lora)" in printed
+
+
+# ── restart ─────────────────────────────────────────────────────────────────
+
+
+def test_restart_goes_through_hostd_rather_than_around_it(broker, capsys):
+    # `sudo systemctl restart cubesat@adcs` does the same thing without a broker.
+    # Going through HOSTD is what puts the action in the same log, past the same
+    # allowlist, and onto host_status like a profile switch.
+    broker.deliver(
+        TOPICS["host_status"],
+        {"profile": "DEMO", "errors": [], "units": {"cubesat@adcs.service": "active"}},
+    )
+    assert cli.main(["restart", "adcs"]) == 0
+    published = broker.payloads(TOPICS["command"])[-1]
+    assert published["command"] == "restart_service"
+    assert published["params"] == {"service": "adcs"}
+    assert "adcs restarted (now active)" in capsys.readouterr().out
+
+
+def test_restart_of_an_unknown_service_needs_no_broker(capsys):
+    assert cli.main(["restart", "telegram"]) == 2
+    assert "Unknown service 'telegram'" in capsys.readouterr().err
+
+
+def test_a_restart_hostd_complained_about_is_not_a_success(broker, capsys):
+    broker.deliver(
+        TOPICS["host_status"],
+        {"profile": "DEMO", "errors": ["restart cubesat@dhs.service: unit failed"], "units": {}},
+    )
+    assert cli.main(["restart", "dhs"]) == 1
+    assert "unit failed" in capsys.readouterr().err
+
+
+def test_a_restart_nobody_answered_names_the_logs(broker, capsys):
+    assert cli.main(["restart", "comms"]) == 1
+    assert "journalctl" in capsys.readouterr().err

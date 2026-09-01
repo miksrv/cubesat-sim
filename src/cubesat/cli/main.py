@@ -27,7 +27,7 @@ from cubesat.cli.commands import profile as profile_cmd
 from cubesat.cli.commands import status as status_cmd
 from cubesat.cli.session import BrokerUnavailable, Session
 from cubesat.common import profiles as profiles_module
-from cubesat.common.profiles import ProfileError
+from cubesat.common.profiles import KNOWN_SERVICES, ProfileError
 
 #: `8h`, `45m`, or a bare number of minutes. Accepted in the units a person
 #: thinks in — "the walk takes an hour, give it two" — and converted here,
@@ -89,6 +89,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     beacon.add_argument("state", choices=("on", "off"))
 
+    restart = sub.add_parser(
+        "restart",
+        help="restart one mission service through HOSTD, not around it",
+    )
+    restart.add_argument("service", help=f"one of: {', '.join(sorted(KNOWN_SERVICES))}")
+
     return parser
 
 
@@ -114,7 +120,12 @@ def main(argv: list[str] | None = None) -> int:
         return _print(code, lines)
 
     # A typo is answered from this disk before anything is connected to: being
-    # told "no such profile" should not require a reachable satellite.
+    # told "no such profile" — or "no such service" — should not require a
+    # reachable satellite.
+    if args.command == "restart" and args.service not in KNOWN_SERVICES:
+        return _print(
+            2, [f"Unknown service {args.service!r}. One of: {', '.join(sorted(KNOWN_SERVICES))}"]
+        )
     wanted = None
     if args.command == "profile" and args.name is not None:
         try:
@@ -139,12 +150,43 @@ def main(argv: list[str] | None = None) -> int:
                     )
             elif args.command == "status":
                 code, lines = status_cmd.show(session)
+            elif args.command == "restart":
+                code, lines = _restart(session, args.service)
             else:
                 code, lines = _beacon(session, args.state)
     except BrokerUnavailable as exc:
         return _print(1, [str(exc), "Is mosquitto running? `systemctl status mosquitto`"])
 
     return _print(code, lines)
+
+
+def _restart(session: Session, service: str) -> tuple[int, list[str]]:
+    """Restart one mission service — through HOSTD rather than around it.
+
+    ``sudo systemctl restart cubesat@adcs`` does the same thing and needs no
+    broker, so why this exists: going through HOSTD means the action is logged
+    beside every other thing root did, checked against the allowlist, and
+    reflected on ``host_status`` like a profile switch. A restart done behind
+    HOSTD's back is one that does not appear in the account of what happened.
+
+    The name is checked in ``main`` before the broker is contacted, for the same
+    reason a profile typo is: the answer is on this disk.
+    """
+    session.subscribe("host_status")
+    session.send("restart_service", service=service)
+    answer = session.await_message(
+        "host_status", lambda payload: isinstance(payload.get("units"), dict), timeout=20.0
+    )
+    if answer is None:
+        return 1, [
+            f"No answer about {service}. The command was published; OBC or HOSTD did not report.",
+            "Check `journalctl -u cubesat-hostd -u cubesat@obc`.",
+        ]
+    errors = answer.get("errors") or []
+    if errors:
+        return 1, [f"⚠ {error}" for error in errors]
+    state = (answer.get("units") or {}).get(f"cubesat@{service}.service")
+    return 0, [f"{service} restarted (now {state or 'unknown'})."]
 
 
 def _beacon(session: Session, state: str) -> tuple[int, list[str]]:

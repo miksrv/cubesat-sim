@@ -135,14 +135,15 @@ def test_a_sensor_that_comes_back_starts_publishing_again(payload):
 
 
 def test_the_cadence_follows_the_mission_state(payload):
+    # Read from the shipped table, not repeated: the numbers are tuning, the
+    # following is the behaviour. See the DHS test for the same treatment.
     service, client, _, _ = payload
-    nominal(client)
-    assert service.interval == 60
-    nominal(client, MissionState.LOW_POWER)
-    assert service.interval == 300
-    nominal(client, MissionState.DEPLOY)
-    # DEPLOY has to report in well inside OBC's bring-up window.
-    assert service.interval == 2
+    table = config.CADENCE["payload"]
+    for state in (MissionState.NOMINAL, MissionState.LOW_POWER, MissionState.DEPLOY):
+        nominal(client, state)
+        assert service.interval == table[state.value]
+    assert table[MissionState.LOW_POWER.value] > table[MissionState.NOMINAL.value]
+    assert table[MissionState.DEPLOY.value] < table[MissionState.NOMINAL.value]
 
 
 # ── reporting in ────────────────────────────────────────────────────────────

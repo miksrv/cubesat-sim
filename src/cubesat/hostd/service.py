@@ -38,7 +38,13 @@ from typing import Any
 
 from cubesat.common import config
 from cubesat.common import profiles as profiles_module
-from cubesat.common.profiles import NetworkSpec, ProfileConfig, ProfileError, ProfileSpec
+from cubesat.common.profiles import (
+    KNOWN_SERVICES,
+    NetworkSpec,
+    ProfileConfig,
+    ProfileError,
+    ProfileSpec,
+)
 from cubesat.common.service import Service
 from cubesat.common.states import NetworkMode, Profile
 from cubesat.hostd import executor as executor_module
@@ -51,6 +57,16 @@ from cubesat.hostd.network import UNKNOWN_MODE, Network, NetworkState
 APPLY_PROFILE = "apply_profile"
 SET_GOVERNOR = "set_governor"
 POWEROFF = "poweroff"
+#: Restart one mission service, by name. Added 2026-09-01 (ROADMAP R5).
+#:
+#: It is deliberately the narrowest of the four: the allowlist already bounds
+#: which units exist at all, ``DENIED_UNITS`` already keeps `cubesat@obc`,
+#: `mosquitto`, `cubesat-hostd` and `NetworkManager` out of reach, and this
+#: action adds nothing to either. What it does add is a *reason to run one*
+#: without applying a whole profile — re-applying a profile to restart one
+#: service would also stop and start everything else the profile names, which in
+#: `EXPO` means taking the dashboard away from a room full of people.
+RESTART_SERVICE = "restart_service"
 
 
 class _Outcome:
@@ -187,6 +203,8 @@ class HostdService(Service):
                 return self._apply_profile(action)
             if name == SET_GOVERNOR:
                 return self._set_governor(action)
+            if name == RESTART_SERVICE:
+                return self._restart_service(action)
             if name == POWEROFF:
                 return self._poweroff(action)
             self.log.error("unknown action %r; nothing was done", name)
@@ -381,6 +399,50 @@ class HostdService(Service):
         # The achieved profile is untouched: LOW_POWER lowers the governor
         # inside the profile it is already in, and the way back out is that
         # profile's own value.
+        self._publish()
+        return self._result(ok=out.achieved)
+
+    # ── restart_service ─────────────────────────────────────────────────────
+
+    def _restart_service(self, action: dict[str, Any]) -> dict[str, Any]:
+        """Restart one mission service. The name is a service, never a unit.
+
+        ``restart_service {"service": "adcs"}`` — the vocabulary on the bus talks
+        about subsystems, and this is the one place a subsystem name becomes a
+        systemd unit. That mapping is ``unit_for``, the same function the profile
+        path uses, so there is no second spelling of a unit name anywhere.
+
+        A unit name arriving here directly is refused rather than obeyed: it
+        would be a ground client reaching past the vocabulary into systemd, and
+        the answer to "which units exist" belongs to the allowlist.
+        """
+        service = _field(action, "service")
+        out = _Outcome(self.log)
+        if not isinstance(service, str) or not service:
+            out.failed(f"restart_service without a service name: {action!r}")
+        elif service not in KNOWN_SERVICES:
+            # Refused against the model rather than against a string pattern:
+            # `KNOWN_SERVICES` is what a profile may name, so this command can
+            # reach exactly what a profile can and nothing more.
+            out.failed(
+                f"restart_service: unknown service {service!r} "
+                f"(one of: {', '.join(sorted(KNOWN_SERVICES))})"
+            )
+        else:
+            unit = unit_for(service)
+            try:
+                self._host.restart(unit)
+                self.log.info("restarted %s on request (request_id=%s)",
+                              unit, action.get("request_id"))
+            except (Refused, ExecutorError) as exc:
+                # Refused covers the units that are denied outright — nothing in
+                # KNOWN_SERVICES is, today, but the check stays because the deny
+                # list is the property and this is not the place to restate it.
+                out.failed(f"restart {unit}: {exc}")
+            self._unit_states = self._collect_unit_states()
+        self._errors = tuple(out.errors)
+        # The achieved profile is untouched: a restart is inside the profile, not
+        # a change of it.
         self._publish()
         return self._result(ok=out.achieved)
 

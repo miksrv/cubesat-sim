@@ -177,6 +177,8 @@ class ObcService(Service):
             self.mission.fire(mission_machine.SCIENCE_STOP)
         elif command.name == commands.SAFE_MODE:
             self._enter_safe("ground command", latch=True)
+        elif command.name == commands.RESTART_SERVICE:
+            self._restart_service(command)
         else:
             self._recover()
 
@@ -190,6 +192,34 @@ class ObcService(Service):
             ttl_minutes=request.ttl_minutes,
             mission_label=request.mission_label,
             request_id=command.request_id,
+        )
+
+    def _restart_service(self, command: commands.Command) -> None:
+        """Relay a restart to HOSTD, which owns both the privilege and the fence.
+
+        OBC adds no check of its own here, and that is deliberate: which services
+        exist is `KNOWN_SERVICES`, which units may be touched is the allowlist,
+        and both live on HOSTD's side. A second copy of either would be a second
+        thing to keep in step — and the one that gets forgotten is always the one
+        that mattered.
+
+        What OBC does add is the privilege boundary itself. `cubesat/host/command`
+        is root's inbox and the browser ACL denies it, so a ground client cannot
+        ask HOSTD directly; it asks here, on the topic every other command uses.
+        """
+        request = commands.restart_request(command)
+        if request is None:
+            self.log.error("restart_service without a service name: %r", command.params)
+            return
+        self.log.info(
+            "relaying restart of %s to HOSTD (request_id=%s)", request.service, command.request_id
+        )
+        self.publish(
+            "host_command",
+            qos=1,
+            action="restart_service",
+            request_id=command.request_id,
+            params={"service": request.service},
         )
 
     def _on_eps_status(self, data: dict[str, Any]) -> None:

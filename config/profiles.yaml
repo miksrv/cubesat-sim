@@ -83,7 +83,12 @@ profiles:
     services: [adcs, payload, dhs, comms]
     dashboard: true
     persistence: none
-    downlink: { lora: true }
+    # The radio listens but does not beacon: the satellite is a metre away and
+    # the dashboard is open, so a beacon every minute into a shared mesh channel
+    # is noise. Listening still matters — an uplinked `set_profile` is how a trip
+    # begins, and `lora on` (radio, SSH or the dashboard console) is how the
+    # beacon comes back inside this profile.
+    downlink: { lora: true, beacon: false }
     power: { governor: ondemand, cadence_scale: 1.0 }
     ttl_minutes: null
 
@@ -100,7 +105,9 @@ profiles:
     services: [adcs, payload, dhs, comms]
     dashboard: true
     persistence: none
-    downlink: { lora: true }
+    # Quiet by default, for the same reason as DEMO — and more so in a room full
+    # of people with radios.
+    downlink: { lora: true, beacon: false }
     power: { governor: ondemand, cadence_scale: 1.0 }
     ttl_minutes: null
 

@@ -93,8 +93,8 @@ The profile defines the **envelope of what is permitted**; the state defines the
 | Profile | Use case | Wi-Fi | External units | Mission services | Dashboard | Persistence | Downlink |
 |---|---|---|---|---|---|---|---|
 | `HOSTED` | Default. On the desk, mains powered, satellite idle | client | **running** | COMMS, listening | — | — | LoRa (RX only) |
-| `DEMO` | Showing the satellite off at home | client | running | all | ✅ | — (in RAM) | ~~API~~ + LoRa |
-| `EXPO` | Science fair, school, library, office; usually on battery | **own AP** | stopped | all | ✅ | — (in RAM) | LoRa only |
+| `DEMO` | Showing the satellite off at home | client | running | all | ✅ | — (in RAM) | LoRa, **beacon off** |
+| `EXPO` | Science fair, school, library, office; usually on battery | **own AP** | stopped | all | ✅ | — (in RAM) | LoRa, **beacon off** |
 | `FLIGHT` | On the move: a trip, the walk to work | **off** | stopped | all | — | ✅ + GNSS track + photos | LoRa only |
 | `DIAG` | `FLIGHT` rehearsed on the desk: is the trip I am about to take going to record? | client | stopped | all | ✅ | separate DB | LoRa |
 | `MAINTENANCE` | `apt upgrade`, `git pull`, reflashing the radio | client | stopped | — | — | — | — |
@@ -478,10 +478,10 @@ The satellite carries **no UI code**. This service serves a static build and rea
 | Endpoint | Purpose |
 |---|---|
 | `/` | The static build, from `CUBESAT_DASHBOARD_ROOT` (default `/var/lib/cubesat/dashboard`) — nothing is committed to this repo. An unknown path falls back to `index.html`, so a reload on a deep link lands in the interface |
-| `/api/telemetry?limit=N` | Recent rows, **newest first**. Also where a live dashboard reads CPU, RAM, disk and uptime: those are on no status topic, only in rows `DHS` wrote |
+| `/api/telemetry?limit=N` | **The current session**, newest first — the open mission from the database while one is being recorded, DASHBOARD's in-memory ring otherwise; `source` says which answered. Also where the page reads CPU, RAM, disk and uptime, which exist in no status message |
 | `/api/missions` | Every recorded session, newest first, from the stored summaries |
-| `/api/missions/<id>` | One mission: the summary, its telemetry oldest-first, and its `attitude` samples |
-| `/api/missions/<id>/export` | The same body as a download — one endpoint backs both "keep a copy of this walk" and "produce the file the public demo replays" |
+| `/api/missions/<id>` | One mission: the summary, its telemetry oldest-first, its `attitude` samples and its `radio` traffic. The radio rows are there so a replay shows the link of the trip rather than leaving that one widget reading the live satellite |
+| `/api/missions/<id>/export` | The same body as a download — one endpoint backs both "keep a copy of this walk" and "produce the file the public demo replays". It carries no photographs; the two endpoints below are where those live |
 | `/api/missions/<id>/photos`, `/api/photos/<id>/<name>` | The mission's photographs |
 
 **There is no `/api/command`.** A command from the dashboard goes onto `cubesat/command` over the browser's own broker connection — the same topic a laptop, the CLI and an uplink relayed off the radio all use. Nothing downstream knows it came from a browser, and this service needs no write path at all.
@@ -1000,6 +1000,14 @@ heartbeats, which prove a process started and nothing more.
 }
 ```
 
+**The beacon starts off in `DEMO` and `EXPO`** (`downlink: {lora: true, beacon: false}`, decided
+2026-09-01). Those are the profiles where the satellite is a metre from its operator with the
+dashboard open, and beaconing at them over a shared mesh channel is noise. The radio still listens —
+which is what makes an uplinked `set_profile` the way a trip begins — and `beacon on` from the radio,
+from `cubesat beacon on` over SSH, or from the dashboard turns transmission back on inside the same
+profile. Entering a profile resets transmission to that profile's own starting state, so "quiet in
+DEMO" stays true rather than being true only until the first time anybody turned the beacon on.
+
 **`lora_enabled` and `lora_listening` are different things, and the difference is the way home.**
 `lora_enabled` governs *transmission*; listening is governed by the profile alone. So a satellite
 told to stop talking is still reachable over the same radio that told it to — otherwise
@@ -1120,7 +1128,7 @@ All commands share one topic; the `command` field selects the handler.
 | `safe_mode` / `recover` | OBC | — |
 | `take_photo` | PAYLOAD | `request_id?`, `params: {overlay?}` — `overlay` is read as truthy |
 | `get_telemetry` | COMMS | `request_id?` |
-| `set_comms_config` | COMMS | `params: {lora_enabled?}` — in-memory only, and it silences *transmission* only, never listening. The retired `api_enabled` and `aggregation_enabled` are answered with an explanation in the log rather than with silence |
+| `set_comms_config` | COMMS | `params: {lora_enabled?}` — spelled `beacon on|off` in the compact vocabulary, because it silences *transmission* only, never listening. In-memory only. The retired `api_enabled` and `aggregation_enabled` are answered with an explanation in the log rather than with silence |
 
 ```json
 {"command": "set_profile", "params": {"profile": "EXPO"}, "request_id": "req_010"}
@@ -1129,7 +1137,7 @@ All commands share one topic; the `command` field selects the handler.
 
 Every one of these works identically whether it arrives over MQTT on the local network or over LoRa.
 Over the radio (and in the dashboard's console) the same vocabulary also has a compact spelling —
-`profile EXPO`, `photo`, an optional `!` prefix — which COMMS translates into
+`profile EXPO`, `photo`, `beacon off`, an optional `!` prefix — which COMMS translates into
 exactly these JSON envelopes before re-publishing onto `cubesat/command`, so every handler sees one
 format. The compact dictionary and the reply contract live in the COMMS section above and in
 `docs/concept.md` → *The radio command contract*.
@@ -1596,16 +1604,33 @@ does not apply to a session that already exists.
 cubesat profile                                   # active profile, mission state, current mission
 cubesat profile demo                              # switch profile
 cubesat profile flight --ttl 8h --mission "walk to work"
-cubesat status                                    # subsystem health, last telemetry row, DB size
-cubesat mission list                              # recorded missions, newest first
+cubesat status                                    # state, power, radio, recorder, host metrics
+cubesat mission list                              # recorded missions, newest first (--all for every one)
+cubesat beacon on                                 # start transmitting, inside what the profile permits
 ```
+
+**`--ttl` is an override, not a requirement.** Without it the profile's own `ttl_minutes` applies —
+600 for `FLIGHT`, so a trip that nobody remembered to end falls back to `HOSTED` after ten hours. It
+takes `8h`, `45m` or a bare number of minutes.
+
+**`--mission` is optional too.** With no label a mission is named after when it started
+(`2026-09-01 07:12`), which is what a listing needs: before that an unlabelled mission showed as its
+profile — the same word for every trip ever taken.
 
 `cubesat status` also reports the profile the satellite was in before its last boot, read from
 `/var/lib/cubesat/last-profile`. That answers "what was it doing when it died?" without the
-satellite ever acting on the file.
+satellite ever acting on the file. Its host metrics — CPU, RAM, disk, uptime — come off the retained
+`cubesat/dhs/telemetry`, so the command answers the same way in the profiles that record nothing.
 
-The CLI is a thin MQTT client: it publishes `set_profile` and waits for the matching
-`cubesat/host/status`. It needs no privileges, only a reachable broker.
+The CLI is a thin MQTT client: it publishes the same ground commands the dashboard and a LoRa uplink
+publish, onto the same topic, and reads the same retained statuses. It needs no privileges, only a
+reachable broker. `cubesat mission list` is the exception that needs no broker at all — the archive
+is a file on the same disk, opened read-only, which matters because the dashboard does not run in
+`FLIGHT` and mosquitto may be the thing that fell over.
+
+Exit codes, because this ends up in scripts: `0` done or answered, `1` the satellite did not answer
+or answered badly (a profile that applied only in part is `1`, and says what applied), `2` the
+command line was wrong.
 
 Individual units should not normally be started by hand — a profile is the unit of operation. For
 debugging, they run directly from the project root so that `src` is importable as a package:
@@ -1654,7 +1679,7 @@ profiles:
     external_units:     stop            # start | stop | [unit.service, ...]
     services:           [adcs, payload, dhs, comms, dashboard]
     persistence:        mission_db      # none | mission_db | diag_db
-    downlink:           {lora: true}
+    downlink:           {lora: true, beacon: false}   # beacon: start transmitting? (default true)
     power:              {governor: ondemand}
     ttl_minutes:        null            # null = never expires
 

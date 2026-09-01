@@ -80,8 +80,8 @@ profile — with exactly one exception, spelled out in [Safety and recovery](#sa
 | Profile | Use case | Wi-Fi | External units | CubeSat services | Dashboard | Persistence | Downlink |
 |---|---|---|---|---|---|---|---|
 | `HOSTED` | Default. On the desk, mains powered, satellite idle | client (home) | **running** | OBC + EPS + COMMS (listening) | — | — | LoRa (RX only) |
-| `DEMO` | Showing the satellite off at home | client (home) | running | all | ✅ `cubesat.local` | — (RAM only) | ~~API~~ + LoRa |
-| `EXPO` | Science fair, school, library, office; usually on battery | **own AP** | stopped | all | ✅ `cubesat.local` | — (RAM only) | LoRa only |
+| `DEMO` | Showing the satellite off at home | client (home) | running | all | ✅ `cubesat.local` | — (RAM only) | LoRa, beacon off |
+| `EXPO` | Science fair, school, library, office; usually on battery | **own AP** | stopped | all | ✅ `cubesat.local` | — (RAM only) | LoRa, beacon off |
 | `FLIGHT` | On the move: a trip, the walk to work | **off** | stopped | all | — | ✅ + GNSS track + photos | LoRa only |
 | `DIAG` | `FLIGHT` rehearsed on the desk | client (home) | stopped | all | ✅ | separate DB file | LoRa |
 | `MAINTENANCE` | `apt upgrade`, `git pull`, reflashing the Heltec | client (home) | stopped | **none** | — | — | none |
@@ -286,7 +286,10 @@ read only `status` keep working unchanged.
 Both entry points end at the same MQTT command, so there is exactly one code path:
 
 - **`cubesat profile expo`** — a thin CLI in this repo that publishes `set_profile` and waits
-  for the matching `cubesat/host/status`. No root needed; it only talks to the broker.
+  for the matching `cubesat/host/status`. No root needed; it only talks to the broker. It also
+  reads: `cubesat status` (state, power, radio, recorder, host metrics) and `cubesat mission list`,
+  which is the one command that reads the card rather than the bus — the dashboard is absent in
+  `FLIGHT`, and a fallen-over broker is exactly when the last trip is the thing being investigated.
 - **`set_profile` over MQTT** — which is how the Telegram bot, the dashboard, the ground
   station and the LoRa uplink all do it.
 
@@ -329,7 +332,7 @@ knowingly: chat that is exactly a command line (`ping` alone) is a command.
 | `recover` / `safe` | `{"command": "recover"}` / `{"command": "safe_mode"}` |
 | `science start` / `science stop` | `{"command": "science_start"}` / `{"command": "science_stop"}` |
 | `restart adcs` | `{"command": "restart_service", "params": {"service": "adcs"}}` |
-| `lora off` / `lora on` | `{"command": "set_comms_config", "params": {"lora_enabled": false / true}}` |
+| `beacon off` / `beacon on` | `{"command": "set_comms_config", "params": {"lora_enabled": false / true}}` — `lora` is still accepted as the name this verb had until 2026-09-01, undocumented; it was renamed because turning it off never turned the radio off, and quiet-but-listening is the way back into a satellite in `SAFE` |
 
 An unrecognised `!` line is answered with `re=? ok=0 err=unknown` rather than dropped in
 silence: the sender is a person standing in a field wondering why nothing happened. A bare line
@@ -577,8 +580,10 @@ satellite was actually switched off.
 
 ### Identity and labels
 
-A mission is identified by an integer primary key; `started_at` gives it a human-readable name in
-any listing. Optionally it carries a **label**, supplied when the profile is applied:
+A mission is identified by an integer primary key, and it always carries a **label**: the one
+supplied when the profile was applied, or — decided 2026-09-01 — the minute it started, like
+`2026-09-01 07:12`. The default exists because the alternative was worse: an unlabelled mission used
+to list as its own profile, so every trip ever taken read as "FLIGHT" in the archive.
 
 ```
 cubesat profile flight --mission "walk to work"
@@ -795,7 +800,7 @@ Ordered so that each phase is independently useful and testable.
 | **P5** | AP mode in `hostd` (NetworkManager + `dnsmasq` + mDNS); `cubesat-dashboard` service (WS + read-only REST); groundstation client reworked for a local backend; profile `EXPO` | A satellite that can be shown to a room with no internet |
 | **P6** | Power saving; profile TTL; mains-as-signal; GNSS track verified end to end; profile `FLIGHT` | The autonomous logging profile |
 | ~~**P7**~~ | ~~Profile `DIAG`: I2C sweep, full-rate polling, self-test report, separate persistence~~ **Retired 2026-09-01.** The sweep and the self-test report are what `DEPLOY` does on every ascent in every profile; the full-rate polling was `cadence_scale: 0.2`, i.e. ADCS at 10 Hz on a 10 kHz bus, and was removed rather than built on. `DIAG` keeps its separate database and becomes a rehearsal of `FLIGHT` — see the profile table | — |
-| **P8** | Docs and tests brought in line: README, `CLAUDE.md`, `docs/architecture.md`, `ROADMAP.md` (retire O1/O2), test coverage for `hostd` and both machines | The repo describing what it actually does |
+| **P8** | Docs and tests kept in line as each change lands rather than as a phase of its own. What is left of it as a task: the sweep for tests that assert a production config value instead of computing from it | Tests that do not break when a legitimate setting changes |
 
 `ROADMAP.md` items H1–H7 (the hardware abstraction layer) stop being a nice-to-have and become
 phase P1: `hostd`, both state machines and the cadence logic are the first parts of this system

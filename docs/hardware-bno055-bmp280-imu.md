@@ -77,7 +77,21 @@ After this change the same test gives **0 bad reads out of 200**. The cost is a 
 
 **The corruption cannot be worked around in software.** Bit 7 is significant in real sensor data, so a corrupted value is indistinguishable from a legitimate one — there is nothing to mask and nothing to validate against. The bus has to be fixed.
 
-**Alternative fix, if 10 kHz is ever too slow:** a bit-banged software bus (`dtoverlay=i2c-gpio`) honours clock stretching correctly and leaves the hardware bus at full speed, at the cost of moving the sensor to different GPIO pins.
+**10 kHz reduces the corruption; it does not end it.** Measured on the assembled satellite on
+2026-08-28: roughly **one read in ten** still came back with bit 7 of one high byte flipped, in the
+Euler, acceleration *and* quaternion blocks alike, and it was reproduced with a bare `i2cget`
+(`0x167F` read back as `0x16FF`). A flipped high-byte bit 7 moves a value by half the 16-bit range —
++33 g on an accelerometer axis, −2000° on an angle — so `hal/rpi/bno055.py` validates every block
+against physical plausibility and re-reads (up to five attempts) rather than publishing a confident
+impossibility. A flipped *low* byte slips through: 8°, 0.13 g, or 0.008 in a quaternion component,
+which no range check can catch. Do not read the 10 kHz requirement as a fix — read it as the setting
+that makes the sensor usable with a validating driver behind it.
+
+**Alternative fix, if 10 kHz is ever too slow:** a bit-banged software bus (`dtoverlay=i2c-gpio`)
+honours clock stretching correctly and leaves the hardware bus at full speed, at the cost of moving
+the sensor to different GPIO pins. It is also the candidate real fix for the residual flips above —
+the software bus has no clock-stretch bug at all — and measuring both corruption rates is the
+outstanding bench task here.
 
 The bench script's `--selftest` mode exists specifically to catch a regression here:
 

@@ -18,9 +18,9 @@ wrong here:
   those four, everything below about the mock HAL still holds in full.
 
 That first run cost three defects that no test could have caught, all in the deployment rather than
-the logic; the account is in `config/tmpfiles.d/cubesat.conf` and in `ROADMAP.md`. Expect more of
-that shape from the four services still waiting: the mock HAL cannot fail the way a shared
-directory, a file lock or a gauge does.
+the logic; each is now explained where it was fixed — `config/tmpfiles.d/cubesat.conf`,
+`systemd/cubesat@.service`, `config/mosquitto/`. Expect more of that shape from the four services
+still waiting: the mock HAL cannot fail the way a shared directory, a file lock or a gauge does.
 
 The practical consequence: a passing test proves the logic, never the register map. Where a driver
 constant came from a datasheet rather than from our bench notes, the driver says so at the constant
@@ -37,7 +37,7 @@ side.
 | `docs/concept.md` | *Why* the design is shaped this way — profiles, states, control plane, traps |
 | `README.md` | *What* the system is — services, MQTT contract, payloads, schema, config |
 | `docs/hardware-*.md` | The real hardware, per component. The authority for every register and pin |
-| `ROADMAP.md` | What is left, and the bench checks the code is waiting on |
+| `ROADMAP.md` | What is **left**, and the bench checks the code is waiting on. Finished work is deleted from it rather than ticked off — closed decisions live in `docs/concept.md`, settled hardware findings in `docs/hardware-*.md` and at the constants they justify |
 | `PLAN.md` | Working document (Russian) for the LoRa migration; all stages closed |
 | `docs/architecture.md`, `docs/code_smells.md`, `docs/refactoring_plan.md` | Pre-rewrite record only — historical |
 
@@ -107,6 +107,10 @@ deleted; nothing reaches the card. That retired `photos/unfiled/`, which retenti
 clean and which therefore only grew. Note the consequence for V11: at 300 s against a 60 s
 `idle_close_sec`, **every** mission frame is a cold capture.
 
+**A mission with no label is named after when it started** (`2026-09-01 07:12`). Supplying one is
+`--mission` on the CLI or `mission_label` on the wire; without it an unlabelled mission used to list
+as its profile, which is the same word for every trip ever taken.
+
 **Missions.** Each continuous run of an active profile is a mission: a row in the `missions` table
 that every telemetry row references via `mission_id`. `DHS` opens one when the state reaches
 `NOMINAL` with persistence permitted, and closes it on a profile change, a shutdown, or `CRITICAL`.
@@ -154,6 +158,11 @@ satellite brought home flat and plugged in powers itself off and the X728 never 
 because mains never left. Without the second, one failed charger disables the protection forever.
 
 **Quiet is not deaf.** `lora_enabled` silences transmission only; listening is the profile's call.
+A profile also sets where transmission *starts*: `downlink: {lora: true, beacon: false}` in `DEMO`
+and `EXPO` means the satellite listens but says nothing until asked (`beacon on` over the radio, from
+`cubesat beacon on`, or from the dashboard), because there it is a metre from its operator and the
+mesh channel is shared. Entering a profile resets that flag to the profile's own default — otherwise
+"quiet in DEMO" would hold only until the first time anybody turned the beacon on.
 `SAFE` wakes every 60 s to listen and beacons every 600 s. An earlier version silenced COMMS
 entirely in `SAFE` — and `SAFE` is reachable from `FLIGHT`, where the radio is the only way in, so
 the state that most needs a `recover` was the one state deaf to it. The same rule now covers
@@ -369,9 +378,12 @@ Set `CUBESAT_DATA_DIR=./data` for development. Units are a systemd template — 
 having different privileges and dependencies.
 
 Individual units are not started by hand — **a profile is the unit of operation**, applied via the
-`cubesat` CLI (a thin MQTT client that publishes `set_profile` and waits for the matching
-`cubesat/host/status`). Only the always-on tier is enabled at install time; `HOSTD` starts and
-stops everything else as a profile is applied.
+`cubesat` CLI: `cubesat profile flight --ttl 8h --mission "walk to work"`, plus `cubesat status`,
+`cubesat mission list` and `cubesat beacon on|off`. It is a thin MQTT client publishing the same ground
+commands the dashboard and a LoRa uplink publish, and it holds no state of its own — `mission list`
+is the one command that touches the disk instead of the broker, read-only, because the dashboard
+does not run in `FLIGHT` and mosquitto may be what fell over. Only the always-on tier is enabled at
+install time; `HOSTD` starts and stops everything else as a profile is applied.
 
 Logs: rotating files at `/var/log/cubesat/<service>.log`, plus `journalctl -u cubesat@<svc> -f`.
 When a profile did not do what you expected, read `cubesat-hostd` first — it logs every action it

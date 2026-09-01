@@ -34,7 +34,7 @@ rationale per phase: [`docs/concept.md` → Implementation plan](docs/concept.md
 | **P4** ✅ | `STANDBY` and `CRITICAL` states; real `DEPLOY` self-test; every service derives its cadence from `obc/status`; `LOW_POWER` knobs; recovery hysteresis; graceful `poweroff` | The mission state machine finally does something measurable | `[x]` |
 | **P5** ✅ | AP mode in `hostd` (NetworkManager + mDNS); the browser's live channel — mosquitto's own WebSocket listener plus an ACL; the groundstation client reworked into one UI over several data sources; `cubesat-dashboard` (static files + read-only REST); profile `EXPO`. **All written, none of it run on the Pi** — see V8/V9 | A satellite that can be shown to a room with no internet | `[x]` |
 | **P6** | Power saving; profile TTL; mains-as-signal recovery; GNSS track verified end to end; profile `FLIGHT` | The autonomous logging profile | `[ ]` |
-| **P7** | Profile `DIAG`: I2C sweep, full-rate polling, self-test report, separate persistence | A repeatable answer to "is the hardware still good after that re-assembly" | `[ ]` |
+| ~~**P7**~~ | ~~Profile `DIAG`: I2C sweep, full-rate polling, self-test report, separate persistence~~ **Retired 2026-09-01.** The sweep and the self-test report are what `DEPLOY` already does on every ascent, in every profile; the full-rate polling was `cadence_scale: 0.2` — ADCS at 10 Hz on a bus clamped to 10 kHz — and was removed rather than built on. `DIAG` keeps its separate database and is now `FLIGHT` rehearsed on the desk | — | `[x]` |
 | **P8** | Docs and tests brought in line; test coverage for `hostd` and both state machines | The repo describing what it actually does | `[ ]` |
 
 ### Next: DASHBOARD
@@ -219,6 +219,163 @@ Still open on the bench: V2–V3 need a walk (carry the antenna), V5 stays by de
 and V7's UV reading were out of scope for a session that had to keep Wi-Fi up. The camera also
 needs physically re-aiming: the test frame is mostly two of the satellite's own frame struts.
 
+### Found in the dashboard, in front of a live satellite — 2026-08-31
+
+Both came out of the second hardware run, with `DEMO` applied and the UI open. Both are the
+ground segment's half of the work, but the first has a satellite-side half as well, which is why
+they are recorded here.
+
+- **Charts splice together days that have nothing to do with each other.** `Telemetry Graphs`,
+  `Electrical Power System`, `Temperatures` and `Orbit Ground Track` all render `shownHistory`,
+  which `Dashboard.tsx` fills once at page open with `recentTelemetry(200)`. That resolves to
+  `GET /api/telemetry?limit=200`, and `archive.telemetry()` is
+  `SELECT * FROM telemetry ORDER BY timestamp DESC LIMIT ?` — no mission filter, no time window.
+  Measured on the satellite: `?limit=60` returned 33 rows from mission 11 (today) and 27 from
+  mission 9 (two days earlier), a series spanning `2026-08-29T17:38` → `2026-09-01T05:53` drawn as
+  one continuous line. On the ground track it is worse than a wrong chart: two days' positions
+  joined into a single path. The satellite-side options are a `since=` window, a `mission_id=`
+  filter, or defaulting to the open mission; the client-side one is breaking the line on a gap,
+  which is worth doing regardless, because gaps happen *within* a mission too — the recorder
+  stops in `HOSTED` and resumes on the next active profile. **Satellite half done 2026-09-01** — see the section below: the endpoint now means "the current
+  session" and cannot return another one's rows, and the live host metrics moved onto
+  `cubesat/dhs/telemetry` rather than being polled out of the archive. The client-side half — break
+  the line on a gap — is still open, and is worth doing regardless, because gaps happen *within* a
+  mission too.
+
+- **Two log widgets, two directions.** `Live Telemetry Stream` appends
+  (`[...prev, ...buildLines(latest)].slice(-MAX_LINES)`, newest at the bottom) while
+  `Mission Events` (`[...fresh.reverse(), ...current]`) and `Radio Link Log`
+  (`useRadioLog`: `[event, ...current]`) both prepend, newest at the top. So the odd one out is
+  the telemetry stream, and majority alone suggests moving it to newest-first. Worth a moment's
+  thought rather than a blind edit: bottom-append is the console idiom, and it is the only one of
+  the three that reads as a running feed — if it flips, whatever auto-scrolls it has to flip too,
+  and `MAX_LINES` trimming moves from the tail to the head.
+
+- **`Quick Commands` should say nothing; the command belongs in `Mission Console`.** Today the
+  button handler ends in `setLastMessage(\`${command.command} published to cubesat/command\`)`
+  and prints it under the grid. Wanted instead: pressing a button puts the command straight into
+  the console as sent, and the panel itself stays silent. The obstacle is that neither widget
+  shares anything — `MissionConsoleWidget` keeps its transcript in its own `useState<string[]>`,
+  `QuickCommandsWidget` its own `lastMessage` — so the log has to move up into something both
+  reach, the way `useRadioLog` already does for radio events.
+
+  **Do not simply delete the line:** that same `lastMessage` is where a *failed* publish surfaces
+  (`catch` → `error.message`), and a command that never reached the broker must stay visible. It
+  moves to the console with the rest.
+
+  There is a choice worth making deliberately. The cheap version has both widgets append to a
+  shared client-side log — a record of what this page *intended* to send. The better one
+  subscribes to `cubesat/command` itself, which `SUBSCRIBED` deliberately excludes today, and
+  builds the transcript from what actually crossed the broker; the browser ACL already permits
+  `read cubesat/#`. That version also shows commands from other clients — a phone, the `cubesat`
+  CLI, and an uplink relayed onto the topic by COMMS — which is the visible form of "every command
+  works identically over MQTT and over LoRa". Its costs: the echo of one's own command arrives
+  over the network, so "immediately" still needs an optimistic line written on click and
+  reconciled when the echo lands, plus a rule for how another client's command is labelled.
+
+### Recording narrowed to `FLIGHT`, and what it moved — 2026-09-01
+
+Q7 answered: only `FLIGHT` and `DIAG` write to the SD card. The decision is the use case — `FLIGHT`
+is entered *because* the satellite is being taken somewhere, a satellite on a desk has no track, and
+the card is the component that wears out. Three of the first eleven missions came from
+demonstrations. **Written and tested (100 % coverage, ruff/mypy clean); nothing of it has run on the
+Pi**, and two items in the list below are the ground segment's half.
+
+Kept whole rather than narrowed with it, because `FLIGHT` is the one recording profile with no
+dashboard and `DEMO`/`EXPO` the only ones with one:
+
+- **`cubesat/dhs/telemetry`** (retained): the wide row as it would be written, nested under `row`,
+  minus `raw_json`, published every DHS tick whether or not it is recorded. Worth doing on its own
+  account — the host's own CPU, RAM, swap, disk, uptime and SoC temperature are read by `psutil`
+  *inside* DHS and appear in no other message, so a non-recording profile previously had no way to
+  report the state of the machine it runs on, and the dashboard was polling the archive for live
+  numbers.
+- **A bounded ring in DASHBOARD** (`dashboard/live.py`, `dashboard.live_history_rows` = 720, about
+  six hours): the charts' history where nothing is written. On the satellite rather than in the
+  browser deliberately — `EXPO` is visitors arriving one at a time, and a per-page buffer gives each
+  of them a chart starting from zero points and loses it on every reload.
+- **`/api/telemetry` now means "the current session"** — the open mission from the database while one
+  is being recorded, the ring otherwise. That closes the first of the 2026-08-31 findings above: the
+  endpoint used to mean "the last N rows of the table", which returned 33 rows of one day's mission
+  and 27 of another two days earlier and drew them as one line. The response carries `source`
+  (`mission`/`live`) so the interface can say *why* a chart is short. **The client-side half — break
+  the line on a gap, since gaps happen within a mission too — is still open.**
+
+`DIAG` redefined in the same move: `FLIGHT` with the network and the dashboard kept, same cadences,
+same radio, same automatic photography, into `diag.db`. Its `cadence_scale: 0.2` — ADCS at 10 Hz on a
+10 kHz bus, a standing question of its own — is gone, and `downlink.lora` is now true, because the
+beacon and the uplink are exactly what `FLIGHT` cannot show you. **P7 is retired**: the I2C sweep and
+self-test report it promised are what `DEPLOY` already does on every ascent.
+
+Photographs, same argument:
+
+- **A mission photographs itself** every `photos.mission_interval_sec` (300 s) while one is open and
+  the state permits the camera; it stops when the mission closes and resumes after a `LOW_POWER` dip
+  recovers. `start_timelapse`/`stop_timelapse` are gone from PAYLOAD and from the compact radio
+  vocabulary — the automatic series was the only use they had, and one fewer verb is one fewer thing
+  to garble over a radio link. The `_Timelapse` engine survives as `_PhotoRun`: the CMA-leak guard,
+  the three-failures-in-a-row stop and the free-space stop were all worth keeping.
+- **With no mission open, a photograph never reaches the card.** It goes to `/run/cubesat/photo` (a
+  tmpfs), is published on the now-**retained** `cubesat/payload/photo`, and is deleted. The retain
+  flag is what makes "show the last photograph" work with no history: mosquitto runs
+  `persistence false`, so that copy is RAM. PAYLOAD clears it at start, so a session never shows the
+  previous one's picture.
+- **`photos/unfiled/` is gone**, with `retention.unfiled_bytes` and `dhs_status.photos.unfiled_bytes`.
+  Retention was forbidden to touch that directory, which made the one place guaranteed to grow
+  without limit the one holding the photographs least likely to be wanted.
+- **V11 got more important.** At 300 s against a 60 s `camera.idle_close_sec`, *every* frame of a
+  mission is a cold capture — the check that was about an occasional photograph now covers a whole
+  trip's photographs.
+
+**Still to do from this, and it is the ground segment:** `decodePhoto` must accept
+`kind: "mission_frame"` (it silently dropped every frame once already, on exactly this field);
+`missionId` becomes nullable in `TelemetryRecord`, because a published row has no mission in
+`DEMO`/`EXPO`; the Flight Recorder card loses unfiled bytes; the Payload widget loses the timelapse
+interval and Quick Commands the two timelapse verbs; and `payload_status.timelapse` is now
+`mission_photos`.
+
+### Mission archive as a real dialog — requested 2026-08-31
+
+`MISSION ARCHIVE` today opens an inline list inside `MissionTimelineBar` (`phase === 'picking'`)
+whose only action is "replay this one". Wanted: a large modal that lists the missions and lets an
+operator pick one, delete it, export it, or import one. Export already exists —
+`GET /api/missions/<id>/export` returns `{mission, telemetry, attitude}` as
+`mission-<id>.json` — so the work is the dialog plus the three verbs around it. Each of the
+others runs into something structural, which is why this is a note and not a ticket yet.
+
+**Delete is not the dashboard's to do.** The service is read-only by construction: `http.py` is
+"static files, read-only JSON, and nothing else", and `archive.py` opens the file with `mode=ro`
+— deliberately a mode rather than a promise, so it *cannot* write even by mistake. DHS owns the
+database. So deletion should travel as a ground command on `cubesat/command`, executed by DHS,
+exactly like every other thing the ground asks of the satellite; adding an HTTP `DELETE` to the
+dashboard would hand a second writer to a file with one owner.
+
+**Delete reopens D4.** Command authentication was deferred on the argument that the worst a
+visitor on an open `EXPO` access point can do is `set_profile HOSTED`, which disconnects them
+too. Erasing a recorded flight is not in that class. Note also where the gate can live: not in
+the broker ACL, which cannot see which profile is active, so a profile-dependent restriction has
+to be enforced by DHS or OBC.
+
+**Delete has to agree with retention.** `retention.py` deliberately never deletes a mission row —
+"a trip that happened stays listed even after its detail is gone" — it drops the detail and stamps
+`purged_at`, so the archive can tell a purged mission from an empty one. Manual deletion either
+follows that same semantics (detail goes, the row and its `purged_at` stay) or breaks it on
+purpose, and that is a decision to make rather than to discover. Whatever it does, it also has to
+remove `photos/<mission_id>/`.
+
+**Import needs the most thought, and probably should not touch the satellite at all.** Writing a
+foreign mission into `comms.db` invents history the satellite never recorded and collides with
+its own mission ids. The cheaper and truer answer already exists in the client: the `replay`
+source, built for the backend-less public demo, already renders a recorded mission through the
+same widgets as the live view. Import then means "open this exported file as a replay source" —
+no write path, no ownership question, no id collision, and it works in a browser that is not
+talking to a satellite at all. If import into the archive is genuinely wanted later, it is a DHS
+command like delete, not an upload endpoint.
+
+**One gap to close either way:** the export carries no photos. `{mission, telemetry, attitude}`
+is the whole body, while frames live under `photos/<mission_id>/` and are listed separately. An
+archive dialog that exports a mission and gets no pictures back will surprise someone.
+
 ### Bench checks the code is waiting on
 
 Written from the drivers, which mark verified constants apart from inferred ones. Each of these
@@ -236,6 +393,8 @@ produces plausible data rather than an error, which is why none of them can be s
 | ~~V8~~ | ~~**The mosquitto WebSocket listener.**~~ **Done 2026-08-28.** The predicted failure happened: the ACL file in `conf.d/` is parsed as broker config and kills mosquitto at startup ("Invalid bridge configuration" on the first `topic` line). Moved to `/etc/mosquitto/cubesat-acl.conf`; after that a WebSocket client on :9001 receives all six retained statuses on subscribe, and :1883 is unreachable from off the satellite | fixed + verified |
 | V10 | **Meshtastic hop count.** `hops = hopStart − hopLimit` is read from the library's documentation, not from a bench run. The check: a packet relayed through a third node should arrive with `hops = 1`; everything heard so far has been direct | Every direct packet reads 0 whichever interpretation is right, so no traffic to date can falsify it. Wrong arithmetic would put a plausible small integer in `radio_log.hops` |
 | ~~V9~~ | ~~**The browser ACL actually denies.**~~ **Done 2026-08-28**, from an external WebSocket client: publishes to `cubesat/host/command` and a forged `cubesat/eps/status` were silently dropped (confirmed by a subscribed witness), `cubesat/command` passed — and COMMS answered the `get_telemetry` it carried on `comms_data`, so the whole ground loop works from a browser's vantage point | verified |
+| V12 | **MAX17048 state of charge disagrees with its own charge rate — by ~70×.** First hardware run, on mains: `battery_percent` fell 72.4 → 70.3 in eight minutes (≈ −15 %/h) while `voltage` sat unmoved at 3.905–3.906 V and `CRATE` read −0.208 %/h — which is **exactly one LSB** (the register's resolution is 0.208 %/h), the same value the bench recorded at rest on 2026-08-23, so the gauge is saying "about zero", not measuring a discharge. A pack actually losing 15 %/h moves its terminal voltage, so it is the SOC register that is wrong, not the battery — but which way is not decidable from eight minutes. **Confirmed over 85 minutes the same evening: voltage went *up* 3.905 → 3.920 V while SOC went *down* 72.41 → 66.14 %.** The two move in opposite directions, which no discharging cell does, so the reading is not merely imprecise — it is describing something that is not happening. Whether the cell is also being charged is the separate question in V13. Candidates, in order: the gauge is still relaxing after power-on and has no quick-start; `SOC_LSB_PER_PERCENT` is wrong (it would have to be wrong in a way that still lands near a plausible 70 %, so this is the weakest); the pack really is discharging on mains because the X728 is not charging it. The check: leave the satellite on mains for several hours logging `voltage`, `battery_percent` and `charge_rate` together, then repeat on battery. **Do not touch the constant until the log says which** | Nothing errors: `on_mains` currently holds, because −0.208 is above `DRAINING_PERCENT_PER_HOUR` (−1.0), so every power-driven descent stays suppressed and the false SOC is inert. It stops being inert the moment `CRATE` crosses −1.0 — then the pin-plus-rate agreement that protects a plugged-in satellite breaks, and a SOC that reaches 10 % takes the host down for real |
+| V13 | **The X728 does not appear to be charging on mains, and it should be.** Observed 2026-08-31 with the satellite plugged in all evening: 3.92 V, SOC ~66 %, `CRATE` one LSB from zero, and the board's own charge LEDs agreeing with roughly that level. The datasheet figures in `docs/hardware-x728-ups-hat.md` say the recharge threshold is **4.1 V** and cutoff 4.24 V — at 3.92 V the board is well past the point where it should have resumed, so "it deliberately holds a partial charge" does not explain this reading. Two candidates, cheap to separate. First, the **`CHG Ctrl` jumper**: on the V2.5 board, opening it hands charge control to **GPIO16**, and nothing in this repo drives that pin (the only GPIO the code touches is `PLD_PIN = 6`, and it only reads it) — so if the jumper is open, charging is simply disabled by a floating input. Check the jumper physically first. Second, tired 18650s: capacity loss shows up as a cell that will not hold a charge, and the pack is unbranded. `vcgencmd get_throttled` reads `0x0`, so the 5 V supply is not sagging and can be ruled out. **If the jumper turns out to be the answer, it is an opportunity rather than a defect** — GPIO16 would let EPS decide when to charge, which is exactly the wanted behaviour: hold a partial charge on the desk, where a Li-ion cell ages fastest sitting full, and top the pack up deliberately before a `FLIGHT` outing. That would be a driver and a policy, not a jumper left closed | Nothing errors and nothing looks broken: the dashboard shows a plausible 66 %, the LEDs agree, and the satellite runs happily on mains. It is discovered at the worst possible moment — leaving for a trip with a pack that was never full — which is precisely the failure `FLIGHT` cannot afford. Note this is upstream of V12: while charging is in doubt, the gauge's drift cannot be interpreted either |
 | V11 | **Exposure of the first capture after an idle close.** The camera now gives the sensor back after `camera.idle_close_sec` of no captures (the ISP pipeline is SoC heat while open), so a cold `take_photo` re-opens and shoots within about a second. Whether Picamera2's AE/AWB have converged by then is read from nothing — the lores stream exists precisely to run those loops, but how long they need after `start()` is not in our docs. The check: one photo warm, one photo cold, same scene | A dark or colour-cast first frame is plausible wrong data, not an error; if the bench shows it, the fix is a short settle delay after a cold open, and its length is a measurement, not a guess |
 
 ---
@@ -252,6 +411,7 @@ Tracked in [`docs/concept.md` → Open questions](docs/concept.md#open-questions
 | Q4 | May a human move a fault-latched (`SAFE`) satellite into `EXPO` to show it to an audience? | P5 |
 | ~~Q6~~ | ~~**The remote ground-station API is marked absent.**~~ **Answered 2026-08-25: nothing beyond LoRa and the local dashboard.** The PHP groundstation is being rewritten into a UI with several data sources and keeps no backend of its own. The answer turned out not to be a data change after all: `comms/api.py`, the cloud half of `comms/service.py` and the `downlink.api` flag are removed outright — see Stage 0 of the dashboard plan | done |
 | Q5 | The Heltec cannot actually be powered down — it is fed from the Pi's 5 V pin, so "radio off" can only mean "stop talking to it". Real power-off needs a MOSFET on that rail, driven from a spare HAT pin | P6 |
+| ~~Q7~~ | ~~**Is a recorded mission the privilege of `FLIGHT`?**~~ **Answered 2026-09-01: yes** — `FLIGHT`, plus `DIAG` rehearsing it into `diag.db`. Full record in [`docs/concept.md` → Open questions](docs/concept.md#open-questions); what it took is the section below | done |
 
 ---
 

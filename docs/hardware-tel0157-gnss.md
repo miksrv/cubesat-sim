@@ -4,7 +4,7 @@ Satellite positioning for **ADCS**, replacing `src/common/gps_a9g.py` (A9G, NMEA
 
 The module does the GNSS work itself — acquisition, tracking, NMEA parsing — and exposes the result as plain I2C registers. The host reads decimal degrees, satellite count, altitude, speed and course without touching NMEA at all, so `pynmea2` is no longer needed. Raw NMEA remains available on request, which is the only way to inspect satellites in view before a fix exists.
 
-> **Status:** bench-verified on 2026-08-23. Cold start indoors reached time-only; moved to a balcony it acquired a 3D fix with 23 satellites in the solution and HDOP 0.6. No driver exists in `src/` yet; the bench script lives on the Pi at `~/test/tel0157_gnss_read.py`.
+> **Status:** bench-verified on 2026-08-23. Cold start indoors reached time-only; moved to a balcony it acquired a 3D fix with 23 satellites in the solution and HDOP 0.6. The driver is `src/cubesat/hal/rpi/tel0157.py`; the bench script lives on the Pi at `~/test/tel0157_gnss_read.py`. On 2026-08-31 the driver itself was exercised on the assembled satellite for the first time — bring-up write, then `read()` returning a 3D fix with 15 satellites at 37.676955, −121.876546, within metres of the August bench position — but **`ADCS` has still not run on the Pi**: no profile that starts it has been applied, so the driver has only ever been called by hand.
 
 - **Product:** [DFRobot TEL0157](https://www.dfrobot.com/product-2651.html)
 - **Official docs:** [DFRobot Wiki — TEL0157](https://wiki.dfrobot.com/TEL0157)
@@ -54,13 +54,33 @@ Single-byte registers, read as blocks. Multi-byte quantities are big-endian; the
 | `33` | — | Raw NMEA data, read in chunks |
 | `34` | 1 | Constellation mode: 1 GPS, 2 BeiDou, 3 GPS+BeiDou, 4 GLONASS, 5 GPS+GLONASS, 6 BeiDou+GLONASS, 7 all three |
 | `35` | 1 | Power: 0 on, 1 off (data stops refreshing) |
-| `36` | 1 | RGB LED: `0x05` on, `0x02` off |
+| `36` | 1 | RGB LED: `0x05` on, `0x02` off. **Write-only** — reads back `0x00` regardless of what was written (measured 2026-08-31), so the setting cannot be read back or confirmed in software |
 
 Conversion to decimal degrees:
 
 ```
 degrees = dd + mm / 60 + mmmmm / 100000 / 60
 ```
+
+## The onboard LED
+
+The module carries an RGB LED that the driver turns **off** at bring-up, in the same
+`_ensure_started()` write that sets the constellation mode: inside a sealed satellite it
+illuminates the inside of the shell and nothing else. `tel0157_gnss_read.py --rgb on` turns it back
+on for bench work; the next start of `ADCS` darkens it again.
+
+**Verified 2026-08-31, by eye and then by a reading.** `0x02` darkened the LED on the assembled
+satellite, and the module went on working: a fix with 15 satellites, constellation mode still 7,
+power register still 0. So the off value darkens the indicator rather than idling the receiver —
+worth confirming explicitly, because register 35 one along *does* stop the module.
+
+Two things still to know:
+
+- **Register 36 is write-only.** It reads back `0x00` whatever was written, so neither the driver
+  nor a script can confirm the setting took — only that the module accepted the write without a
+  NACK. That is why the check above had to be visual.
+- **`0x05` (on) is still untested.** Only the off path has been exercised on the satellite. It is
+  the value the bench script writes, and getting it wrong costs a dark LED, not bad data.
 
 ## Gotchas
 

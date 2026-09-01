@@ -80,17 +80,28 @@ profile — with exactly one exception, spelled out in [Safety and recovery](#sa
 | Profile | Use case | Wi-Fi | External units | CubeSat services | Dashboard | Persistence | Downlink |
 |---|---|---|---|---|---|---|---|
 | `HOSTED` | Default. On the desk, mains powered, satellite idle | client (home) | **running** | OBC + EPS + COMMS (listening) | — | — | LoRa (RX only) |
-| `DEMO` | Showing the satellite off at home | client (home) | running | all | ✅ `cubesat.local` | ✅ | ~~API~~ + LoRa |
-| `EXPO` | Science fair, school, library, office; usually on battery | **own AP** | stopped | all | ✅ `cubesat.local` | ✅ | LoRa only |
-| `FLIGHT` | On the move: a trip, the walk to work | **off** | stopped | all | — | ✅ + GNSS track | LoRa only |
-| `DIAG` | Bench work after re-assembly or a hardware swap | client (home) | stopped | all, max cadence | ✅ | separate DB file | none |
+| `DEMO` | Showing the satellite off at home | client (home) | running | all | ✅ `cubesat.local` | — (RAM only) | ~~API~~ + LoRa |
+| `EXPO` | Science fair, school, library, office; usually on battery | **own AP** | stopped | all | ✅ `cubesat.local` | — (RAM only) | LoRa only |
+| `FLIGHT` | On the move: a trip, the walk to work | **off** | stopped | all | — | ✅ + GNSS track + photos | LoRa only |
+| `DIAG` | `FLIGHT` rehearsed on the desk | client (home) | stopped | all | ✅ | separate DB file | LoRa |
 | `MAINTENANCE` | `apt upgrade`, `git pull`, reflashing the Heltec | client (home) | stopped | **none** | — | — | none |
 
-`DIAG` and `MAINTENANCE` are additions to the four original use cases, and both close a real
-gap: `DIAG` is what yesterday's hardware bring-up needed (every sensor at full rate, verbose
-logs, an I2C self-test report, and none of it polluting the mission database), and
+`DIAG` and `MAINTENANCE` are additions to the four original use cases, and both close a real gap.
 `MAINTENANCE` is the profile in which it is safe to update the OS without a handful of services
 writing to the SD card underneath you.
+
+`DIAG` was originally "every sensor at full rate, verbose logs, an I2C self-test report, none of it
+polluting the mission database" — the hardware bring-up profile. **Redefined 2026-09-01**, because
+that job turned out to belong elsewhere and a different one had no home. The sweep and the self-test
+are what `DEPLOY` already does on every ascent, in every profile, and the full-rate polling was
+`cadence_scale: 0.2` — ADCS at 10 Hz on a bus clamped to 10 kHz, which was a standing question
+rather than a feature. What had no home is the question *"will the trip I am about to take actually
+be recorded?"*: `FLIGHT` takes Wi-Fi down, so the profile whose recording matters most is the one
+whose recording cannot be watched. `DIAG` is now `FLIGHT` with the network and the dashboard kept —
+same cadences, same radio, same automatic photography, the same code through the same migrations —
+writing to `diag.db` so a rehearsal never lands in the archive of real trips. That last point is why
+a separate database file was the right mechanism all along, and the only field of the profile that
+did not change.
 
 ### A note on naming
 
@@ -180,8 +191,8 @@ it outright, no matter what the state wants.
 | `HOSTED` | idle, EPS watch | — | — | — | log + alert | poweroff |
 | `DEMO` | — | poll + log + stream | + camera | throttled, dashboard kept | sensors only | poweroff |
 | `EXPO` | — | poll + log + stream | + camera | throttled, AP + dashboard kept | sensors only, AP kept | poweroff |
-| `FLIGHT` | — | poll + log + track | + timelapse (opt-in) | throttled, radio duty-cycled | log only, radio off | poweroff |
-| `DIAG` | — | max cadence, separate DB | + camera | *not applicable* (mains) | report and stop | poweroff |
+| `FLIGHT` | — | poll + log + track | + a frame every 5 min | throttled, radio duty-cycled | log only, radio off | poweroff |
+| `DIAG` | — | as `FLIGHT`, separate DB | + a frame every 5 min | *not applicable* (mains) | report and stop | poweroff |
 | `MAINTENANCE` | services down | — | — | — | — | poweroff |
 
 The important reading: `LOW_POWER` and `SAFE` do **not** tear down the AP or the dashboard in
@@ -317,7 +328,6 @@ knowingly: chat that is exactly a command line (`ping` alone) is a command.
 | `profile FLIGHT` | `{"command": "set_profile", "params": {"profile": "FLIGHT"}}` |
 | `recover` / `safe` | `{"command": "recover"}` / `{"command": "safe_mode"}` |
 | `science start` / `science stop` | `{"command": "science_start"}` / `{"command": "science_stop"}` |
-| `timelapse 30` / `timelapse stop` | `{"command": "start_timelapse", "params": {"interval_sec": 30}}` / `{"command": "stop_timelapse"}` |
 | `restart adcs` | `{"command": "restart_service", "params": {"service": "adcs"}}` |
 | `lora off` / `lora on` | `{"command": "set_comms_config", "params": {"lora_enabled": false / true}}` |
 
@@ -492,10 +502,10 @@ Database files live in `/var/lib/cubesat/` (`CUBESAT_DATA_DIR`), not in the chec
 | Profile | SQLite | GNSS track | Remote API | LoRa | Photos |
 |---|---|---|---|---|---|
 | `HOSTED` | no | no | ~~heartbeat only~~ no | **listen only** | no |
-| `DEMO` | `comms.db` | yes | ~~yes~~ no | yes | on demand |
-| `EXPO` | `comms.db` | yes | no (no internet) | yes | on demand |
-| `FLIGHT` | `comms.db` | **yes, the point of the profile** | no | duty-cycled | timelapse, opt-in |
-| `DIAG` | `diag.db` | yes | no | no | on demand |
+| `DEMO` | **no** (a RAM ring for the charts) | no | ~~yes~~ no | yes | on demand, never stored |
+| `EXPO` | **no** (a RAM ring for the charts) | no | no (no internet) | yes | on demand, never stored |
+| `FLIGHT` | `comms.db` | **yes, the point of the profile** | no | duty-cycled | a frame every 5 min |
+| `DIAG` | `diag.db` | yes | no | yes | a frame every 5 min |
 | `MAINTENANCE` | no | no | no | no | no |
 
 **There is no remote ground-station API.** No deployment was ever made, and the ground segment is
@@ -505,8 +515,8 @@ other is gone with it. And `HOSTED` is not silent:
 COMMS runs there to *listen* — every boot lands in `HOSTED`, a field reboot included, and an
 uplinked `set_profile` over LoRa is then the only way back in without SSH. `STANDBY` has no row in
 the beacon table, so on the desk the radio hears everything and transmits nothing on its own. The
-deliberately deaf profiles are exactly `DIAG` (sends nothing anywhere) and `MAINTENANCE` (COMMS is
-not running at all — reflashing the Heltec needs the serial port free).
+one deliberately deaf profile is `MAINTENANCE` (COMMS is not running at all — reflashing the Heltec
+needs the serial port free).
 
 Two changes to today's behaviour follow from this table:
 
@@ -713,8 +723,12 @@ would be stamped from the epoch of the last boot.
   than the dangerous one. `EPS` already has that signal on the X728 PLD pin. Deliberately deferred
   until `FLIGHT` has been used enough to know whether spurious resets actually happen — designing
   around a hypothetical failure is how the stored-profile trap got built in the first place.
-- **`FLIGHT` timelapse.** Photos on a walk would be genuinely nice, and cost battery and card
-  space. Left as an opt-in profile parameter rather than a default.
+- ~~**`FLIGHT` timelapse.**~~ **Answered 2026-09-01: a mission photographs itself, and there is no
+  timelapse.** Photos on a walk are the point of taking the satellite on one, so they are not an
+  opt-in parameter and not a command: while a mission is open, a frame is taken every
+  `photos.mission_interval_sec` (300 s) and filed under it. The ground-commanded timelapse — an
+  interval somebody had to choose, on a verb that had to survive a radio link — was removed: the
+  automatic series was the only use it had.
 - ~~**The remote ground-station API.**~~ **Answered 2026-08-25: nothing beyond LoRa and the local
   dashboard.** The PHP groundstation becomes an interface over several data sources and keeps no
   backend of its own, so `CloudApi`, the cloud half of COMMS and the `downlink.api` flag were
@@ -722,6 +736,48 @@ would be stamped from the epoch of the last boot.
 - **Profile change while `SAFE`.** Should a human be allowed to move a fault-latched satellite
   into `EXPO` to show it to an audience? Probably yes, with the fault clearly displayed — but
   it needs deciding rather than falling out of the implementation.
+- ~~**Should `DEMO` and `EXPO` record at all, or is a mission the privilege of `FLIGHT`?**~~
+  **Answered 2026-09-01: a mission is the privilege of `FLIGHT`** (and of `DIAG`, which rehearses
+  it into a separate file). Raised 2026-08-31 because three of the first eleven missions on the
+  satellite came from demonstrations rather than trips, and because both original reasons for the
+  wide setting had expired: the public demo now runs on generated data, and export to the hosting is
+  planned from `FLIGHT` only. The deciding argument is the use case, not the bookkeeping — `FLIGHT`
+  is entered *because* the satellite is being taken somewhere, and a satellite standing on a desk has
+  no track to record, while the SD card is the one component here that wears out by being written to.
+
+  What made this more than a one-line change is a coincidence in the profile table: **`FLIGHT` is the
+  one recording profile with no dashboard, and `DEMO`/`EXPO` are the only ones that have one.** So
+  narrowing persistence naively would have put the record where nothing displays it and the display
+  where there is nothing to record. Three things were built to keep the display whole:
+
+  - **`cubesat/dhs/telemetry`.** DHS assembles the wide row on its tick whether or not it is
+    recorded, and publishes it. This turned out to be worth doing on its own account: the host's own
+    CPU, RAM, swap, disk, uptime and SoC temperature are collected by `psutil` *inside* DHS and appear
+    in no other message, so before this topic existed the only way to read them was to poll the
+    archive — which meant a profile that does not record could not report the state of the machine it
+    was running on.
+  - **A bounded ring in `DASHBOARD`** (`dashboard/live.py`), fed by that topic, holding
+    `dashboard.live_history_rows` (720, about six hours at the `NOMINAL` cadence). Deliberately on
+    the satellite rather than in the browser: `EXPO` means visitors arriving one at a time and
+    opening the page one at a time, so a per-page buffer would give each of them a chart starting
+    from zero points, lose everything on a reload, and make "what the satellite is showing" a
+    function of who opened a tab when.
+  - **A meaning for `/api/telemetry`.** It now answers *the current session* — the open mission from
+    the database while one is being recorded, the ring otherwise. The endpoint used to mean "the last
+    N rows of the table", which on 2026-09-01 was measured returning 33 rows from that day's mission
+    and 27 from one two days earlier, drawn as a single continuous line and, on the ground track, as
+    a single path joining two days' positions.
+
+  Photographs went the same way, and the argument is the same: with no mission open a frame is
+  written to a tmpfs, published as pixels on the retained `payload_photo`, and deleted. That retired
+  `photos/unfiled/` — which retention was forbidden to touch, making the one directory guaranteed to
+  grow without limit the one holding the photographs least likely to be wanted.
+
+  The measurement that framed the decision is worth keeping: of what was actually being written,
+  **96 % was the attitude track** — 5537 `attitude` rows against 201 `telemetry` rows. So
+  `dhs.attitude_min_interval_sec` remains the cheap lever if the goal is ever fewer card writes
+  within a profile that does record; turning persistence off was the expensive one, and it was taken
+  for the use case rather than for the byte count.
 
 ---
 
@@ -738,7 +794,7 @@ Ordered so that each phase is independently useful and testable.
 | **P4** | `STANDBY` and `CRITICAL` states; real `DEPLOY` self-test; every service derives its cadence from `obc/status`; `LOW_POWER` knobs; recovery hysteresis; graceful `poweroff` | The state machine finally does something measurable |
 | **P5** | AP mode in `hostd` (NetworkManager + `dnsmasq` + mDNS); `cubesat-dashboard` service (WS + read-only REST); groundstation client reworked for a local backend; profile `EXPO` | A satellite that can be shown to a room with no internet |
 | **P6** | Power saving; profile TTL; mains-as-signal; GNSS track verified end to end; profile `FLIGHT` | The autonomous logging profile |
-| **P7** | Profile `DIAG`: I2C sweep, full-rate polling, self-test report, separate persistence | A repeatable answer to "is the hardware still good after that re-assembly" |
+| ~~**P7**~~ | ~~Profile `DIAG`: I2C sweep, full-rate polling, self-test report, separate persistence~~ **Retired 2026-09-01.** The sweep and the self-test report are what `DEPLOY` does on every ascent in every profile; the full-rate polling was `cadence_scale: 0.2`, i.e. ADCS at 10 Hz on a 10 kHz bus, and was removed rather than built on. `DIAG` keeps its separate database and becomes a rehearsal of `FLIGHT` — see the profile table | — |
 | **P8** | Docs and tests brought in line: README, `CLAUDE.md`, `docs/architecture.md`, `ROADMAP.md` (retire O1/O2), test coverage for `hostd` and both machines | The repo describing what it actually does |
 
 `ROADMAP.md` items H1–H7 (the hardware abstraction layer) stop being a nice-to-have and become
@@ -758,7 +814,7 @@ sensors.
 | `src/cubesat/dhs/` | **New** — owns the database: packet assembly, writes gated on profile, cadence from state, position columns, the `missions` table and its lifecycle, retention |
 | `src/cubesat/hal/` | **New** — `typing.Protocol` interfaces, real drivers, mocks, and the shared I2C advisory lock |
 | layout | `src` becomes a real src layout: the package is `cubesat`, installed editable, launched as `python -m cubesat.<service>`. No more `src.*` imports or `PYTHONPATH=.` |
-| runtime data | Out of the checkout: `/var/lib/cubesat/` (database, photos, `last-profile`), `/run/cubesat/` (bus lock, socket), created by systemd's `StateDirectory`/`RuntimeDirectory` |
+| runtime data | Out of the checkout: `/var/lib/cubesat/` (database, photos, `last-profile`), `/run/cubesat/` (bus lock, socket), created at boot by `systemd-tmpfiles` from `config/tmpfiles.d/cubesat.conf` — not by `StateDirectory`/`RuntimeDirectory`, which re-chown the tree to the starting unit's own user and so let root-owned HOSTD lock the unprivileged services out |
 | `src/cubesat/comms/mesh.py` | Rewritten on `meshtastic` (P0, already planned in `PLAN.md`) |
 | `src/cubesat/adcs/`, `src/cubesat/payload/` | Subscribe to `obc/status`; interval from state via `common/cadence.py` |
 | `src/cubesat/common/` | New `service.py` base class, `states.py` enums, `topics.py`, `cadence.py`; profile loading; LoRa keys replaced |

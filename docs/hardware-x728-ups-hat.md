@@ -159,6 +159,66 @@ GPIO6 (PLD)           -> low = AC present
 
 4.044 V against 79.6 % is self-consistent for a Li-ion cell, and `CRATE` near zero matches a battery that is neither charging nor meaningfully loaded. `CRATE` is a cheap way to distinguish "on mains" from "running down" without waiting for `SOC` to move, and this project does not read it yet.
 
+### SOC drifts down while the voltage stands still (2026-08-31, unresolved)
+
+On the first run of the flight software, with the satellite on mains and freshly powered on, EPS
+published this over eight minutes:
+
+```
+t+0s    battery_percent 72.41   voltage 3.905 V   charge_rate -0.208 %/h   external_power true
+t+209s  battery_percent 71.43   voltage 3.906 V   charge_rate -0.208 %/h   external_power true
+t+498s  battery_percent 70.28   voltage 3.906 V   charge_rate -0.208 %/h   external_power true
+```
+
+That is ≈ **−15 %/hour** by SOC against a terminal voltage that does not move and a `CRATE` of
+exactly one LSB — the same "about zero" the 2026-08-23 bench reading recorded. The three do not
+agree, and the voltage is the one to believe: a Li-ion cell shedding 15 %/hour in this part of the
+curve would drop several millivolts, and 3.905 → 3.906 is one LSB of noise upward.
+
+Most likely the gauge is still converging after power-on — the MAX17048's ModelGauge algorithm
+estimates from the open-circuit voltage and settles over time, and this project never issues a
+quick-start. The absolute numbers are not absurd (79.6 % at 4.044 V in August against 70 % at
+3.905 V now is a consistent pair), so this looks like drift rather than a broken scale factor.
+
+**It is not settled, and the constant must not be adjusted to make it look better** — see V12 in
+[`ROADMAP.md`](../ROADMAP.md). What would settle it is a multi-hour log of all three fields on
+mains, then the same on battery. Note also that nothing about this is currently dangerous: the
+power policy suppresses every descent while `external_power` is true and `charge_rate` is above
+−1.0 %/hour, so a false SOC is inert — until `CRATE` crosses that line.
+
+### Is it charging at all? (2026-08-31, open)
+
+Later the same evening, after several hours plugged in:
+
+```
+voltage 3.920 V   battery_percent 66.14   charge_rate -0.208 %/h   external_power true
+```
+
+and the board's own charge-level LEDs agreeing with roughly that level. Compared against the
+first sample of the evening, **the voltage rose 3.905 → 3.920 V while the SOC fell 72.41 → 66.14 %
+over 85 minutes** — opposite directions, which settles that the SOC register is not describing the
+cell. It also hints the pack may be taking a trickle rather than nothing at all.
+
+But it is not charging in earnest, and by this document's own specification table it should be:
+the recharge threshold is **4.1 V** and 3.92 V is well below it. So "the UPS deliberately holds a
+partial charge" does not fit the numbers. Things to check, cheapest first:
+
+1. **The `CHG Ctrl` jumper.** On the V2.5 board, opening it moves charge control to **GPIO16**.
+   Nothing in this repository drives that pin — the only GPIO the code touches is the PLD input on
+   GPIO6 — so an open jumper means charging is gated by a floating input. Check it physically.
+2. **The cells.** Unbranded 18650s that no longer hold a charge look exactly like this.
+3. Ruled out already: the 5 V supply. `vcgencmd get_throttled` reads `0x0`, so the rail is not
+   sagging.
+
+If the jumper is the answer, it is worth keeping open rather than closing: GPIO16 would let EPS
+decide *when* to charge. Holding a partial charge on the desk is genuinely better for a Li-ion
+cell than sitting at 4.2 V for weeks, and a deliberate top-up before a `FLIGHT` outing is exactly
+the behaviour wanted. That turns a puzzle into a feature — but only after the jumper is looked at,
+because right now nobody knows which of the three explanations is true.
+
+Tracked as V13 in [`ROADMAP.md`](../ROADMAP.md). **Do not interpret the gauge drift above until
+this is settled:** a cell that is being trickle-charged and one that is not are different problems.
+
 Note that the I2C bus runs at 10 kHz project-wide (see the [I2C address map](../README.md#i2c-address-map)); this is well within the DS1307's and MAX17048's standard-mode range and needs no adjustment here.
 
 ## Further reading

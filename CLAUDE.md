@@ -4,13 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Read This First
 
-**The hardware is finished and validated. The software is written and has never run on it.** Those
-are different kinds of confidence, and conflating them is the main way to go wrong here:
+**The hardware is finished and validated. Half the software has now run on it, in one profile,
+for minutes.** Those are different kinds of confidence, and conflating them is the main way to go
+wrong here:
 
 - Every component in the README's Hardware table is on the assembled satellite, bench-tested, and
   documented in `docs/hardware-*.md`. Those documents are the authority for anything electrical.
-- All eight services exist, at 100 % line coverage with `ruff` and `mypy` clean. All of it
-  has been exercised **only against the mock HAL**. Not one instruction has executed on the Pi.
+- All eight services exist, at 100 % line coverage with `ruff` and `mypy` clean.
+- **First run on the Pi: 2026-08-31.** `HOSTD`, `OBC`, `EPS` and `COMMS` — the `HOSTED` tier — have
+  now executed against real hardware: five I2C devices answered, the Meshtastic node was reachable,
+  a ground command round-tripped, and `SAFE` was entered and cleared for real. `ADCS`, `PAYLOAD`,
+  `DHS` and `DASHBOARD` still have **not** — no profile that starts them has been applied — so for
+  those four, everything below about the mock HAL still holds in full.
+
+That first run cost three defects that no test could have caught, all in the deployment rather than
+the logic; the account is in `config/tmpfiles.d/cubesat.conf` and in `ROADMAP.md`. Expect more of
+that shape from the four services still waiting: the mock HAL cannot fail the way a shared
+directory, a file lock or a gauge does.
 
 The practical consequence: a passing test proves the logic, never the register map. Where a driver
 constant came from a datasheet rather than from our bench notes, the driver says so at the constant
@@ -55,13 +65,13 @@ host down. Do not merge these into one flat machine; that decision is argued out
 | Service | Unit | Runs as | Always on | Role | Status |
 |---|---|---|---|---|---|
 | broker | `mosquitto` | own user | ✅ | The message bus | exists |
-| HOSTD | `cubesat-hostd` | **root** | ✅ | Host executor: units, Wi-Fi mode, governor, poweroff, profile state file | written, never run on hardware |
-| OBC | `cubesat@obc` | `cubesat` | ✅ | Both state machines, command parsing, subsystem health | written, never run on hardware |
-| EPS | `cubesat@eps` | `cubesat` | ✅ | Battery + mains telemetry — drives `LOW_POWER`/`SAFE`/`CRITICAL` | written, never run on hardware |
+| HOSTD | `cubesat-hostd` | **root** | ✅ | Host executor: units, Wi-Fi mode, governor, poweroff, profile state file | **ran on hardware** 2026-08-31 |
+| OBC | `cubesat@obc` | `cubesat` | ✅ | Both state machines, command parsing, subsystem health | **ran on hardware** 2026-08-31 |
+| EPS | `cubesat@eps` | `cubesat` | ✅ | Battery + mains telemetry — drives `LOW_POWER`/`SAFE`/`CRITICAL` | **ran on hardware** 2026-08-31 |
 | ADCS | `cubesat@adcs` | `cubesat` | by profile | BNO055 orientation + TEL0157 position | written, never run on hardware |
 | PAYLOAD | `cubesat@payload` | `cubesat` | by profile | SEN0501 science + camera | written, never run on hardware |
 | DHS | `cubesat@dhs` | `cubesat` | by profile | The flight recorder: owns the SQLite database | written, never run on hardware |
-| COMMS | `cubesat@comms` | `cubesat` | all but `MAINTENANCE` | The link only: LoRa mesh, uplink re-publish | written, never run on hardware |
+| COMMS | `cubesat@comms` | `cubesat` | all but `MAINTENANCE` | The link only: LoRa mesh, uplink re-publish | **ran on hardware** 2026-08-31 |
 | DASHBOARD | `cubesat-dashboard` | `cubesat` | by profile | Static UI + read-only REST. **No WebSocket** — browsers subscribe to mosquitto's own listener | written, never run on hardware |
 
 Three structural decisions that are easy to accidentally undo:
@@ -77,6 +87,25 @@ Three structural decisions that are easy to accidentally undo:
 
 Whether a telemetry row may be written is decided by the **profile**; how often, by the **state**.
 The pre-rewrite gate ("write only while the OBC state is `SCIENCE`") is deliberately gone.
+
+**Only `FLIGHT` and `DIAG` write to the card** (Q7, decided 2026-09-01). A demonstration is not a
+mission: the satellite stands on a desk, there is no track, and the card is the component that wears
+out. `DEMO` and `EXPO` still run `DHS` — it assembles the wide row and publishes it on
+`cubesat/dhs/telemetry`, which is the only carrier of the host's own CPU/RAM/disk anywhere, and
+`DASHBOARD` keeps a bounded ring of those rows in memory for its charts (`dashboard/live.py`).
+`/api/telemetry` therefore means *the current session*: the open mission from the database while one
+is being recorded, the ring otherwise — never "the last N rows of the table", which drew two
+different days as one line. `DIAG` was redefined in the same move: it is `FLIGHT` rehearsed on the
+desk (network and dashboard kept, same cadences and radio, into `diag.db`), which also retires the
+`cadence_scale: 0.2` that ran ADCS at 10 Hz.
+
+**A mission photographs itself.** No `start_timelapse`/`stop_timelapse` and no interval on the wire:
+while a mission is open and the state permits the camera, a frame is taken every
+`photos.mission_interval_sec` (300 s) and filed under the mission. With no mission open a photograph
+goes to `/run/cubesat/photo` — a tmpfs — is published on the retained `payload_photo`, and is
+deleted; nothing reaches the card. That retired `photos/unfiled/`, which retention was forbidden to
+clean and which therefore only grew. Note the consequence for V11: at 300 s against a 60 s
+`idle_close_sec`, **every** mission frame is a cold capture.
 
 **Missions.** Each continuous run of an active profile is a mission: a row in the `missions` table
 that every telemetry row references via `mission_id`. `DHS` opens one when the state reaches
@@ -197,8 +226,9 @@ All topic strings live in `src/cubesat/common/topics.py` as `TOPICS` — always 
 | `adcs_status` | `cubesat/adcs/status` | ADCS | no |
 | `payload_status` | `cubesat/payload/status` | PAYLOAD | **yes** |
 | `payload_data` | `cubesat/payload/data` | PAYLOAD | no |
-| `payload_photo` | `cubesat/payload/photo` | PAYLOAD | no |
+| `payload_photo` | `cubesat/payload/photo` | PAYLOAD | **yes** |
 | `dhs_status` | `cubesat/dhs/status` | DHS | **yes** |
+| `dhs_telemetry` | `cubesat/dhs/telemetry` | DHS | **yes** |
 | `comms_status` | `cubesat/comms/status` | COMMS | **yes** |
 | `comms_data` | `cubesat/comms/data` | COMMS | on-demand only |
 | `comms_radio` | `cubesat/comms/radio` | COMMS | no |
@@ -317,11 +347,22 @@ Structural rules that are easy to erode, all with a reason:
 
 Runtime data lives outside the checkout, created by systemd, never by `mkdir` in code:
 
-| Path | Contents | Unit directive |
+| Path | Contents | Created by |
 |---|---|---|
-| `/var/lib/cubesat/` | `comms.db`, `diag.db`, `photos/<mission_id>/`, `last-profile`, dashboard build | `StateDirectory=cubesat` |
-| `/run/cubesat/` | `i2c.lock`, `hostd.sock` | `RuntimeDirectory=cubesat` |
-| `/var/log/cubesat/` | `<service>.log` | `LogsDirectory=cubesat` |
+| `/var/lib/cubesat/` | `comms.db`, `diag.db`, `photos/<mission_id>/`, `last-profile`, dashboard build | `config/tmpfiles.d/cubesat.conf` |
+| `/run/cubesat/` | `i2c.lock`, `hostd.sock`, `photo/` (a photograph with no mission, in RAM) | `config/tmpfiles.d/cubesat.conf` |
+| `/var/log/cubesat/` | `<service>.log` | `config/tmpfiles.d/cubesat.conf` |
+
+**`systemd-tmpfiles` creates these, not `StateDirectory`/`RuntimeDirectory`/`LogsDirectory`, and
+that is deliberate.** Those directives re-apply the *starting unit's own* `User=` to the whole tree
+on every start, and two users share these three paths: `cubesat-hostd` is root, everything else is
+`cubesat`. So ownership followed whichever unit restarted last — a HOSTD restart handed all three
+directories and their contents to `root:root`, after which the unprivileged services could no
+longer write. That is not a logging inconvenience: DHS stops recording, PAYLOAD cannot create a
+mission's photo directory, and `i2c.lock` becomes unopenable, at which point `hal/i2c.py` falls
+back to a process-local lock and four processes stop serialising the bus — silently (found on the
+first hardware run, 2026-08-31). The units name the paths in `ReadWritePaths=` instead, which is
+what re-opens them under `ProtectSystem=strict`. Do not restore the directives.
 
 Set `CUBESAT_DATA_DIR=./data` for development. Units are a systemd template — `cubesat@obc`,
 `cubesat@adcs`, `cubesat@dhs` and so on — with `cubesat-hostd` and `cubesat-dashboard` separate,
@@ -344,8 +385,11 @@ took and every one it refused.
 - Per-component hardware docs live in `docs/hardware-*.md`, one per row of the README's Hardware
   table, and each is linked from it. When bench-validating hardware, that file is where the
   findings go — including the failures and the gotchas, which are the most valuable part.
-- systemd units expect the project at `/home/mik/cubesat-sim` with a virtualenv at
-  `/home/mik/cubesat-sim/venv`.
+- systemd units expect the project at `/opt/cubesat-sim` with a virtualenv at
+  `/opt/cubesat-sim/venv`, owned `<operator>:cubesat` so the operator can `git pull` and the
+  service account can read it. It is deliberately **not** in anyone's home directory: the services
+  run as the `cubesat` system account under `ProtectHome=yes`, and a checkout under `/home/<user>`
+  would have meant opening that home directory up to them.
 - `README.md` and `docs/*.md` are in English. `PLAN.md` and `docs/troubleshooting-*.md` are working
   documents in Russian. Match the file you are editing.
 - The phased plan for the rewrite is the table at the end of `docs/concept.md` (P0–P8). `ROADMAP.md`

@@ -93,11 +93,26 @@ The profile defines the **envelope of what is permitted**; the state defines the
 | Profile | Use case | Wi-Fi | External units | Mission services | Dashboard | Persistence | Downlink |
 |---|---|---|---|---|---|---|---|
 | `HOSTED` | Default. On the desk, mains powered, satellite idle | client | **running** | COMMS, listening | — | — | LoRa (RX only) |
-| `DEMO` | Showing the satellite off at home | client | running | all | ✅ | ✅ | ~~API~~ + LoRa |
-| `EXPO` | Science fair, school, library, office; usually on battery | **own AP** | stopped | all | ✅ | ✅ | LoRa only |
-| `FLIGHT` | On the move: a trip, the walk to work | **off** | stopped | all | — | ✅ + GNSS track | LoRa only |
-| `DIAG` | Bench work after re-assembly or a hardware swap | client | stopped | all, max cadence | ✅ | separate DB | — |
+| `DEMO` | Showing the satellite off at home | client | running | all | ✅ | — (in RAM) | ~~API~~ + LoRa |
+| `EXPO` | Science fair, school, library, office; usually on battery | **own AP** | stopped | all | ✅ | — (in RAM) | LoRa only |
+| `FLIGHT` | On the move: a trip, the walk to work | **off** | stopped | all | — | ✅ + GNSS track + photos | LoRa only |
+| `DIAG` | `FLIGHT` rehearsed on the desk: is the trip I am about to take going to record? | client | stopped | all | ✅ | separate DB | LoRa |
 | `MAINTENANCE` | `apt upgrade`, `git pull`, reflashing the radio | client | stopped | — | — | — | — |
+
+**Only `FLIGHT` and `DIAG` write to the SD card** (decided 2026-09-01). A demonstration is not a
+mission: the satellite stands on a desk, so there is no track to record, and every showing used to
+leave a row in the same table as real trips. What the dashboard needs is served without a card
+write — the live widgets read the broker, and the charts' history is a bounded in-memory ring in
+`DASHBOARD`, fed by `cubesat/dhs/telemetry`. `DHS` still runs in `DEMO` and `EXPO` as the assembler
+of that row, which is also the only carrier of the host's own CPU, RAM and disk.
+
+`DIAG` exists because of the awkward consequence: `FLIGHT` is the one recording profile with no
+dashboard, so the profile whose recording matters most is the one whose recording cannot be watched.
+`DIAG` is `FLIGHT` with the network and the dashboard kept — same cadences, same radio, same
+automatic photography, the same code and migrations — writing to `diag.db` so a rehearsal never
+lands in the archive of real trips. It used to mean "everything polled fast after a re-assembly";
+the I2C sweep and the self-test that described are what `DEPLOY` already does on every ascent, in
+every profile.
 
 "External units" are the services this repository does not own — a Telegram bot, a star-map generator — named in a registry so `HOSTD` may start and stop them by an explicit allowlist.
 
@@ -110,8 +125,9 @@ a service the satellite reports into. `downlink` names one channel now, and LoRa
 dashboard are the only ways off the satellite.
 
 **The radio listens in every operational profile.** `COMMS` runs everywhere except `MAINTENANCE`
-(reflashing the Heltec needs `/dev/serial0` free) and is deaf only there and in `DIAG` (which
-sends nothing anywhere by design). Listening costs no airtime, and every boot lands in `HOSTED` —
+(reflashing the Heltec needs `/dev/serial0` free) and is deaf only there. `DIAG` was deaf too until
+it became a rehearsal of `FLIGHT`, where the beacon and the uplink are exactly what cannot be
+watched. Listening costs no airtime, and every boot lands in `HOSTED` —
 including a reboot in the field, where an uplinked `set_profile` over LoRa is the only way back in
 without SSH. Transmission is still rationed by the per-state beacon table, which never names
 `STANDBY`: on the desk the radio hears everything and says nothing on its own.
@@ -238,7 +254,7 @@ The key property is that **no service knows whether the others exist**. `COMMS` 
 | 2 | [OBC](#obc) | `cubesat@obc` | `cubesat` | ✅ | Both state machines, command parsing, subsystem health monitoring | 🧪 |
 | 3 | [EPS](#eps) | `cubesat@eps` | `cubesat` + `i2c`,`gpio` | ✅ | Battery and mains telemetry — the input that drives `LOW_POWER`/`SAFE`/`CRITICAL` | 🧪 |
 | 4 | [ADCS](#adcs) | `cubesat@adcs` | `cubesat` + `i2c` | by profile | Absolute orientation (BNO055) and position (TEL0157) | 🧪 |
-| 5 | [PAYLOAD](#payload) | `cubesat@payload` | `cubesat` + `i2c`,`video` | by profile | Environmental science (SEN0501), photos and timelapse | 🧪 |
+| 5 | [PAYLOAD](#payload) | `cubesat@payload` | `cubesat` + `i2c`,`video` | by profile | Environmental science (SEN0501) and the camera | 🧪 |
 | 6 | [DHS](#dhs) | `cubesat@dhs` | `cubesat` | by profile | The flight recorder: owns the SQLite database, writes rows, enforces retention | 🧪 |
 | 7 | [COMMS](#comms) | `cubesat@comms` | `cubesat` + `dialout` | all but `MAINTENANCE` | The only link outward: LoRa mesh, uplink re-publish | 🧪 |
 | 8 | [DASHBOARD](#dashboard) | `cubesat-dashboard` | `cubesat` | by profile | The static UI and read-only REST over the database. No WebSocket — browsers talk to the broker | 🧪 |
@@ -303,7 +319,7 @@ Attitude and position — *where and how the satellite is*, which is why both li
 - **BNO055** (I2C `0x28`) runs 9-axis sensor fusion on-chip and outputs quaternion/Euler directly, so there is no AHRS filter in this repo any more. This replaces the QMI8658 + AK09918 pair and the Mahony filter of the old Sense HAT (C) build. The driver performs a **full reset** on every start: a device left half-configured reports a fusion error while still claiming its magnetometer is calibrated, and returns all-zero magnetometer data — a stale-state artefact that cost real debugging time, recorded in [its hardware document](docs/hardware-bno055-bmp280-imu.md).
 - **TEL0157** (I2C `0x20`) is a GPS/BeiDou/GLONASS receiver that parses NMEA on-module and exposes plain registers, so `pynmea2` is gone. It replaces the A9G GPS of the retired IoT Node(A), and its reads are the longest transactions on the bus. Two firmware quirks are handled in the driver and pinned by tests, because both yield *plausible* wrong positions rather than errors: the hemisphere bytes arrive **swapped**, so the hemisphere is taken from each byte's content rather than its position, and the registers carry an unsigned magnitude, so the sign for south and west has to be applied by us — the vendor library does neither, which is how the bug survived upstream.
 
-Poll cadence comes from the mission state, not from a hardcoded constant: 2 Hz in `NOMINAL`, 0.2 Hz in `LOW_POWER`, maximum in `DIAG`.
+Poll cadence comes from the mission state, not from a hardcoded constant: 2 Hz in `NOMINAL`, 0.2 Hz in `LOW_POWER`. `DIAG` used to multiply all of it by five; it no longer does — a rehearsal at five times the real rate rehearses something else, and 10 Hz on a bus clamped to 10 kHz was a standing question of its own.
 
 This service remains **sensing-only** — actuator control (reaction wheels, magnetorquers) is not implemented and is not planned.
 
@@ -314,7 +330,23 @@ This service remains **sensing-only** — actuator control (reaction wheels, mag
 Two responsibilities, one owner of the camera:
 
 1. **Science** — the SEN0501 environmental package (I2C `0x22`): temperature, humidity, atmospheric pressure, ambient light and UV. Replaces the LPS22HB + SHTC3 pair of the Sense HAT (C).
-2. **Camera** — a JPEG capture via Picamera2 on demand, plus timelapse. Capture is gated: permitted in `NOMINAL` and `SCIENCE`, refused in `LOW_POWER` and below. Timelapse *stop* is always permitted.
+2. **Camera** — a JPEG capture via Picamera2, either on a `take_photo` command or on the mission's
+   own cadence. Capture is gated: permitted in `NOMINAL` and `SCIENCE`, refused in `LOW_POWER` and
+   below; *stopping* is always permitted.
+
+**A mission photographs itself, and there is no timelapse command** (decided 2026-09-01). While DHS
+reports an open mission and the state permits the camera, a frame is taken every
+`photos.mission_interval_sec` (300 s) and filed under the mission; it stops when the mission closes,
+resumes after a `LOW_POWER` dip recovers, and needs nobody to have remembered anything before
+walking out of the house. `start_timelapse`/`stop_timelapse` are gone: the automatic series was the
+only use they had.
+
+**With no mission open, a photograph never reaches the card.** It is written to
+`/run/cubesat/photo` — a tmpfs, so RAM — published as pixels on the retained `cubesat/payload/photo`,
+and deleted. That is the whole of what `DEMO` and `EXPO` need: somebody asks, they see it, and a
+page opened five minutes later still finds it in the broker's own memory. It replaced
+`photos/unfiled/`, which retention was forbidden to touch and which therefore only grew — the one
+directory guaranteed to accumulate held the photographs least likely to be wanted.
 
 ### DHS
 
@@ -354,7 +386,7 @@ Four decisions worth knowing before reading it:
 
 - **The quaternion, not Euler angles.** It is what the BNO055 fuses and outputs, and it interpolates without gimbal trouble — which matters because a viewer replaying at 1 Hz *has* to interpolate.
 - **`t` is a float where `telemetry.timestamp` is an ISO string to the second.** That column's resolution is a deliberate choice for rows 30 s apart; this one has to be finer.
-- **Decimated by `dhs.attitude_min_interval_sec` (1.0 s).** One ceiling across every profile and state, so `DIAG` — which runs ADCS at 10 Hz — cannot quietly become ten rows a second on the card. About 5 MB for a working day. This costs **SD-card writes and nothing else**: DHS holds no hardware and reads no bus, so what ADCS puts on the wire costs the same whether it is recorded or discarded.
+- **Decimated by `dhs.attitude_min_interval_sec` (1.0 s).** One ceiling across every profile and state, so no profile can quietly turn the track into ten rows a second on the card. About 5 MB for a working day. This costs **SD-card writes and nothing else**: DHS holds no hardware and reads no bus, so what ADCS puts on the wire costs the same whether it is recorded or discarded.
 - **Buffered in memory, written in one batch on the tick** that was going to open a transaction anyway — so recording at 1 Hz costs the same number of card writes as recording at 1/30 Hz did. The buffer is bounded (`dhs.attitude_buffer`): surviving a card that has stopped accepting writes is this service's job, and an unbounded buffer would turn that into an unbounded process. A batch that fails is held, not dropped.
 
 A sample is written only when there is orientation to write. Nine nulls would look on a chart exactly like a satellite that was not moving, and `ADCS` publishes when *either* half answered — so a position-only message is normal and records nothing here.
@@ -558,8 +590,8 @@ territory where the satellite was switched off.
 Labels are for grouping, not identity — two runs labelled the same are still two missions. Photos
 are filed per mission (`/var/lib/cubesat/photos/<mission_id>/`), which PAYLOAD learns from the
 retained `dhs_status` rather than by owning any part of a mission itself. A photo taken while no
-mission is open — DHS not running, or not started yet — is filed under `photos/unfiled/` rather than
-refused or given an invented id. They group the way the
+mission is open goes to a tmpfs and is deleted after it is published, rather than being refused or
+given an invented id — see [PAYLOAD](#payload). They group the way the
 charts do. `DIAG` sessions are missions too, in `/var/lib/cubesat/diag.db` with the same schema, so one dashboard renders
 a bench run and a trip with no special case.
 
@@ -586,10 +618,11 @@ enforces a free-space floor (`photos.min_free_mb`) — **the floor and this hori
 headroom seen from two sides**, and setting them independently lets the card fill anyway.
 
 Deleting photographs is the most destructive thing this codebase does, so it is fenced: only
-directories named for a mission being purged in the same pass, never a sweep of `photos/`, never
-`photos/unfiled/` — those belong to no mission, so no retention rule covers them; their size is
-reported in `dhs_status` for a person to act on. Every deletion is logged with the mission, the file
-count and the bytes reclaimed. `retention.purge_photos: false` turns it off, with the consequence
+directories named for a mission being purged in the same pass, never a sweep of `photos/`, and
+never a name that is not a run of digits. `photos/unfiled/` used to be the case in point — retention
+was forbidden to clean it, so it only ever grew — and it no longer exists; the fence stays as an
+allowlist for whatever a future PAYLOAD might invent without telling retention. Every deletion is
+logged with the mission, the file count and the bytes reclaimed. `retention.purge_photos: false` turns it off, with the consequence
 above.
 
 The **timeline UI** — scrubbing a mission, replaying a track, comparing two runs — belongs to the
@@ -612,8 +645,9 @@ All topic strings are defined in `src/cubesat/common/topics.py` (`TOPICS` dict).
 | `adcs_status` | `cubesat/adcs/status` | ADCS | OBC, PAYLOAD, DHS, COMMS | no |
 | `payload_status` | `cubesat/payload/status` | PAYLOAD | OBC | **yes** |
 | `payload_data` | `cubesat/payload/data` | PAYLOAD | DHS, COMMS | no |
-| `payload_photo` | `cubesat/payload/photo` | PAYLOAD | — (browsers and ground clients only) | no |
+| `payload_photo` | `cubesat/payload/photo` | PAYLOAD | — (browsers and ground clients only) | **yes** |
 | `dhs_status` | `cubesat/dhs/status` | DHS | OBC, PAYLOAD, COMMS, DASHBOARD | **yes** |
+| `dhs_telemetry` | `cubesat/dhs/telemetry` | DHS | DASHBOARD | **yes** |
 | `comms_status` | `cubesat/comms/status` | COMMS | OBC | **yes** |
 | `comms_data` | `cubesat/comms/data` | COMMS | — (ground clients only) | on-demand only |
 | `comms_radio` | `cubesat/comms/radio` | COMMS | DHS | no |
@@ -622,8 +656,23 @@ All topic strings are defined in `src/cubesat/common/topics.py` (`TOPICS` dict).
 The column lists the *code* subscribers — each service's `subscriptions` tuple plus the `obc_status`
 subscription the base class adds for cadence tracking. The dashboard page in a browser reads nearly
 every topic too, but through the broker's own WebSocket listener (`read cubesat/#`), not through the
-DASHBOARD service — which itself subscribes to `dhs_status` alone, to follow the database path the
-recorder is currently writing.
+DASHBOARD service — which itself subscribes to the recorder's two topics: `dhs_status` for the
+database path and the open mission, `dhs_telemetry` for its in-memory chart history.
+
+**`cubesat/dhs/telemetry`** carries the wide row exactly as it would be written to the database —
+every column of `TELEMETRY_COLUMNS`, nested under `row`, minus `raw_json` — assembled by DHS on its
+own tick whether or not it is being recorded. Two reasons it is on the bus. It is the sole carrier of
+the host's own CPU, RAM, swap, disk, uptime and SoC temperature, which are collected inside DHS and
+appear in no other message; and since only `FLIGHT` and `DIAG` record, it is where the charts' history
+comes from in `DEMO` and `EXPO`. `mission_id` is null when no mission is open, which is the normal
+case there.
+
+**`cubesat/payload/photo` is retained**, and that is what "the dashboard shows the last photograph"
+rests on where no history is kept: the frame is written to a tmpfs, published here and deleted, so
+the broker's retained copy is the only place a page opened later can find it. mosquitto runs with
+`persistence false`, so that copy is RAM and never the card. PAYLOAD clears it at start — HOSTD
+starts the service as a profile is applied, so a start is where one session ends, and a visitor must
+not meet the previous demonstration's photograph as though it were current.
 
 Retained topics let a newly started service learn the current situation immediately instead of
 waiting a cycle for the next publish — which is exactly how `OBC` recovers the active profile after
@@ -771,15 +820,15 @@ which is the case `DEPLOY` exists for.
   "sensor": {"device": "SEN0501", "present": true, "readings": 148, "last_read": 1741863595.0},
   "camera": {"device": "Camera Module V2", "present": true},
   "storage": {"free_mb": 21493.7, "min_free_mb": 512.0, "blocked": false},
-  "timelapse": {"active": false, "interval_sec": null, "frames": 0, "reason": null},
+  "mission_photos": {"active": false, "interval_sec": null, "frames": 0, "reason": null},
   "mission_id": 42,
   "photo_dir": "/var/lib/cubesat/photos/42"
 }
 ```
 
 Published on connect and on any change worth reporting: a device appearing or going silent, a
-timelapse starting or ending, a capture refused for want of space, a new `mission_id` from
-`dhs_status`. It is **not** republished on the science cadence, so `last_read` and `free_mb` are
+mission's photography starting or ending, a capture refused for want of space, a new `mission_id`
+from `dhs_status`. It is **not** republished on the science cadence, so `last_read` and `free_mb` are
 snapshots from the last such change rather than a live feed — liveness is the heartbeat's job, and
 disk usage is also in the system-health block DHS records every row.
 
@@ -790,25 +839,30 @@ hardware answered when none did, and the bus sweep at `0x22` is what fails that 
 
 **`storage` is why a satellite may have stopped taking photos.** The camera is the only unbounded
 writer here, so it is the one that watches the card: below `photos.min_free_mb` (`blocked: true`) a
-`take_photo` is refused with the room left in the reason, and a running timelapse stops itself.
+`take_photo` is refused with the room left in the reason, and a running series stops itself.
 PAYLOAD deletes nothing — retention is DHS's, and the two numbers are the same headroom seen from
 either side. The science tick is deliberately **not** gated on free space: that reading is small,
 bounded, and the thing most likely to explain what went wrong.
 
-`timelapse.frames` counts frames on disk, not frames attempted. `timelapse.reason` is null while
-one is running **and** when none was ever started; after a run it says why it ended — `"stopped by
-command"`, a mission state that no longer permits the camera, the camera failing several frames in
-a row, or the free-space floor. Without it, a satellite that quietly stopped taking pictures looks
-exactly like one nobody asked to start.
+`mission_photos` describes the mission's own photography — there is no command for it, so this is
+the only place its state appears. `frames` counts frames on disk, not frames attempted. `reason` is
+null while a series is running **and** when none was ever started; afterwards it says why it ended —
+the mission closed, a mission state that no longer permits the camera, the camera failing several
+frames in a row, or the free-space floor. Without it, a satellite that quietly stopped taking
+pictures looks exactly like one whose mission never opened.
 
-`mission_id` is null, and `photo_dir` ends in `photos/unfiled/`, whenever DHS has no mission open.
+`mission_id` is null, and `photo_dir` is `/run/cubesat/photo`, whenever DHS has no mission open —
+the tmpfs a photograph goes to when nothing is being recorded.
 
 **The camera is opened on demand and given back when idle.** An open Picamera2 runs its ISP loops —
 metering, white balance, the preview stream — continuously, which is SoC heat on a satellite that
 may not take a photo for hours. After `camera.idle_close_sec` (default 60 s) without a capture the
-sensor is closed; the next capture re-opens it, which costs about a second. A timelapse faster than
-that window keeps the camera warm; a slower one lets it cool between frames. Whether the first
-frame after a cold open is properly exposed is a bench check (V11 in `ROADMAP.md`).
+sensor is closed; the next capture re-opens it, which costs about a second. A series faster than
+that window keeps the camera warm; a slower one lets it cool between frames — and
+`photos.mission_interval_sec` (300 s) is deliberately slower, so **every frame of a mission is a cold
+capture**. Whether Picamera2's auto-exposure has converged by then is bench check V11 in
+`ROADMAP.md`, which that setting promotes from an occasional question to one covering a whole
+mission's photographs.
 
 ### `cubesat/payload/data`
 
@@ -839,14 +893,20 @@ resolution is about eight metres per bit. Altitude comes from the GNSS receiver,
 
 ### `cubesat/payload/photo`
 
-An on-demand `take_photo` carries the image itself, base64-encoded — that is how a Telegram bot or
-the dashboard receives it. A **timelapse frame carries metadata only**: path, size, sequence number
-and mission, with no `photo_base64`. Five hundred frames at a few hundred kilobytes each would be
-hundreds of megabytes through a broker whose actual job is carrying the telemetry the satellite
-exists to collect. The frames are on disk, filed under their mission, for whoever wants them.
+**Retained.** An on-demand `take_photo` carries the image itself, base64-encoded — that is how the
+dashboard receives it, and the retain flag is what lets a page opened five minutes later still show
+it. A **mission frame carries metadata only**: path, size, sequence number and mission, with no
+`photo_base64`. A hundred frames at a few hundred kilobytes each would be tens of megabytes through
+a broker whose actual job is carrying the telemetry the satellite exists to collect. Those are on
+the card, filed under their mission, for whoever wants them.
 
 Both variants carry `kind`, which is what a consumer should branch on — never the presence or
 absence of a base64 blob.
+
+With no mission open the `path` is under `/run/cubesat/photo` and the file is **deleted immediately
+after this message is published**: the pixels in it are the whole delivery, and nothing reaches the
+SD card. PAYLOAD clears the retained frame when it starts, so a session never shows the previous
+one's photograph.
 
 `take_photo` response:
 
@@ -866,15 +926,15 @@ absence of a base64 blob.
 }
 ```
 
-One timelapse frame — the same fields, `sequence` filled in, and **no `photo_base64`**:
+One mission frame — the same fields, `sequence` filled in, and **no `photo_base64`**:
 
 ```json
 {
   "timestamp": 1741863660.0,
   "status": "SUCCESS",
-  "kind": "timelapse",
-  "file": "timelapse_20260824_120100_0007.jpg",
-  "path": "/var/lib/cubesat/photos/42/timelapse_20260824_120100_0007.jpg",
+  "kind": "mission_frame",
+  "file": "frame_20260824_120100_0007.jpg",
+  "path": "/var/lib/cubesat/photos/42/frame_20260824_120100_0007.jpg",
   "size_bytes": 1863004,
   "mission_id": 42,
   "sequence": 7,
@@ -894,8 +954,9 @@ coming:
 }
 ```
 
-`mission_id` is null and the path falls under `photos/unfiled/` when DHS has no mission open — a
-photo is filed, never refused, over a bookkeeping detail.
+`mission_id` is null and the path falls under `/run/cubesat/photo` when DHS has no mission open — a
+photo is taken and delivered, never refused over a bookkeeping detail, and the frame is deleted once
+this message carries its pixels.
 
 **`overlay` is a sidecar, not ink on the pixels.** `params: {"overlay": true}` writes a JSON file
 beside the photo and echoes the same object here; nothing is drawn into the image. There is no
@@ -1008,7 +1069,7 @@ Retained. Recording:
   "retention_days": 30,
   "attitude": {"written": 2283, "buffered": 0, "min_interval_sec": 1.0},
   "radio": {"written": 57, "buffered": 0},
-  "photos": {"unfiled_bytes": 4718592, "free_mb": 21493.7, "min_free_mb": 512}
+  "photos": {"free_mb": 21493.7, "min_free_mb": 512}
 }
 ```
 
@@ -1030,7 +1091,7 @@ active, and again whenever a mission closes or a database is refused:
   "retention_days": 30,
   "attitude": {"written": 0, "buffered": 0, "min_interval_sec": 1.0},
   "radio": {"written": 0, "buffered": 0},
-  "photos": {"unfiled_bytes": 4718592, "free_mb": 21493.7, "min_free_mb": 512}
+  "photos": {"free_mb": 21493.7, "min_free_mb": 512}
 }
 ```
 
@@ -1043,9 +1104,9 @@ published promptly on any mission change. `recording: false` is what OBC's `CRIT
 before asking HOSTD to power the host off, with a bounded grace — a late publish there costs the
 flush it was waiting for.
 
-`photos.unfiled_bytes` is the one number here that retention never acts on: those images belong to
-no mission, so no rule covers them and they are reported for a person to decide. `free_mb` and
-`min_free_mb` are the recorder's horizon and PAYLOAD's floor — the same headroom from two sides,
+`photos.unfiled_bytes` was reported here until 2026-09-01 and is deliberately not replaced: a
+photograph taken with no mission open never reaches the card now, so there is no longer a pile of
+files no policy covers. `free_mb` and `min_free_mb` are the recorder's horizon and PAYLOAD's floor — the same headroom from two sides,
 put in one message so they can be compared without an ssh session.
 
 ### Ground commands to `cubesat/command`
@@ -1058,8 +1119,6 @@ All commands share one topic; the `command` field selects the handler.
 | `science_start` / `science_stop` | OBC | — |
 | `safe_mode` / `recover` | OBC | — |
 | `take_photo` | PAYLOAD | `request_id?`, `params: {overlay?}` — `overlay` is read as truthy |
-| `start_timelapse` | PAYLOAD | `params: {interval_sec: int > 0}` — missing or invalid is refused on `payload_photo`, not defaulted |
-| `stop_timelapse` | PAYLOAD | — |
 | `get_telemetry` | COMMS | `request_id?` |
 | `set_comms_config` | COMMS | `params: {lora_enabled?}` — in-memory only, and it silences *transmission* only, never listening. The retired `api_enabled` and `aggregation_enabled` are answered with an explanation in the log rather than with silence |
 
@@ -1070,7 +1129,7 @@ All commands share one topic; the `command` field selects the handler.
 
 Every one of these works identically whether it arrives over MQTT on the local network or over LoRa.
 Over the radio (and in the dashboard's console) the same vocabulary also has a compact spelling —
-`profile EXPO`, `photo`, `timelapse 30`, an optional `!` prefix — which COMMS translates into
+`profile EXPO`, `photo`, an optional `!` prefix — which COMMS translates into
 exactly these JSON envelopes before re-publishing onto `cubesat/command`, so every handler sees one
 format. The compact dictionary and the reply contract live in the COMMS section above and in
 `docs/concept.md` → *The radio command contract*.
@@ -1278,7 +1337,7 @@ cubesat-sim/
 │       │
 │       ├── payload/
 │       │   ├── service.py
-│       │   ├── camera.py           #   capture policy, timelapse, mission folders, disk floor
+│       │   ├── camera.py           #   capture policy, mission cadence, filing, disk floor
 │       │   └── science.py          #   SEN0501 readings, normalised
 │       │
 │       ├── dhs/                    # the flight recorder
@@ -1320,9 +1379,16 @@ Runtime data lives **outside the checkout**, created by systemd rather than by h
 
 | Path | Contents | Created by |
 |---|---|---|
-| `/var/lib/cubesat/` | `comms.db`, `diag.db`, `photos/<mission_id>/`, `last-profile`, the deployed dashboard build | `StateDirectory=cubesat` |
-| `/run/cubesat/` | `i2c.lock`, `hostd.sock` | `RuntimeDirectory=cubesat` |
-| `/var/log/cubesat/` | `<service>.log`, rotating | `LogsDirectory=cubesat` |
+| `/var/lib/cubesat/` | `comms.db`, `diag.db`, `photos/<mission_id>/`, `last-profile`, the deployed dashboard build | `config/tmpfiles.d/cubesat.conf` |
+| `/run/cubesat/` | `i2c.lock`, `hostd.sock` | `config/tmpfiles.d/cubesat.conf` |
+| `/var/log/cubesat/` | `<service>.log`, rotating | `config/tmpfiles.d/cubesat.conf` |
+
+All three are owned by the `cubesat` service account, mode `2775`, and are created by
+`systemd-tmpfiles` at boot rather than by the units' `StateDirectory`/`RuntimeDirectory`/
+`LogsDirectory`. The reason is that those directives re-apply the *starting unit's own* user to the
+directory tree every time it starts, and `cubesat-hostd` runs as root over the same three paths, so
+ownership ended up belonging to whichever unit restarted last. The setgid bit is what lets an
+operator in the `cubesat` group deploy the dashboard build without `sudo`.
 
 Keeping the database inside a git checkout means `git pull` sits next to live mission history and
 file ownership depends on who cloned the repo. Set `CUBESAT_DATA_DIR=./data` for development on a
@@ -1364,7 +1430,7 @@ The satellite targets Raspberry Pi. Every component below is on the assembled un
 | Raspberry Pi 4 Model B | Main compute — hosts and runs every service | — | [Raspberry Pi](https://www.raspberrypi.com/products/raspberry-pi-4-model-b/) | [Raspberry Pi Docs](https://www.raspberrypi.com/documentation/) |
 | [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md) | Battery power management: LiPo fuel gauge (MAX17048) + AC-loss detection (PLD pin) — used by EPS | I2C (`0x36`) + GPIO · `smbus2`, `RPi.GPIO` | [AliExpress](https://www.aliexpress.us/item/3256804825472151.html) | [Geekworm Wiki](https://wiki.geekworm.com/X728) |
 | ~~[Sense HAT (C)](docs/hardware-sense-hat-c.md)~~ | ~~Environmental/orientation sensor HAT: QMI8658 (accel + gyro) + AK09918 (magnetometer) drive ADCS orientation; LPS22HB (pressure) + SHTC3 (humidity) feed Payload science data~~ | ~~I2C · `smbus2`, `lgpio`~~ | ~~[AliExpress](https://www.aliexpress.us/item/3256811354242582.html)~~ | ~~[Waveshare Wiki](<https://www.waveshare.com/wiki/Sense_HAT_(C)>)~~ |
-| [Raspberry Pi Camera Module V2 (8MP, 1080p)](docs/hardware-camera-module-v2.md) | Photo capture + timelapse — used by Payload | CSI · `picamera2` | [Amazon](https://a.co/d/02oyeWg8) | [Raspberry Pi Docs](https://www.raspberrypi.com/documentation/accessories/camera.html#camera-module-2) |
+| [Raspberry Pi Camera Module V2 (8MP, 1080p)](docs/hardware-camera-module-v2.md) | Photo capture — used by Payload | CSI · `picamera2` | [Amazon](https://a.co/d/02oyeWg8) | [Raspberry Pi Docs](https://www.raspberrypi.com/documentation/accessories/camera.html#camera-module-2) |
 | ~~[IoT Node(A) — 52Pi Docker Pi Series (GSM/GPS/LoRa)](docs/hardware-iot-node-a-52pi.md)~~ | ~~Onboard GSM/GPS/LoRa module (A9G): GPS/BDS position feeds ADCS, LoRa (via the SC16IS752 I2C↔UART bridge) is COMMS' radio ground link alongside its HTTP API~~ | ~~UART (GPS) + I2C (LoRa) · `pyserial`, `pynmea2`, `smbus2`~~ | ~~[AliExpress](https://www.aliexpress.us/item/2251832864586218.html)~~ | ~~[52Pi Wiki](https://wiki.52pi.com/index.php?title=EP-0105)~~ |
 | [Heltec WiFi LoRa 32 V4 (Meshtastic)](docs/hardware-heltec-lora32-v4.md) | LoRa ground link for COMMS — runs stock Meshtastic firmware, which handles framing, CRC, retries and encryption; replaces the LoRa half of the IoT Node(A) | UART `/dev/serial0` @ 115200 · `meshtastic` | [Heltec](https://heltec.org/project/wifi-lora-32-v4/) | [Heltec Wiki](https://wiki.heltec.org/docs/devices/open-source-hardware/esp32-series/lora-32/wifi-lora-32-v4/) |
 | [Gravity SEN0501 — Multifunctional Environmental Sensor](docs/hardware-sen0501-environmental-sensor.md) | Environmental science data for Payload: temperature, humidity, atmospheric pressure, ambient light and UV — replaces the LPS22HB/SHTC3 pair of the Sense HAT (C) | I2C (`0x22`) · `smbus2` | [DFRobot](https://www.dfrobot.com/product-2528.html) | [DFRobot Wiki](https://wiki.dfrobot.com/SKU_SEN0501_Gravity_Multifunctional_Environmental_Sensor) |
@@ -1500,8 +1566,8 @@ Photos of the physical build (full-resolution originals are not kept in the repo
 ### Install
 
 ```bash
-git clone <repo-url> /home/mik/cubesat-sim
-cd /home/mik/cubesat-sim
+sudo git clone <repo-url> /opt/cubesat-sim
+cd /opt/cubesat-sim
 bash scripts/install.sh
 ```
 
@@ -1514,12 +1580,15 @@ CUBESAT_MOCK_HARDWARE=1 CUBESAT_DATA_DIR=./data python -m cubesat.obc
 pytest --cov --cov-report=term-missing
 ```
 
-`install.sh` creates a virtualenv at `./venv`, runs `pip install -e .`, copies the unit files to
-`/etc/systemd/system/`, and enables the always-on tier (`cubesat-hostd`, `cubesat@obc`,
-`cubesat@eps`). Everything else is started and stopped by `HOSTD` as a profile is applied — not by
-hand. The `/var/lib/cubesat`, `/run/cubesat` and `/var/log/cubesat` directories are created by
-systemd from the units' `StateDirectory`/`RuntimeDirectory`/`LogsDirectory`, so nothing needs
-`mkdir` or a `chown`.
+`install.sh` creates the `cubesat` system account the services run as, adds you to its group,
+installs `config/tmpfiles.d/cubesat.conf` and creates the three runtime directories from it, hands
+the checkout to `<you>:cubesat`, creates a virtualenv at `./venv`, runs `pip install -e .`, copies
+the unit files to `/etc/systemd/system/`, and enables the always-on tier (`cubesat-hostd`,
+`cubesat@obc`, `cubesat@eps`). Everything else is started and stopped by `HOSTD` as a profile is
+applied — not by hand. Nothing in the code ever calls `mkdir` on a system path.
+
+Log out and back in after installing: the group membership that lets you deploy the dashboard build
+does not apply to a session that already exists.
 
 ### Operating it
 
@@ -1639,7 +1708,9 @@ CUBESAT_MOCK_HARDWARE=0
 | `LORA_BAUDRATE` | `115200` | Not optional — the Meshtastic Python library opens the port hard-coded at this rate |
 | `DASHBOARD_PORT` | `8080` | Port the local dashboard listens on |
 | `DHS_RETENTION_DAYS` | `30` (from `retention.days`) | Telemetry rows and attitude samples older than this are purged, and their missions' photos with them |
-| `DHS_ATTITUDE_MIN_INTERVAL_SEC` | `1.0` (from `dhs.attitude_min_interval_sec`) | Floor on how often one attitude sample is recorded. One ceiling across every profile — `DIAG` runs ADCS at 10 Hz. Costs card writes, never bus time |
+| `DHS_ATTITUDE_MIN_INTERVAL_SEC` | `1.0` (from `dhs.attitude_min_interval_sec`) | Floor on how often one attitude sample is recorded. One ceiling across every profile. Costs card writes, never bus time |
+| `PHOTO_MISSION_INTERVAL_SEC` | `300` (from `photos.mission_interval_sec`) | How often an open mission photographs by itself. There is no command and no interval on the wire; frames stop when the mission closes |
+| `DASHBOARD_LIVE_ROWS` | `720` (from `dashboard.live_history_rows`) | How many published telemetry rows DASHBOARD keeps in memory. The charts' whole history in the profiles that record nothing — about six hours at the 30 s `NOMINAL` cadence |
 | `CUBESAT_MOCK_HARDWARE` | `0` | `1` selects the mock HAL — sensors, camera and radio are fakes |
 | `CUBESAT_SEN0501_REVISION` | unset | `v1` or `v3`. Unset means the UV index is withheld rather than guessed — see [`payload/data`](#cubesatpayloaddata) |
 | `CUBESAT_MOCK_HOST` | `0` | `1` selects HOSTD's no-op executor — nothing is started, stopped or reconfigured. A separate axis from the HAL: running the whole stack on a laptop needs both |

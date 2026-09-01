@@ -420,14 +420,18 @@ disappearance. If it fails, it is logged and stepped over: the recorder closing 
 matters more than the radio being heard, and a pack at 8 % is exactly where a transmit-current
 brownout is likeliest.
 
-**Radio replies are designed, not yet written** 🆕 — an agreed contract: a `!` compact syntax a
-person can type on a phone (`!profile FLIGHT`, `!pos`, `!photo`), a single ack rule that answers
-any accepted command with one out-of-schedule beacon carrying `re=<command>`, query commands
-`ping` / `get_position` (with the age of a fix) / `get_mission`, an event-transmission budget, a
-new `restart_service`, and deliberately no `poweroff`. It lives in
-[`docs/concept.md` → The radio command contract](docs/concept.md#the-radio-command-contract) and
-is tracked in [`ROADMAP.md`](ROADMAP.md). Today the radio answers with nothing but its scheduled
-beacons.
+**Radio replies** 🆕 — most of the agreed contract is written: a compact syntax a person can type
+on a phone (`profile FLIGHT`, `pos`, `photo` — bare verbs, the same lines the dashboard's Mission
+Console takes; a `!` prefix is optional and means *declared intent*, so a mistyped `!` line is
+answered `re=? ok=0 err=unknown` while a bare non-command stays ordinary mesh chat), a single ack
+rule that answers any accepted command with one out-of-schedule beacon carrying `re=<command>`
+about ten seconds later, and query commands `ping` / `pos` (with the age of a fix, honestly stale)
+/ `sys` / `env` / `mission`, answered immediately from COMMS' own caches. Still designed and not
+yet written: `restart_service` (its spelling answers `err=unknown` until the handler exists), the
+full event-transmission budget, and the photo ack's frame fields. There is deliberately no
+`poweroff`. The contract, with the reasoning, is
+[`docs/concept.md` → The radio command contract](docs/concept.md#the-radio-command-contract),
+tracked in [`ROADMAP.md`](ROADMAP.md).
 
 Two rules hold it honest. **It is never truncated** — if the line will not fit, whole optional fields are dropped in a documented priority order, because the pre-rewrite driver silently cut the payload to 28 bytes and transmitted rubbish, which is the bug this work exists to remove. And **absent values are omitted rather than sent as zero**: a position that does not exist must not arrive as `lat=0 lon=0`, which is a real place in the Gulf of Guinea and a fault this project has already been bitten by once.
 
@@ -598,24 +602,32 @@ a start, an end, and a reason it ended.
 
 All topic strings are defined in `src/cubesat/common/topics.py` (`TOPICS` dict). Always import from there — never hardcode topic strings.
 
-| `TOPICS` key | Topic string | Publisher | Subscribers | Retained |
+| `TOPICS` key | Topic string | Publisher | On-satellite subscribers | Retained |
 |---|---|---|---|---|
 | `command` | `cubesat/command` | any ground client, or COMMS relaying an uplink | OBC, PAYLOAD, COMMS | no |
 | `host_command` | `cubesat/host/command` | OBC | HOSTD | no |
-| `host_status` | `cubesat/host/status` | HOSTD | OBC, DHS, DASHBOARD | **yes** |
-| `obc_status` | `cubesat/obc/status` | OBC | all services | **yes** |
+| `host_status` | `cubesat/host/status` | HOSTD | OBC, DHS | **yes** |
+| `obc_status` | `cubesat/obc/status` | OBC | EPS, ADCS, PAYLOAD, DHS, COMMS | **yes** |
 | `eps_status` | `cubesat/eps/status` | EPS | OBC, DHS, COMMS | **yes** |
-| `adcs_status` | `cubesat/adcs/status` | ADCS | OBC, DHS, COMMS, DASHBOARD | no |
-| `payload_status` | `cubesat/payload/status` | PAYLOAD | OBC, DHS | **yes** |
+| `adcs_status` | `cubesat/adcs/status` | ADCS | OBC, PAYLOAD, DHS, COMMS | no |
+| `payload_status` | `cubesat/payload/status` | PAYLOAD | OBC | **yes** |
 | `payload_data` | `cubesat/payload/data` | PAYLOAD | DHS, COMMS | no |
-| `payload_photo` | `cubesat/payload/photo` | PAYLOAD | ground clients, DASHBOARD | no |
-| `dhs_status` | `cubesat/dhs/status` | DHS | OBC, DASHBOARD | **yes** |
-| `comms_status` | `cubesat/comms/status` | COMMS | OBC, DASHBOARD | **yes** |
-| `comms_data` | `cubesat/comms/data` | COMMS | ground clients | on-demand only |
-| `comms_radio` | `cubesat/comms/radio` | COMMS | DHS, DASHBOARD | no |
-| `heartbeat` | `cubesat/heartbeat` | **every service** | OBC, DASHBOARD | no |
+| `payload_photo` | `cubesat/payload/photo` | PAYLOAD | — (browsers and ground clients only) | no |
+| `dhs_status` | `cubesat/dhs/status` | DHS | OBC, PAYLOAD, COMMS, DASHBOARD | **yes** |
+| `comms_status` | `cubesat/comms/status` | COMMS | OBC | **yes** |
+| `comms_data` | `cubesat/comms/data` | COMMS | — (ground clients only) | on-demand only |
+| `comms_radio` | `cubesat/comms/radio` | COMMS | DHS | no |
+| `heartbeat` | `cubesat/heartbeat` | **every service** | OBC | no |
 
-Retained topics let a newly started service learn the current situation immediately instead of waiting a cycle for the next publish — which is exactly how `OBC` recovers the active profile after a restart.
+The column lists the *code* subscribers — each service's `subscriptions` tuple plus the `obc_status`
+subscription the base class adds for cadence tracking. The dashboard page in a browser reads nearly
+every topic too, but through the broker's own WebSocket listener (`read cubesat/#`), not through the
+DASHBOARD service — which itself subscribes to `dhs_status` alone, to follow the database path the
+recorder is currently writing.
+
+Retained topics let a newly started service learn the current situation immediately instead of
+waiting a cycle for the next publish — which is exactly how `OBC` recovers the active profile after
+a restart.
 
 ### Two listeners, and one fence
 
@@ -659,6 +671,10 @@ Published retained after every profile application. `profile` versus `profile_re
   "errors": []
 }
 ```
+
+`network` carries `mode`, `ssid` and `clients` only; anything that went wrong applying the network
+mode is reported in the top-level `errors` list along with every other failure, so there is one
+place to look.
 
 ### `cubesat/obc/status`
 
@@ -756,7 +772,7 @@ which is the case `DEPLOY` exists for.
   "camera": {"device": "Camera Module V2", "present": true},
   "storage": {"free_mb": 21493.7, "min_free_mb": 512.0, "blocked": false},
   "timelapse": {"active": false, "interval_sec": null, "frames": 0, "reason": null},
-  "mission_id": "42",
+  "mission_id": 42,
   "photo_dir": "/var/lib/cubesat/photos/42"
 }
 ```
@@ -843,7 +859,7 @@ absence of a base64 blob.
   "file": "photo_20260824_120000.jpg",
   "path": "/var/lib/cubesat/photos/42/photo_20260824_120000.jpg",
   "size_bytes": 1874233,
-  "mission_id": "42",
+  "mission_id": 42,
   "sequence": null,
   "overlay": null,
   "photo_base64": "<base64-encoded JPEG>"
@@ -860,7 +876,7 @@ One timelapse frame — the same fields, `sequence` filled in, and **no `photo_b
   "file": "timelapse_20260824_120100_0007.jpg",
   "path": "/var/lib/cubesat/photos/42/timelapse_20260824_120100_0007.jpg",
   "size_bytes": 1863004,
-  "mission_id": "42",
+  "mission_id": 42,
   "sequence": 7,
   "overlay": null
 }
@@ -891,7 +907,7 @@ defaced — the text cannot be removed and the pixels under it are gone.
   "captured_at": "2026-08-24T12:00:00Z",
   "timestamp": 1741863600.0,
   "file": "photo_20260824_120000.jpg",
-  "mission_id": "42",
+  "mission_id": 42,
   "mission_state": "NOMINAL",
   "position": {"lat": 55.7558, "lon": 37.6173, "alt": 156.2, "speed": 0.4,
                "fix": true, "satellites": 23, "at": 1741863580.0},
@@ -964,8 +980,8 @@ into `radio_log` while a mission is open; the dashboard renders them live.
   "timestamp": 1741863610.0,
   "direction": "tx",
   "kind": "ack",
-  "text": "CS t=1741863610 st=NOMINAL pr=FLIGHT b=87 re=pos lat=56.8352 lon=60.6128 fix=1 age=2",
-  "bytes": 86,
+  "text": "CSAT t=1741863610 st=NOMINAL re=pos lat=55.7558 lon=37.6173 fix=1 age=2 alt=156 sat=23 pr=FLIGHT b=78.2 v=3.94 ep=0 m=42",
+  "bytes": 120,
   "sent": true
 }
 ```
@@ -1012,6 +1028,8 @@ active, and again whenever a mission closes or a database is refused:
   "db_size_bytes": null,
   "last_write": null,
   "retention_days": 30,
+  "attitude": {"written": 0, "buffered": 0, "min_interval_sec": 1.0},
+  "radio": {"written": 0, "buffered": 0},
   "photos": {"unfiled_bytes": 4718592, "free_mb": 21493.7, "min_free_mb": 512}
 }
 ```
@@ -1036,13 +1054,13 @@ All commands share one topic; the `command` field selects the handler.
 
 | `command` | Handler | Fields |
 |---|---|---|
-| `set_profile` | OBC | `params: {profile: "EXPO", ttl_minutes?: int, mission_label?: str}` |
+| `set_profile` | OBC | `params: {profile: "EXPO", ttl_minutes?, mission_label?: str}` — `ttl_minutes` is any positive number; a non-positive value is dropped (the command still applies, without a TTL) |
 | `science_start` / `science_stop` | OBC | — |
 | `safe_mode` / `recover` | OBC | — |
-| `take_photo` | PAYLOAD | `request_id`, `params: {overlay: bool}` |
-| `start_timelapse` | PAYLOAD | `params: {interval_sec: int}` |
+| `take_photo` | PAYLOAD | `request_id?`, `params: {overlay?}` — `overlay` is read as truthy |
+| `start_timelapse` | PAYLOAD | `params: {interval_sec: int > 0}` — missing or invalid is refused on `payload_photo`, not defaulted |
 | `stop_timelapse` | PAYLOAD | — |
-| `get_telemetry` | COMMS | `request_id` |
+| `get_telemetry` | COMMS | `request_id?` |
 | `set_comms_config` | COMMS | `params: {lora_enabled?}` — in-memory only, and it silences *transmission* only, never listening. The retired `api_enabled` and `aggregation_enabled` are answered with an explanation in the log rather than with silence |
 
 ```json
@@ -1051,6 +1069,11 @@ All commands share one topic; the `command` field selects the handler.
 ```
 
 Every one of these works identically whether it arrives over MQTT on the local network or over LoRa.
+Over the radio (and in the dashboard's console) the same vocabulary also has a compact spelling —
+`profile EXPO`, `photo`, `timelapse 30`, an optional `!` prefix — which COMMS translates into
+exactly these JSON envelopes before re-publishing onto `cubesat/command`, so every handler sees one
+format. The compact dictionary and the reply contract live in the COMMS section above and in
+`docs/concept.md` → *The radio command contract*.
 
 ---
 

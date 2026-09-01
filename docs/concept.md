@@ -294,27 +294,37 @@ in a field, with a phone and no ground station, addresses the satellite comforta
 answer.
 
 **A compact spelling, translated once at entry.** Typing quoted JSON on a phone keyboard in a
-field is where commands go to be mistyped, so COMMS additionally accepts a `!` form and
+field is where commands go to be mistyped, so COMMS additionally accepts a compact form and
 canonicalises it into JSON *before* the relay. One translation point, on the way in — the JSON
-path stays verbatim, so there is still no re-encoding step that can disagree with anyone:
+path stays verbatim, so there is still no re-encoding step that can disagree with anyone.
 
-| Compact | Canonical |
+*Amended 2026-08-31:* the compact spelling is a **bare verb** — `ping`, `profile FLIGHT` — the
+same lines the dashboard's Mission Console takes, so one command language covers every way of
+reaching the satellite. The `!` prefix remains accepted and buys exactly one thing: declared
+intent. A `!` line that does not parse is answered with `err=unknown`; a bare line that does not
+parse is ordinary mesh chat and is left alone — answering stray sentences on a shared channel
+would spend the transmission budget on other people's conversations. The flip side, accepted
+knowingly: chat that is exactly a command line (`ping` alone) is a command.
+
+| Compact (`!` optional) | Canonical |
 |---|---|
-| `!ping` | `{"command": "ping"}` |
-| `!pos` | `{"command": "get_position"}` |
-| `!mission` | `{"command": "get_mission"}` |
-| `!photo` | `{"command": "take_photo"}` |
-| `!profile FLIGHT` | `{"command": "set_profile", "params": {"profile": "FLIGHT"}}` |
-| `!recover` / `!safe` | `{"command": "recover"}` / `{"command": "safe_mode"}` |
-| `!science start` / `!science stop` | `{"command": "science_start"}` / `{"command": "science_stop"}` |
-| `!timelapse 30` / `!timelapse stop` | `{"command": "start_timelapse", "params": {"interval_sec": 30}}` / `{"command": "stop_timelapse"}` |
-| `!restart adcs` | `{"command": "restart_service", "params": {"service": "adcs"}}` |
-| `!lora off` / `!lora on` | `{"command": "set_comms_config", "params": {"lora_enabled": false / true}}` |
+| `ping` | `{"command": "ping"}` |
+| `pos` | `{"command": "get_position"}` |
+| `sys` | `{"command": "get_system"}` |
+| `env` | `{"command": "get_environment"}` |
+| `mission` | `{"command": "get_mission"}` |
+| `photo` | `{"command": "take_photo"}` |
+| `profile FLIGHT` | `{"command": "set_profile", "params": {"profile": "FLIGHT"}}` |
+| `recover` / `safe` | `{"command": "recover"}` / `{"command": "safe_mode"}` |
+| `science start` / `science stop` | `{"command": "science_start"}` / `{"command": "science_stop"}` |
+| `timelapse 30` / `timelapse stop` | `{"command": "start_timelapse", "params": {"interval_sec": 30}}` / `{"command": "stop_timelapse"}` |
+| `restart adcs` | `{"command": "restart_service", "params": {"service": "adcs"}}` |
+| `lora off` / `lora on` | `{"command": "set_comms_config", "params": {"lora_enabled": false / true}}` |
 
 An unrecognised `!` line is answered with `re=? ok=0 err=unknown` rather than dropped in
-silence: the sender is a person standing in a field wondering why nothing happened. Ordinary
-mesh chat does not start with `!`, and a message that is neither that nor JSON is still just
-chat.
+silence: the sender is a person standing in a field wondering why nothing happened. A bare line
+that is not exactly a command, and not JSON, is still just chat — see the amendment above for
+where that boundary runs and why.
 
 **One reply rule, not one per command.** Every accepted command schedules a single
 out-of-schedule beacon about ten seconds later — long enough for the effect to land — extended

@@ -174,16 +174,38 @@ class Archive:
             (mission_id, _bounded(limit)),
         )
 
+    def mission_radio(self, mission_id: int, limit: int = MAX_ROWS) -> list[dict[str, Any]]:
+        """One mission's radio traffic, oldest first — the order a log reads.
+
+        Part of a mission's detail for the same reason attitude is: a replay of
+        a trip should show what the link was doing during it, and the Radio Link
+        Log widget renders exactly these rows live. Never decimated on the way
+        in (a dropped packet would be the uplink somebody is looking for), so it
+        is bounded on the way out like every other query here.
+        """
+        if not self._has_table("radio_log"):
+            return []
+        return self._query(
+            "SELECT t, direction, kind, text, bytes, sender, snr, rssi, hops, sent "
+            "FROM radio_log WHERE mission_id = ? ORDER BY t LIMIT ?",
+            (mission_id, _bounded(limit)),
+        )
+
     def _has_attitude(self) -> bool:
+        return self._has_table("attitude")
+
+    def _has_table(self, name: str) -> bool:
         """Whether this file is new enough to have the table.
 
         Asked rather than assumed. The dashboard reads a database DHS wrote, and
         an older one is a perfectly good archive of a trip that happened before
-        attitude was recorded — refusing to open it, or raising on the query,
-        would lose a mission to a schema version.
+        attitude — or the radio log — was recorded; refusing to open it, or
+        raising on the query, would lose a mission to a schema version.
         """
         return bool(
-            self._query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attitude'")
+            self._query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+            )
         )
 
 

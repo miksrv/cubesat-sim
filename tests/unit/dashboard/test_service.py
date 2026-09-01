@@ -66,6 +66,14 @@ def recorded(roots):
         "INSERT INTO attitude (mission_id, t, quat_w) VALUES (?, ?, ?)",
         [(mission.id, 1000.0 + step, 0.99) for step in range(4)],
     )
+    conn.executemany(
+        "INSERT INTO radio_log (mission_id, t, direction, kind, text, bytes, sent) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (mission.id, 1000.0, "tx", "beacon", "CSAT t=1000", 24, 1),
+            (mission.id, 1005.0, "rx", None, "!ping", 5, None),
+        ],
+    )
     store.close(mission.id, EndReason.PROFILE_CHANGE)
     conn.close()
     return mission.id
@@ -247,6 +255,29 @@ def test_missions_are_listed(dashboard, recorded):
     body = get_json(port, "/api/missions")
     assert body["count"] == 1
     assert body["missions"][0]["label"] == "walk to work"
+
+
+def test_a_mission_carries_the_radio_traffic_of_its_own_trip(dashboard, recorded):
+    # Otherwise the Radio Link Log is the one widget on a replaying page still
+    # reading the live satellite, while everything beside it reads a recording.
+    _, _, port = dashboard
+    body = get_json(port, f"/api/missions/{recorded}")
+    assert [event["text"] for event in body["radio"]] == ["CSAT t=1000", "!ping"]
+    # Oldest first, the order a log is read in and the order attitude uses.
+    assert body["radio"][0]["t"] < body["radio"][1]["t"]
+
+
+def test_a_database_without_the_radio_table_is_an_empty_log(dashboard, roots, recorded):
+    # An older file is a perfectly good archive of a trip that happened before
+    # the radio log existed. Losing that mission to a schema version would be
+    # the worse failure.
+    conn = schema.connect(roots["db"], LOG)
+    conn.execute("DROP TABLE radio_log")
+    conn.commit()
+    conn.close()
+
+    _, _, port = dashboard
+    assert get_json(port, f"/api/missions/{recorded}")["radio"] == []
 
 
 def test_one_mission_carries_its_summary_alongside_its_detail(dashboard, recorded):

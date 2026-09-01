@@ -70,12 +70,35 @@ def test_hosted_listens_on_lora_but_records_nothing():
     assert not hosted.records
 
 
-def test_lora_is_the_only_downlink_a_profile_can_name():
+def test_lora_is_the_only_downlink_channel_a_profile_can_name():
     # The cloud API is gone: no ground station was ever deployed, and the ground
     # segment is now an interface over the satellite's own dashboard rather than
     # a service the satellite reports into. A profile naming a channel that does
     # not exist would be a promise nothing keeps.
-    assert {f.name for f in fields(DownlinkSpec)} == {"lora"}
+    #
+    # `beacon` is not a second channel — it is the starting state of the one
+    # channel there is, which is why it lives in this block rather than beside
+    # it.
+    assert {f.name for f in fields(DownlinkSpec)} == {"lora", "beacon"}
+
+
+def test_the_desk_profiles_listen_without_beaconing():
+    # Decided 2026-09-01. In DEMO and EXPO the satellite is a metre from its
+    # operator with the dashboard open, so beaconing at them over a shared mesh
+    # channel is noise — while still *hearing* an uplinked set_profile is what
+    # makes the radio worth having there at all. Quiet, not deaf.
+    cfg = profiles.load()
+    for profile in (Profile.DEMO, Profile.EXPO):
+        assert cfg.get(profile).downlink.lora is True
+        assert cfg.get(profile).downlink.beacon is False
+
+
+def test_the_profiles_that_are_away_from_their_operator_beacon():
+    # FLIGHT is the case the beacon exists for: Wi-Fi is down and the beacon is
+    # the only thing saying the satellite is still alive. DIAG rehearses it.
+    cfg = profiles.load()
+    for profile in (Profile.FLIGHT, Profile.DIAG):
+        assert cfg.get(profile).downlink.beacon is True
 
 
 def test_exactly_one_profile_is_deaf_on_lora():

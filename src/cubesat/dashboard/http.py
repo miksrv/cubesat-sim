@@ -174,6 +174,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "mission": mission,
             "telemetry": archive.mission_telemetry(mission_id),
             "attitude": archive.mission_attitude(mission_id),
+            # The link's own journal during the trip. Here so a replay can show
+            # the Radio Link Log against the mission it belongs to rather than
+            # leaving the one widget on the page reading the live satellite
+            # while everything beside it reads a recording.
+            "radio": archive.mission_radio(mission_id),
         }
         headers = (
             {"Content-Disposition": f'attachment; filename="mission-{mission_id}.json"'}

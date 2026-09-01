@@ -298,7 +298,7 @@ Responsibilities:
 - **health monitoring**: every service publishes to `cubesat/heartbeat` on a fixed interval, independent of its poll cadence — a subsystem told to poll every 300 s in `LOW_POWER` must still prove it is alive more often than that. Three consecutive misses and the subsystem is declared lost, dropping the state to `SAFE`. A service that dies *ungracefully* is announced by its MQTT **last will** on the same topic, so OBC learns in milliseconds instead of waiting out the timeout.
 
   A heartbeat is **liveness only, and never bring-up evidence**. Every service in this project logs a silent device and stays up — that is deliberate, so that OBC reacts to missing telemetry rather than to a vanished process — which means a heartbeat proves the process started and says nothing at all about whether its sensor answered. `DEPLOY` therefore waits for a subsystem's *status* message, which only exists because its hardware was read
-- **command parsing** for everything that is a mission decision (see [Ground commands](#ground-commands-to-cubesatcommand))
+- **command parsing** for everything that is a mission decision (see [the command vocabulary](#the-command-vocabulary))
 
 Because `HOSTD` holds the applied profile and `OBC` reads it from a retained message, `systemctl restart cubesat@obc` mid-demo does not disturb the access point or the dashboard.
 
@@ -452,16 +452,14 @@ disappearance. If it fails, it is logged and stepped over: the recorder closing 
 matters more than the radio being heard, and a pack at 8 % is exactly where a transmit-current
 brownout is likeliest.
 
-**Radio replies** 🆕 — most of the agreed contract is written: a compact syntax a person can type
-on a phone (`profile FLIGHT`, `pos`, `photo` — bare verbs, the same lines the dashboard's Mission
-Console takes; a `!` prefix is optional and means *declared intent*, so a mistyped `!` line is
-answered `re=? ok=0 err=unknown` while a bare non-command stays ordinary mesh chat), a single ack
-rule that answers any accepted command with one out-of-schedule beacon carrying `re=<command>`
-about ten seconds later, and query commands `ping` / `pos` (with the age of a fix, honestly stale)
-/ `sys` / `env` / `mission`, answered immediately from COMMS' own caches. Still designed and not
-yet written: `restart_service` (its spelling answers `err=unknown` until the handler exists), the
-full event-transmission budget, and the photo ack's frame fields. There is deliberately no
-`poweroff`. The contract, with the reasoning, is
+**Radio replies** 🆕 — most of the agreed contract is written. What a person can type is in
+[The command vocabulary](#the-command-vocabulary) and only there; what COMMS does with it is this:
+a compact line is canonicalised into JSON *before* the relay, so every handler downstream sees one
+format; every accepted command is answered by a single out-of-schedule beacon carrying
+`re=<command>` about ten seconds later; and the five query verbs are answered immediately from
+COMMS' own caches rather than relayed, because the data is already here. Still designed and not yet
+written: `restart_service` (its spelling answers `err=unknown` until the handler exists) and the
+photo ack's frame fields. The contract, with the reasoning, is
 [`docs/concept.md` → The radio command contract](docs/concept.md#the-radio-command-contract),
 tracked in [`ROADMAP.md`](ROADMAP.md).
 
@@ -698,7 +696,7 @@ What a browser may do:
 
 Two denials carry the weight. `cubesat/host/command` is `HOSTD`'s inbox and `HOSTD` runs as root; `OBC` reaches it over the localhost listener, which the ACL does not govern. And `cubesat/+/status` is the telemetry `OBC` makes decisions from — a forged `eps_status` claiming 4 % battery would walk the satellite down through `LOW_POWER` and `SAFE` into `CRITICAL`, the one state permitted to power the host off. Withholding a reading is a gap; inventing one is a shutdown.
 
-A browser can still issue everything the radio can, `set_profile` included. That is the [one-vocabulary rule](#ground-commands-to-cubesatcommand) and not an oversight, and its sharp edge is `EXPO`: the satellite is its own access point in a public room, so a visitor sending `set_profile HOSTED` ends the demonstration by taking the access point down. The ground vocabulary has no `poweroff`, so the worst case is a nuisance — and if it becomes one in a real room, the fix is a per-profile command allowlist in `DASHBOARD`, not a change to the ACL, which cannot see which profile is active.
+A browser can still issue everything the radio can, `set_profile` included. That is the [one-vocabulary rule](#the-command-vocabulary) and not an oversight, and its sharp edge is `EXPO`: the satellite is its own access point in a public room, so a visitor sending `set_profile HOSTED` ends the demonstration by taking the access point down. The ground vocabulary has no `poweroff`, so the worst case is a nuisance — and if it becomes one in a real room, the fix is a per-profile command allowlist in `DASHBOARD`, not a change to the ACL, which cannot see which profile is active.
 
 ---
 
@@ -1117,30 +1115,58 @@ photograph taken with no mission open never reaches the card now, so there is no
 files no policy covers. `free_mb` and `min_free_mb` are the recorder's horizon and PAYLOAD's floor — the same headroom from two sides,
 put in one message so they can be compared without an ssh session.
 
-### Ground commands to `cubesat/command`
+### The command vocabulary
 
-All commands share one topic; the `command` field selects the handler.
+**One table, and it is the only one.** Every way of reaching the satellite ends at the same JSON on
+`cubesat/command`: the radio (COMMS canonicalises the compact spelling *before* relaying, so nothing
+downstream knows which channel a command arrived on), the dashboard's Mission Console, its Quick
+Commands buttons, the `cubesat` CLI, and anything else that can publish to a broker. If a command is
+not here, it does not exist.
 
-| `command` | Handler | Fields |
+| Action | Radio & dashboard console | Shell | On the bus | Handler |
+|---|---|---|---|---|
+| Switch profile | `profile flight` | `cubesat profile flight [--ttl 8h] [--mission "walk to work"]` | `set_profile` `{profile, ttl_minutes?, mission_label?}` | OBC |
+| Enter / leave `SCIENCE` | `science start` / `science stop` | — | `science_start` / `science_stop` | OBC |
+| Latch `SAFE` / clear it | `safe` / `recover` | — | `safe_mode` / `recover` | OBC |
+| Take one photograph | `photo` | — | `take_photo` `{overlay?}` | PAYLOAD |
+| Start / stop transmitting | `beacon on` / `beacon off` | `cubesat beacon on\|off` | `set_comms_config` `{lora_enabled}` | COMMS |
+| Am I heard? | `ping` | — | `ping` | COMMS |
+| Where is it | `pos` | — | `get_position` | COMMS |
+| Host CPU, RAM, disk, uptime | `sys` | — | `get_system` | COMMS |
+| Temperature, humidity, pressure, light | `env` | — | `get_environment` | COMMS |
+| What is being recorded | `mission` | — | `get_mission` | COMMS |
+| The whole telemetry bundle | `telemetry` — **console only**, not over the radio: the answer is far past 240 bytes | — | `get_telemetry` | COMMS |
+| Restart one service | `restart adcs` — **accepted by neither yet** | — | `restart_service` `{service}` | not implemented (R5 in `ROADMAP.md`); until the handler exists a `!restart` line is answered `err=unknown` rather than relayed into an empty bus |
+
+Three read-only commands exist in the shell alone. They publish nothing: they read the retained
+statuses the broker already holds, or the recorder's database.
+
+| Question | Shell | Reads |
 |---|---|---|
-| `set_profile` | OBC | `params: {profile: "EXPO", ttl_minutes?, mission_label?: str}` — `ttl_minutes` is any positive number; a non-positive value is dropped (the command still applies, without a TTL) |
-| `science_start` / `science_stop` | OBC | — |
-| `safe_mode` / `recover` | OBC | — |
-| `take_photo` | PAYLOAD | `request_id?`, `params: {overlay?}` — `overlay` is read as truthy |
-| `get_telemetry` | COMMS | `request_id?` |
-| `set_comms_config` | COMMS | `params: {lora_enabled?}` — spelled `beacon on|off` in the compact vocabulary, because it silences *transmission* only, never listening. In-memory only. The retired `api_enabled` and `aggregation_enabled` are answered with an explanation in the log rather than with silence |
+| What is it doing? | `cubesat profile` | `host_status`, `obc_status`, `dhs_status` |
+| Is it well? | `cubesat status` | the above plus `eps`, `comms`, `payload`, and `dhs_telemetry` for the host metrics |
+| What trips are on the card? | `cubesat mission list [--all]` | `comms.db`, read-only, no broker involved |
+
+**The compact spelling.** `!` is optional and buys exactly one thing: declared intent. A `!` line
+that does not parse is answered `re=? ok=0 err=unknown`, because the sender is a person standing in
+a field wondering why nothing happened; a bare line that does not parse is ordinary mesh chat and is
+left alone. The flip side, accepted knowingly: chat that is exactly a command line (`ping` on its
+own) is a command. `lora on|off` is still accepted as the name `beacon` had until 2026-09-01 —
+undocumented, and kept only so a command that worked last week does not answer "unknown".
 
 ```json
 {"command": "set_profile", "params": {"profile": "EXPO"}, "request_id": "req_010"}
 {"command": "take_photo", "request_id": "req_001", "params": {"overlay": false}}
 ```
 
-Every one of these works identically whether it arrives over MQTT on the local network or over LoRa.
-Over the radio (and in the dashboard's console) the same vocabulary also has a compact spelling —
-`profile EXPO`, `photo`, `beacon off`, an optional `!` prefix — which COMMS translates into
-exactly these JSON envelopes before re-publishing onto `cubesat/command`, so every handler sees one
-format. The compact dictionary and the reply contract live in the COMMS section above and in
-`docs/concept.md` → *The radio command contract*.
+`request_id` is optional and echoed back on whatever topic answers, so a client can tell its own
+reply from somebody else's. It is deliberately **not** echoed over the radio: the airtime costs more
+than the disambiguation is worth when there is one operator with one phone.
+
+**There is no `poweroff` in this vocabulary, and that is deliberate.** `CRITICAL` is the only thing
+permitted to power the host down, and it decides that from the battery rather than from a button —
+see [`docs/concept.md`](docs/concept.md#the-radio-command-contract) for the reply contract and the
+reasoning behind each of these.
 
 ---
 
@@ -1600,13 +1626,13 @@ does not apply to a session that already exists.
 
 ### Operating it
 
+What the CLI can say is in [The command vocabulary](#the-command-vocabulary) with everything else;
+this section is only what is worth knowing about using it. A morning looks like:
+
 ```bash
-cubesat profile                                   # active profile, mission state, current mission
-cubesat profile demo                              # switch profile
-cubesat profile flight --ttl 8h --mission "walk to work"
-cubesat status                                    # state, power, radio, recorder, host metrics
-cubesat mission list                              # recorded missions, newest first (--all for every one)
-cubesat beacon on                                 # start transmitting, inside what the profile permits
+cubesat profile flight --ttl 8h --mission "walk to work"   # start the trip
+cubesat status                                             # over SSH, from anywhere
+cubesat profile demo                                       # arrive; the mission closes
 ```
 
 **`--ttl` is an override, not a requirement.** Without it the profile's own `ttl_minutes` applies —

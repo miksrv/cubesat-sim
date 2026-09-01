@@ -194,7 +194,7 @@ def test_a_satellite_in_safe_can_still_be_recovered_over_the_radio(comms):
 
 
 @pytest.mark.parametrize(
-    ("profile", "lora"),
+    ("profile", "listening"),
     [
         (Profile.DEMO, True),
         (Profile.EXPO, True),
@@ -207,10 +207,62 @@ def test_a_satellite_in_safe_can_still_be_recovered_over_the_radio(comms):
         (Profile.MAINTENANCE, False),
     ],
 )
-def test_the_active_profile_decides_whether_the_radio_may_run(comms, profile, lora):
+def test_the_active_profile_decides_whether_the_radio_may_run(comms, profile, listening):
+    # The envelope: whether the radio is part of the mission at all. No ground
+    # command can widen this.
     service, client = comms()
     obc(client, profile=profile)
-    assert service.lora_enabled is lora
+    assert service.lora_listening is listening
+
+
+@pytest.mark.parametrize(
+    ("profile", "transmitting"),
+    [
+        # Away from its operator: the beacon is the only thing saying it is alive.
+        (Profile.FLIGHT, True),
+        (Profile.DIAG, True),
+        # On the desk, dashboard open, operator a metre away: quiet by default.
+        (Profile.DEMO, False),
+        (Profile.EXPO, False),
+        # Permitted and quiet for a different reason — STANDBY has no row in the
+        # beacon table, so HOSTED says nothing on its own schedule regardless.
+        (Profile.HOSTED, True),
+        (Profile.MAINTENANCE, False),
+    ],
+)
+def test_the_profile_decides_whether_the_beacon_starts_on(comms, profile, transmitting):
+    # Inside the envelope, and only the starting state: `lora on` moves it either
+    # way afterwards, for every profile whose envelope permits it.
+    service, client = comms()
+    obc(client, profile=profile)
+    assert service.lora_enabled is transmitting
+
+
+def test_a_quiet_profile_can_be_asked_to_beacon(comms):
+    # The whole point of quiet-by-default: over the radio (which is still being
+    # listened to), over SSH, or from the dashboard console — all three end at
+    # this one command.
+    service, client = comms()
+    obc(client, profile=Profile.DEMO)
+    assert service.lora_enabled is False
+
+    command(client, "set_comms_config", params={"lora_enabled": True})
+    assert service.lora_enabled is True
+
+
+def test_entering_a_profile_resets_the_beacon_to_that_profile_s_default(comms):
+    # The trip ends: FLIGHT beacons, and switching to DEMO on arrival stops it
+    # without anybody saying so. Written this way round on purpose — a request
+    # carried over from the trip would make "quiet in DEMO" true only until the
+    # first time anybody ever turned the beacon on.
+    service, client = comms()
+    obc(client, profile=Profile.FLIGHT)
+    assert service.lora_enabled is True
+
+    obc(client, profile=Profile.DEMO)
+    assert service.lora_enabled is False
+    # Still listening, which is how the next trip is started.
+    assert service.lora_listening is True
 
 
 def test_before_any_profile_is_known_nothing_is_permitted(comms):
@@ -1036,7 +1088,10 @@ def test_the_flags_are_not_persisted_so_a_restart_returns_to_the_profile(comms):
 
 def test_a_config_command_with_no_parameters_changes_nothing(comms, caplog):
     service, client = comms()
-    obc(client, profile=Profile.DEMO)
+    # FLIGHT, whose beacon starts on: "nothing changed" has to be visible as
+    # *nothing*, and in a quiet-by-default profile it would be indistinguishable
+    # from the command being obeyed.
+    obc(client, profile=Profile.FLIGHT)
     with caplog.at_level(logging.WARNING):
         command(client, "set_comms_config")
     assert service.lora_enabled is True

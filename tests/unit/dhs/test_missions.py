@@ -71,11 +71,22 @@ def test_opening_a_mission_stamps_it_with_the_profile_and_the_label(store, conn)
     assert row["ended_at"] is None
 
 
-def test_a_mission_may_have_no_label_at_all(store, conn):
+def test_a_mission_with_no_label_is_named_after_when_it_started(store, conn):
     # A label is for grouping in a dashboard, not for identity, so a profile
-    # applied without one is entirely normal.
+    # applied without one is entirely normal — and until 2026-09-01 those
+    # missions listed as "DEMO" or "FLIGHT", the same word for every trip ever
+    # taken. A trip is identified by when it happened, so that is the default.
     mission = store.open("DEMO")
-    assert mission_row(conn, mission.id)["label"] is None
+    label = mission_row(conn, mission.id)["label"]
+    assert label is not None
+    # The start column, to the minute, so the two cannot disagree.
+    assert label == mission.started_at[:16].replace("T", " ")
+    assert mission.label == label
+
+
+def test_a_label_that_was_given_is_kept_verbatim(store, conn):
+    mission = store.open("FLIGHT", "walk to work")
+    assert mission_row(conn, mission.id)["label"] == "walk to work"
 
 
 def test_closing_a_mission_records_the_reason_and_what_its_own_rows_say(store, conn):

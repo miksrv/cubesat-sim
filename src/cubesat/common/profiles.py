@@ -43,15 +43,32 @@ class PowerSpec:
 
 @dataclass(frozen=True)
 class DownlinkSpec:
-    """Which outbound channels a profile permits.
+    """Which outbound channels a profile permits, and how it starts out.
 
-    One field, and it stays a block rather than a bare ``lora`` flag on the
-    profile: there was a cloud API here until the ground segment was rebuilt as
-    an interface over the satellite's own dashboard, and a second channel is a
-    plausible thing to want again.
+    It stays a block rather than a bare ``lora`` flag on the profile: there was a
+    cloud API here until the ground segment was rebuilt as an interface over the
+    satellite's own dashboard, and a second channel is a plausible thing to want
+    again.
+
+    ``lora`` and ``beacon`` are two different statements, and conflating them is
+    the mistake this pair exists to prevent:
+
+    * ``lora`` is the **envelope** — whether the radio is part of the mission at
+      all. False means the inbox is not even polled, and no ground command can
+      widen it.
+    * ``beacon`` is the **starting state of transmission inside that envelope**,
+      applied on entering the profile. False means the satellite listens but says
+      nothing until somebody asks it to — over the radio, over SSH, or from the
+      dashboard, all of which end at the same ``set_comms_config``.
+
+    Added 2026-09-01 for the desk case: in ``DEMO`` and ``EXPO`` the satellite is
+    a metre from its operator and beaconing at them over a shared mesh channel is
+    noise, while still hearing an uplinked ``set_profile`` is exactly what makes
+    the radio worth having there.
     """
 
     lora: bool = False
+    beacon: bool = True
 
 
 @dataclass(frozen=True)
@@ -210,7 +227,13 @@ def _spec(name: str, raw: dict[str, Any], known_units: tuple[str, ...]) -> Profi
         services=services,
         dashboard=bool(raw.get("dashboard", False)),
         persistence=persistence,
-        downlink=DownlinkSpec(lora=bool(down_raw.get("lora", False))),
+        downlink=DownlinkSpec(
+            lora=bool(down_raw.get("lora", False)),
+            # Defaults true: a profile that permits the radio and says nothing
+            # about the beacon means "transmit as the beacon table allows",
+            # which is what every profile meant before this field existed.
+            beacon=bool(down_raw.get("beacon", True)),
+        ),
         power=PowerSpec(governor=governor, cadence_scale=scale),
         ttl_minutes=ttl,
     )

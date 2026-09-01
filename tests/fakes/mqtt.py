@@ -36,6 +36,12 @@ class FakeMqttClient:
         self.will: Published | None = None
         self.loop_running = False
         self.disconnected = False
+        self.connected_to: tuple | None = None
+        #: What a real broker would hold as retained and replay on subscribe.
+        #: Kept so a test can stage the satellite's state *before* the code under
+        #: test connects — which is the normal shape for the CLI, whose whole
+        #: data source is what the broker replays the moment it subscribes.
+        self._retained: dict[str, str] = {}
         self.on_connect = None
         self.on_disconnect = None
         self.on_message = None
@@ -53,6 +59,24 @@ class FakeMqttClient:
 
     def connect_async(self, *_args, **_kwargs):
         return None
+
+    def connect(self, host=None, port=None, keepalive=None):
+        """The blocking connect the CLI uses.
+
+        Calls ``on_connect`` straight away, because the CLI waits for it before
+        doing anything and a test should not sit out that timeout. Anything
+        needing a refusal replaces this method.
+
+        Then replays whatever was delivered before the connection, as a broker
+        replays its retained messages on subscribe. Without this a test would
+        have to interleave its staging with the code under test.
+        """
+        self.connected_to = (host, port, keepalive)
+        if self.on_connect is not None:
+            self.on_connect(self, None, None, 0, None)
+        if self.on_message is not None:
+            for topic, body in self._retained.items():
+                self.on_message(self, None, _Message(topic, body))
 
     def loop_start(self):
         self.loop_running = True
@@ -82,7 +106,9 @@ class FakeMqttClient:
     def deliver(self, topic: str, payload: dict[str, Any] | str) -> None:
         """Hand a message to the service as the broker would."""
         body = payload if isinstance(payload, str) else json.dumps(payload)
-        self.on_message(self, None, _Message(topic, body))
+        self._retained[topic] = body
+        if self.on_message is not None:
+            self.on_message(self, None, _Message(topic, body))
 
     def payloads(self, topic: str) -> list[dict[str, Any]]:
         """Every message published on ``topic``, decoded.

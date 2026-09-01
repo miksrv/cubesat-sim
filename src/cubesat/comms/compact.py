@@ -108,7 +108,15 @@ def _science(args: list[str]) -> Compact | None:
     return None
 
 
-def _lora(args: list[str]) -> Compact | None:
+def _beacon(args: list[str]) -> Compact | None:
+    """``beacon on|off`` — start or stop *transmitting*, never receiving.
+
+    Named for what it does. It was ``lora`` until 2026-09-01, and that word said
+    the wrong thing: turning it off does not turn the radio off, and the one
+    place that distinction has to be unmistakable is the command that makes the
+    satellite go quiet — because "quiet but listening" is the way back into a
+    satellite in SAFE, and "deaf" is not a state anything here can recover from.
+    """
     if args == ["on"]:
         return _command("set_comms_config", lora_enabled=True)
     if args == ["off"]:
@@ -132,5 +140,10 @@ _TABLE = {
     "safe": _bare("safe_mode"),
     "profile": _profile,
     "science": _science,
-    "lora": _lora,
+    "beacon": _beacon,
+    # The name this verb had until 2026-09-01, kept because it may be in
+    # somebody's muscle memory and answering `err=unknown` to a command that
+    # worked last week is worse than carrying one extra line. Undocumented on
+    # purpose: `beacon` is what the help and the README teach.
+    "lora": _beacon,
 }

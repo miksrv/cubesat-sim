@@ -65,6 +65,23 @@ class MissionSummary:
     distance_m: float | None
 
 
+def default_label(started_at: str) -> str:
+    """The label a mission gets when nobody supplied one: when it started.
+
+    Decided 2026-09-01. Before this an unlabelled mission listed as its profile
+    — "FLIGHT" — which is the same word for every trip ever taken and tells an
+    operator scrolling the archive nothing. A trip is identified by when it
+    happened, so that is the default, to the minute and in UTC like every other
+    timestamp here.
+
+    Derived from ``started_at`` rather than read from the clock a second time, so
+    the label and the column cannot disagree across a minute boundary. Anybody
+    who wants a real name still passes one — ``cubesat profile flight
+    --mission "walk to work"``, or ``mission_label`` on the wire.
+    """
+    return started_at[:16].replace("T", " ")
+
+
 class MissionStore:
     """The ``missions`` table. One instance per open database."""
 
@@ -75,8 +92,14 @@ class MissionStore:
     # ── lifecycle ───────────────────────────────────────────────────────────
 
     def open(self, profile: str, label: str | None = None) -> Mission:
-        """Start a mission and return it."""
+        """Start a mission and return it.
+
+        With no label, one is made from the start time — see ``default_label``.
+        Done here rather than at the caller so that every path into the archive
+        gets it: a mission opened by DHS, and one opened by a future tool.
+        """
         started_at = utc_iso()
+        label = label or default_label(started_at)
         with transaction(self._conn) as conn:
             cursor = conn.execute(
                 "INSERT INTO missions (label, profile, started_at) VALUES (?, ?, ?)",

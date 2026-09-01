@@ -320,19 +320,10 @@ parse is ordinary mesh chat and is left alone — answering stray sentences on a
 would spend the transmission budget on other people's conversations. The flip side, accepted
 knowingly: chat that is exactly a command line (`ping` alone) is a command.
 
-| Compact (`!` optional) | Canonical |
-|---|---|
-| `ping` | `{"command": "ping"}` |
-| `pos` | `{"command": "get_position"}` |
-| `sys` | `{"command": "get_system"}` |
-| `env` | `{"command": "get_environment"}` |
-| `mission` | `{"command": "get_mission"}` |
-| `photo` | `{"command": "take_photo"}` |
-| `profile FLIGHT` | `{"command": "set_profile", "params": {"profile": "FLIGHT"}}` |
-| `recover` / `safe` | `{"command": "recover"}` / `{"command": "safe_mode"}` |
-| `science start` / `science stop` | `{"command": "science_start"}` / `{"command": "science_stop"}` |
-| `restart adcs` | `{"command": "restart_service", "params": {"service": "adcs"}}` |
-| `beacon off` / `beacon on` | `{"command": "set_comms_config", "params": {"lora_enabled": false / true}}` — `lora` is still accepted as the name this verb had until 2026-09-01, undocumented; it was renamed because turning it off never turned the radio off, and quiet-but-listening is the way back into a satellite in `SAFE` |
+**The vocabulary itself is in [`README.md`](../README.md) → The command vocabulary** — one table,
+listing every command in all three spellings (radio, shell, and the JSON on the bus). It is not
+repeated here: two tables of the same thing disagree the first time one of them is edited, and the
+one that gets edited is the one somebody is looking at.
 
 An unrecognised `!` line is answered with `re=? ok=0 err=unknown` rather than dropped in
 silence: the sender is a person standing in a field wondering why nothing happened. A bare line

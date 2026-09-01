@@ -267,9 +267,10 @@ immediately. Do not move heartbeats onto per-service topics: OBC subscribes once
 That distinction is load-bearing: a profile can apply partially, and collapsing the two fields
 turns a debuggable failure into a mystery.
 
-Ground commands share the one `cubesat/command` topic; the `command` field selects the handler:
-`set_profile`, `science_start`, `science_stop`, `safe_mode`, `recover` (OBC); `take_photo`,
-`start_timelapse`, `stop_timelapse` (PAYLOAD); `get_telemetry`, `set_comms_config` (COMMS).
+Ground commands share the one `cubesat/command` topic; the `command` field selects the handler.
+**The vocabulary lives in `README.md` → The command vocabulary, and only there** — one table, every
+command in all three spellings (radio, shell, JSON). Do not restate it elsewhere: a second copy is
+a copy that disagrees after the first edit.
 
 **Every command works identically over MQTT and over LoRa** —
 `COMMS` re-publishes uplinked commands verbatim onto `cubesat/command`, so nothing downstream

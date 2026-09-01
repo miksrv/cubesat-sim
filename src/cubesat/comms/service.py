@@ -185,9 +185,11 @@ class CommsService(Service):
         # that never existed.
         self._lock = threading.RLock()
 
-        #: What the ground has asked for. True until told otherwise, so a
-        #: restart lands on the profile's own defaults — see the module
-        #: docstring on why this is not persisted.
+        #: What the ground has asked for. Set from the profile's own
+        #: ``downlink.beacon`` the moment one is announced, and never persisted —
+        #: see the module docstring. True until then, which matters only for the
+        #: seconds before OBC's first status: with no profile resolved,
+        #: ``lora_enabled`` is false anyway, because the envelope is unknown.
         self._lora_requested = True
 
         #: What the active profile permits, resolved once per profile change
@@ -381,11 +383,21 @@ class CommsService(Service):
             return
         self._downlink_profile = profile
         self._downlink = self._downlink_for(profile)
+        # Entering a profile resets what the ground last asked for to that
+        # profile's own starting state (2026-09-01). It has to work this way
+        # round: `DEMO` says "listen, do not beacon", and a request carried over
+        # from the trip before would make that setting true only until the first
+        # time anybody ever turned the beacon on.
+        #
+        # It is not a widening of the envelope — `lora_enabled` is still the
+        # conjunction — and it is not a lock either: `lora on` from the radio,
+        # from SSH or from the dashboard console works immediately afterwards.
+        self._lora_requested = self._downlink.beacon
         self.log.info(
-            "profile %s permits lora=%s; ground asked for lora=%s",
+            "profile %s permits lora=%s and starts the beacon %s",
             profile.value,
             self._downlink.lora,
-            self._lora_requested,
+            "on" if self._downlink.beacon else "off",
         )
         self._publish_status()
 

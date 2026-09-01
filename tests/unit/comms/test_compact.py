@@ -30,8 +30,8 @@ def canonical(text):
         ("!profile FLIGHT", {"command": "set_profile", "params": {"profile": "FLIGHT"}}),
         ("!science start", {"command": "science_start"}),
         ("!science stop", {"command": "science_stop"}),
-        ("!lora on", {"command": "set_comms_config", "params": {"lora_enabled": True}}),
-        ("!lora off", {"command": "set_comms_config", "params": {"lora_enabled": False}}),
+        ("!beacon on", {"command": "set_comms_config", "params": {"lora_enabled": True}}),
+        ("!beacon off", {"command": "set_comms_config", "params": {"lora_enabled": False}}),
     ],
 )
 def test_the_contract_table_translates_to_canonical_json(text, expected):
@@ -68,7 +68,7 @@ def test_a_phone_keyboard_leading_space_is_forgiven():
         "!profile DEMO EXPO",  # or with two
         "!science faster",  # an argument the verb does not take
         "!timelapse 30",  # the verb itself is gone: a mission photographs itself
-        "!lora maybe",
+        "!beacon maybe",
         "!ping now",  # a bare verb given an argument
         # In the contract but its handler is not written (R5): an honest
         # err=unknown today beats a silent relay into an empty bus.
@@ -92,7 +92,7 @@ def test_ordinary_chat_is_not_compact():
     [
         ("ping", {"command": "ping"}),
         ("profile FLIGHT", {"command": "set_profile", "params": {"profile": "FLIGHT"}}),
-        ("lora off", {"command": "set_comms_config", "params": {"lora_enabled": False}}),
+        ("beacon off", {"command": "set_comms_config", "params": {"lora_enabled": False}}),
     ],
 )
 def test_the_bare_spelling_is_the_same_language(text, expected):
@@ -100,6 +100,17 @@ def test_the_bare_spelling_is_the_same_language(text, expected):
     # dashboard console takes works over the radio too, `!` optional.
     body, _command = canonical(text)
     assert body == expected
+
+
+def test_the_verb_this_one_replaced_still_works():
+    """`lora on|off` was renamed to `beacon` on 2026-09-01 — the old word said
+    the wrong thing, because turning it off never turned the radio off. It is
+    still accepted, undocumented: answering `err=unknown` to a command that
+    worked last week is worse than one extra line in the table."""
+    from cubesat.comms.compact import translate as _translate
+
+    assert _translate("lora off") == _translate("beacon off")
+    assert _translate("!lora on") == _translate("!beacon on")
 
 
 @pytest.mark.parametrize(

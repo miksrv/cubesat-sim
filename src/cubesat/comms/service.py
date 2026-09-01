@@ -506,13 +506,23 @@ class CommsService(Service):
         about still reaches the service that does, and there is no re-encoding
         step that can quietly disagree with whoever composed the message.
 
-        A ``!`` line is the one exception, translated to canonical JSON *here*,
-        once, on the way in (see ``compact.py``) — and answered when it is
-        gibberish, because the sender is a person in a field, not a program
-        that checks return codes.
+        A compact line is the one exception, translated to canonical JSON
+        *here*, once, on the way in (see ``compact.py``). The bare spelling and
+        the ``!`` one part ways only when a line does not parse: ``!`` declared
+        intent, so its typos are answered; a bare line that is not a command is
+        somebody's chat, left alone.
         """
         if compact.is_compact(text):
-            self._relay_compact(text)
+            translated = compact.translate(text)
+            if translated is None:
+                self.log.warning("unknown compact uplink: %r", text[:120])
+                self._schedule_ack("?", ok="0", err="unknown")
+                return
+            self._relay_compact(text, translated)
+            return
+        bare = compact.translate(text)
+        if bare is not None:
+            self._relay_compact(text, bare)
             return
         command = mesh.uplink_command(text, self.log, source=source)
         if command is None:
@@ -522,12 +532,7 @@ class CommsService(Service):
         self.log.info("relayed a command from the %s channel onto %s", source, TOPICS["command"])
         self._schedule_ack(self._command_name(command))
 
-    def _relay_compact(self, text: str) -> None:
-        translated = compact.translate(text)
-        if translated is None:
-            self.log.warning("unknown compact uplink: %r", text[:120])
-            self._schedule_ack("?", ok="0", err="unknown")
-            return
+    def _relay_compact(self, text: str, translated: compact.Compact) -> None:
         self._last_uplink = time.time()
         if translated.command in QUERIES:
             # Answered from COMMS' own caches, immediately and without a relay:

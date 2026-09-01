@@ -672,6 +672,46 @@ def test_a_compact_line_is_relayed_as_canonical_json(comms):
     assert relayed(client) == [{"command": "set_profile", "params": {"profile": "DEMO"}}]
 
 
+def test_the_bare_spelling_works_over_the_radio_too(comms):
+    # The same line the dashboard console takes: one command language,
+    # whichever way the satellite is reached.
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject("profile demo")
+    service.tick()
+    assert relayed(client) == [{"command": "set_profile", "params": {"profile": "DEMO"}}]
+
+
+def test_a_bare_query_is_answered_like_a_banged_one(comms):
+    service, client = comms()
+    obc(client, state=MissionState.STANDBY, profile=Profile.HOSTED)
+    service._mesh._radio.inject("ping")
+    service.tick()
+
+    assert relayed(client) == []
+    replies = sent_replies(service)
+    assert len(replies) == 1
+    assert " re=ping" in replies[0]
+
+
+def test_chat_containing_a_command_verb_is_still_chat(comms, caplog):
+    # "photo of the pad looks great" starts with a verb the table knows, and
+    # must neither relay nor earn an err=unknown reply: only a `!` declares
+    # intent, and answering stray sentences would spend the transmission
+    # budget on other people's conversations.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    service._mesh._radio.inject("photo of the pad looks great")
+    with caplog.at_level(logging.WARNING):
+        service.tick()
+
+    assert relayed(client) == []
+    clock.advance(10.1)
+    service.tick()
+    assert sent_replies(service) == []
+
+
 def test_ping_is_answered_immediately_and_never_relayed(comms):
     # Proof of life on demand — and COMMS is the thing being asked, so there is
     # nothing to relay and nothing to wait for.

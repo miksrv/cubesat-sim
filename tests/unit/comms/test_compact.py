@@ -84,3 +84,37 @@ def test_a_line_nobody_wrote_is_a_reply_not_a_shrug(text):
 def test_ordinary_chat_is_not_compact():
     assert not compact.is_compact("anyone out there?")
     assert compact.is_compact("!ping")
+
+
+# ── the bare spelling ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("ping", {"command": "ping"}),
+        ("profile FLIGHT", {"command": "set_profile", "params": {"profile": "FLIGHT"}}),
+        ("timelapse 30", {"command": "start_timelapse", "params": {"interval_sec": 30}}),
+        ("lora off", {"command": "set_comms_config", "params": {"lora_enabled": False}}),
+    ],
+)
+def test_the_bare_spelling_is_the_same_language(text, expected):
+    # One command language however the satellite is reached: the bare verb the
+    # dashboard console takes works over the radio too, `!` optional.
+    body, _command = canonical(text)
+    assert body == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "anyone out there?",  # ordinary chat
+        "photo of the pad looks great",  # a known verb inside somebody's sentence
+        "ping me when you land",  # likewise
+        "",  # nothing at all
+    ],
+)
+def test_chat_that_is_not_exactly_a_command_translates_to_nothing(text):
+    # For a bare line the caller treats None as chat and stays silent — only a
+    # `!` line declared intent and earns the err=unknown reply.
+    assert compact.translate(text) is None

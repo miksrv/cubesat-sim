@@ -2,11 +2,24 @@
 
 The JSON uplink is fine for a ground station and hopeless for a thumb: quoted
 JSON on a phone keyboard in a field is where commands go to be mistyped. So
-COMMS additionally accepts a ``!`` form and canonicalises it into JSON **before**
-the relay — one translation point, on the way in, and the JSON path stays
-verbatim, so there is still no re-encoding step that can quietly disagree with
-whoever composed the message. The contract, with the reasoning, is
+COMMS additionally accepts a compact form and canonicalises it into JSON
+**before** the relay — one translation point, on the way in, and the JSON path
+stays verbatim, so there is still no re-encoding step that can quietly disagree
+with whoever composed the message. The contract, with the reasoning, is
 ``docs/concept.md`` → The radio command contract.
+
+The spelling is a bare verb — ``ping``, ``profile FLIGHT`` — the same lines the
+dashboard's Mission Console takes, so there is one command language however the
+satellite is reached. The ``!`` prefix is still accepted, and it buys one thing:
+**declared intent**. A ``!`` line that does not parse is answered with
+``re=? ok=0 err=unknown``, because its sender meant to command and is standing
+in a field wondering why nothing happened. A bare line that does not parse is
+ordinary mesh chat and is left alone — answering every stray word on a shared
+channel would spend the transmission budget on other people's conversations.
+The price of the bare spelling is the flip side of the same coin: chat that
+happens to be exactly a command line (``ping``, and nothing else on the line)
+is a command. On a channel whose members command satellites, that is the right
+trade.
 
 The table below is deliberately **shorter than the agreed vocabulary**: it
 names only the spellings some service can actually answer for today.
@@ -46,13 +59,16 @@ def is_compact(text: str) -> bool:
 
 
 def translate(text: str) -> Compact | None:
-    """Canonical JSON for a known ``!`` line, or None for one nobody wrote.
+    """Canonical JSON for a compact line, or None for one nobody wrote.
 
-    None is a *reply*, not a shrug: the caller answers ``re=? ok=0 err=unknown``,
-    because the sender is a person standing in a field wondering why nothing
-    happened.
+    Takes the bare spelling and the ``!``-prefixed one alike — the prefix is
+    stripped, not required. What None means depends on the caller's channel:
+    for a ``!`` line it is a *reply* (``re=? ok=0 err=unknown``), for a bare
+    line it means the text was never a command — chat, or JSON for the
+    verbatim path.
     """
-    words = text.strip()[1:].split()
+    stripped = text.strip()
+    words = stripped.removeprefix("!").split()
     if not words:
         return None
     verb, args = words[0].lower(), words[1:]

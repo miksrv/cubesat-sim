@@ -320,5 +320,9 @@ def test_payload_files_its_photographs_in_the_directory_dhs_names(
     payload_client.deliver(TOPICS["dhs_status"], published)
 
     reported = payload_client.last(TOPICS["payload_status"])
-    assert reported["mission_id"] == str(published["mission"]["id"])
+    # The id crosses the wire as the integer DHS owns — every topic that names
+    # a mission carries the same type; it becomes a string only as the
+    # directory name below.
+    assert reported["mission_id"] == published["mission"]["id"]
+    assert isinstance(reported["mission_id"], int)
     assert reported["photo_dir"] == str(tmp_path / "photos" / str(published["mission"]["id"]))

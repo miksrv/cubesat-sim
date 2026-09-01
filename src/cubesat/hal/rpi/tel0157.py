@@ -74,8 +74,23 @@ REG_ALTITUDE = 20  # metres: big-endian integer part, then hundredths
 REG_SPEED = 23  # knots, same layout — converted to m/s on the way out
 REG_DEVICE_ID = 30  # reads 0x20
 REG_CONSTELLATION = 34  # 1..7; 7 is all three
+REG_RGB = 36  # onboard RGB LED
 
 DEVICE_ID = 0x20
+#: Turn the onboard RGB LED off at bring-up. The satellite is a closed box: the
+#: LED lights the inside of its own shell, drawing current and adding heat to a
+#: sealed volume for nobody to see. It is a bench affordance, and the bench has
+#: its own way back — ``tel0157_gnss_read.py --rgb on``.
+#:
+#: **Verified visually on the assembled satellite, 2026-08-31:** the LED went
+#: dark on the write and the module kept working — a fix with 15 satellites
+#: immediately afterwards, so ``0x02`` darkens the LED rather than idling the
+#: receiver. Note this had to be an eyeball check: register 36 is **write-only**,
+#: reading back ``0x00`` whatever was written to it, so no amount of software
+#: can confirm the setting. ``RGB_ON`` is the value the bench script writes and
+#: is untested here — the check above only exercised the off path.
+RGB_OFF = 0x02
+RGB_ON = 0x05
 #: GPS + BeiDou + GLONASS. The default is 3 (GPS + BeiDou); moving to 7 took
 #: satellites in view from 6 to 9 immediately and raised the SNRs. The mode was
 #: measured to survive a power cycle, but it is written on every start anyway:
@@ -152,12 +167,17 @@ class TEL0157:
     # ── bring-up ────────────────────────────────────────────────────────────
 
     def _ensure_started(self) -> None:
-        """Write the constellation mode once per process, retrying on failure."""
+        """Write the constellation mode and darken the LED, once per process.
+
+        Both are retried on failure, because neither has happened until the
+        write lands: ``_started`` is set only after both succeed.
+        """
         if self._started:
             return
         self._bus.write_byte(ADDRESS, REG_CONSTELLATION, CONSTELLATION_ALL)
+        self._bus.write_byte(ADDRESS, REG_RGB, RGB_OFF)
         self._started = True
-        logger.info("TEL0157 constellation mode set to %d (GPS + BeiDou + GLONASS)",
+        logger.info("TEL0157 constellation mode set to %d (GPS + BeiDou + GLONASS), LED off",
                     CONSTELLATION_ALL)
 
     # ── the Gnss protocol ───────────────────────────────────────────────────

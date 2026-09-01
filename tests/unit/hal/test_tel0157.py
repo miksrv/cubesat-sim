@@ -246,29 +246,45 @@ def test_a_failure_before_any_fix_reports_nothing_known(gnss):
     assert (position.fix, position.lat, position.satellites) == (False, None, 0)
 
 
+BRING_UP_WRITES = [
+    (tel0157.REG_CONSTELLATION, tel0157.CONSTELLATION_ALL),
+    (tel0157.REG_RGB, tel0157.RGB_OFF),
+]
+
+
 def test_the_constellation_mode_is_written_on_start(gnss):
     # Writing it removes the assumption that it survived the last power cycle,
     # and it measurably improved acquisition: 6 satellites in view to 9.
     device, bus = gnss
     device.read()
-    assert bus.writes == [(tel0157.REG_CONSTELLATION, tel0157.CONSTELLATION_ALL)]
+    assert (tel0157.REG_CONSTELLATION, tel0157.CONSTELLATION_ALL) in bus.writes
 
 
-def test_the_constellation_mode_is_not_rewritten_every_poll(gnss):
+def test_the_led_is_darkened_on_start(gnss):
+    # The module sits inside a closed shell, so its RGB LED lights nothing but
+    # the inside of the satellite. The bench script turns it back on.
+    device, bus = gnss
+    device.read()
+    assert (tel0157.REG_RGB, tel0157.RGB_OFF) in bus.writes
+
+
+def test_the_bring_up_writes_are_not_repeated_every_poll(gnss):
     device, bus = gnss
     device.probe()
     device.read()
     device.read()
-    assert len(bus.writes) == 1
+    assert bus.writes == BRING_UP_WRITES
 
 
-def test_a_failed_mode_write_is_retried_on_the_next_read(gnss):
+def test_a_failed_bring_up_write_is_retried_on_the_next_read(gnss):
+    # Both writes are behind one flag, so a failure part-way through repeats
+    # the pair rather than leaving the LED lit with the mode already set.
     device, bus = gnss
     bus.fail = True
     device.read()
     bus.fail = False
     device.read()
-    assert bus.writes == [(tel0157.REG_CONSTELLATION, tel0157.CONSTELLATION_ALL)]
+    assert bus.writes == BRING_UP_WRITES
 
 
 def test_the_whole_reading_is_one_transaction(gnss):

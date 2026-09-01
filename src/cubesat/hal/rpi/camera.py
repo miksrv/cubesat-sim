@@ -34,7 +34,7 @@ frame (``hardware/models/frame/Cubesat_RaspbiCam_Frame.stl``), so an un-flipped
 image is upside down.
 
 The still size itself is a **setting** (``camera.resolution``), not a constant,
-and it defaults well below the sensor maximum. A long timelapse is the case that
+and it defaults well below the sensor maximum. A long mission is the case that
 decides it — full resolution is 24 MB a frame off a bus and onto an SD card —
 and that is a number somebody should be able to lower without a deploy.
 
@@ -158,7 +158,7 @@ class PiCamera:
 
         A request object rather than ``capture_file`` so the buffer is released
         explicitly: the still stream at full resolution is 24 MB per frame, and
-        a timelapse that leaks one of those per capture exhausts CMA memory long
+        a mission that leaks one of those per capture exhausts CMA memory long
         before it exhausts the SD card.
         """
         if overlay is not None:

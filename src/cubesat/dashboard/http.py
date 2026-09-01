@@ -8,6 +8,13 @@ is exactly what a page that has just been opened needs. That decision is what
 lets this file be ``http.server``: four JSON endpoints and a directory of static
 files do not justify pulling ``aiohttp`` or ``fastapi`` onto a Pi on battery.
 
+**Two sources behind one telemetry endpoint.** ``/api/telemetry`` means "the
+current session", not "the last N rows in the table" — it reads the open
+mission from the database while one is being recorded, and DASHBOARD's in-memory
+ring in the profiles that deliberately record nothing. Both are bounded, neither
+can hand back a different session's rows, and the response says which one
+answered.
+
 **Read-only, and the routing table says so.** There is exactly one method, and
 it is GET. A command from the dashboard goes onto ``cubesat/command`` over the
 browser's own broker connection — the same topic a laptop, the CLI and an uplink
@@ -37,6 +44,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from cubesat.dashboard.archive import DEFAULT_TELEMETRY_LIMIT, Archive
+from cubesat.dashboard.live import LiveHistory
 
 logger = logging.getLogger("dashboard.http")
 
@@ -92,8 +100,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if parts == ["api", "telemetry"]:
             limit = _int(query.get("limit", []), DEFAULT_TELEMETRY_LIMIT)
-            records = archive.telemetry(limit)
-            self._json({"count": len(records), "records": records})
+            self._telemetry(archive, limit)
             return
 
         if parts == ["api", "missions"]:
@@ -118,6 +125,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         self._error(HTTPStatus.NOT_FOUND, "no such endpoint")
+
+    def _telemetry(self, archive: Archive, limit: int) -> None:
+        """The current session's rows, from whichever half of the system holds them.
+
+        Two sources, one question. While a mission is open — ``FLIGHT``,
+        ``DIAG`` — the rows are on the card, and are read back filtered to that
+        mission: the database survives a restart of this service, and gives the
+        whole depth of the session rather than the last few hours of it. With no
+        mission open — ``DEMO`` and ``EXPO``, which deliberately record nothing
+        — the same rows are in memory, put there as DHS published them.
+
+        What matters is what neither branch can do: return rows from a session
+        other than this one. The unfiltered "last N rows of the table" this
+        replaces did exactly that, and drew two days as one line.
+
+        ``source`` is reported so the interface can say *why* a chart is short —
+        "this session is not being recorded" is a different statement from "the
+        satellite has just started", and a viewer who cannot tell them apart
+        eventually decides the recorder is broken.
+        """
+        server = self.server
+        mission_id: int | None = server.session_mission_id  # type: ignore[attr-defined]
+        if mission_id is not None:
+            records = archive.telemetry(limit, mission_id=mission_id)
+            source = "mission"
+        else:
+            live: LiveHistory = server.live  # type: ignore[attr-defined]
+            records = live.records(limit)
+            source = "live"
+        self._json({"count": len(records), "records": records, "source": source})
 
     # ── the archive ─────────────────────────────────────────────────────────
 
@@ -246,13 +283,22 @@ class DashboardServer(ThreadingHTTPServer):
         address: tuple[str, int],
         *,
         archive: Archive,
+        live: LiveHistory,
         static_root: Path,
         photos_root: Path,
     ) -> None:
         super().__init__(address, DashboardHandler)
         self.archive = archive
+        self.live = live
         self.static_root = static_root
         self.photos_root = photos_root
+        #: The mission ``/api/telemetry`` should answer from, or None to answer
+        #: from the ring. Written by the service on every ``dhs_status``; read
+        #: by request threads. A plain attribute rather than a lock, because one
+        #: assignment of an ``int | None`` is atomic and a request that catches
+        #: the value one tick late asks the database for the mission that was
+        #: open a moment ago — a correct answer, just not the newest one.
+        self.session_mission_id: int | None = None
 
 
 def _inside(root: Path, candidate: Path) -> bool:

@@ -96,6 +96,24 @@ def get_json(port: int, path: str):
     return json.loads(body)
 
 
+def recording(client, mission_id, database=None):
+    """A dhs_status saying a mission is open, which is what points
+    ``/api/telemetry`` at the database instead of the in-memory ring."""
+    client.deliver(
+        TOPICS["dhs_status"],
+        {
+            "recording": True,
+            "database": str(database) if database is not None else None,
+            "mission": {"id": mission_id},
+        },
+    )
+
+
+def published_row(client, **fields):
+    """One row as DHS publishes it — assembled, and not necessarily written."""
+    client.deliver(TOPICS["dhs_telemetry"], {"row": fields})
+
+
 # ── what it is and is not ───────────────────────────────────────────────────
 
 
@@ -114,30 +132,114 @@ def test_it_does_not_track_the_mission_state(dashboard):
     service, client, _ = dashboard
     client.connect_ok()
     assert service.mission_state is None
-    assert client.subscribed == [TOPICS["dhs_status"]]
+    # Both subscriptions come from the recorder: the database path and the open
+    # mission from one, the rows for the ring from the other. Neither is a
+    # mission-state feed.
+    assert client.subscribed == [TOPICS["dhs_status"], TOPICS["dhs_telemetry"]]
 
 
 # ── the archive over HTTP ───────────────────────────────────────────────────
 
 
-def test_telemetry_is_served_newest_first(dashboard, recorded):
-    _, _, port = dashboard
+def test_telemetry_of_an_open_mission_is_served_newest_first(dashboard, recorded):
+    _, client, port = dashboard
+    recording(client, recorded)
     body = get_json(port, "/api/telemetry")
     assert body["count"] == 3
+    assert body["source"] == "mission"
     # The newest row is what a live dashboard reads CPU and RAM from: those are
     # on no status topic at all.
     assert body["records"][0]["cpu_percent"] == 33
 
 
 def test_the_limit_is_honoured(dashboard, recorded):
-    _, _, port = dashboard
+    _, client, port = dashboard
+    recording(client, recorded)
     assert get_json(port, "/api/telemetry?limit=2")["count"] == 2
 
 
 def test_a_nonsense_limit_falls_back_rather_than_failing(dashboard, recorded):
     # It arrives from a query string a browser composed.
-    _, _, port = dashboard
+    _, client, port = dashboard
+    recording(client, recorded)
     assert get_json(port, "/api/telemetry?limit=three")["count"] == 3
+
+
+def test_the_open_mission_is_the_only_one_its_telemetry_comes_from(dashboard, roots, recorded):
+    """The bug this endpoint's shape was changed for, pinned.
+
+    Measured on the satellite 2026-09-01: `?limit=60` came back with 33 rows
+    from that day's mission and 27 from one two days earlier, and the charts drew
+    the two as one continuous line — on the ground track, as one path joining two
+    days' positions. "The last N rows of the table" is not "the current session".
+    """
+    conn = schema.connect(roots["db"], LOG)
+    older = MissionStore(conn, LOG).open("DEMO", "two days ago")
+    conn.execute(
+        "INSERT INTO telemetry (timestamp, mission_id, battery) VALUES (?, ?, ?)",
+        ("2026-08-22T09:00:00Z", older.id, 55),
+    )
+    conn.commit()
+    conn.close()
+
+    _, client, port = dashboard
+    recording(client, recorded)
+    body = get_json(port, "/api/telemetry")
+    assert body["count"] == 3
+    assert {row["mission_id"] for row in body["records"]} == {recorded}
+
+
+# ── the ring, for the profiles that record nothing ──────────────────────────
+
+
+def test_with_no_mission_open_telemetry_comes_from_the_published_rows(dashboard):
+    # DEMO and EXPO write nothing to the card (Q7), so the charts' history is
+    # what DHS put on the bus and this service kept.
+    _, client, port = dashboard
+    published_row(client, timestamp="2026-09-01T10:00:00Z", battery=80, cpu_percent=11)
+    published_row(client, timestamp="2026-09-01T10:00:30Z", battery=79, cpu_percent=12)
+
+    body = get_json(port, "/api/telemetry")
+    assert body["source"] == "live"
+    assert body["count"] == 2
+    # Newest first, the order the archive uses, for the same reason: the caller's
+    # first use of the rows is the latest one.
+    assert body["records"][0]["cpu_percent"] == 12
+    # Rows carry an id in the database and the interface keys its lists on one.
+    assert [row["id"] for row in body["records"]] == [2, 1]
+
+
+def test_a_row_that_is_not_an_object_never_reaches_a_chart(dashboard):
+    # It arrives from the broker. A malformed payload must not become a row of
+    # nulls that looks like a measurement.
+    _, client, port = dashboard
+    client.deliver(TOPICS["dhs_telemetry"], {"row": "not a row"})
+    client.deliver(TOPICS["dhs_telemetry"], {})
+    assert get_json(port, "/api/telemetry")["count"] == 0
+
+
+def test_an_open_mission_takes_precedence_over_the_ring(dashboard, recorded):
+    # Both hold rows in DIAG: the ring fills from the bus while the recorder
+    # writes. The database wins because it survives a restart of this service
+    # and carries the whole session rather than its last few hours.
+    _, client, port = dashboard
+    published_row(client, timestamp="2026-09-01T10:00:00Z", battery=80)
+    recording(client, recorded)
+    body = get_json(port, "/api/telemetry")
+    assert body["source"] == "mission"
+    assert body["count"] == 3
+
+
+def test_a_mission_closing_hands_the_endpoint_back_to_the_ring(dashboard, recorded, caplog):
+    _, client, port = dashboard
+    recording(client, recorded)
+    published_row(client, timestamp="2026-09-01T10:00:00Z", battery=80)
+    with caplog.at_level(logging.INFO):
+        client.deliver(
+            TOPICS["dhs_status"], {"recording": False, "database": None, "mission": None}
+        )
+    assert "in-memory ring" in caplog.text
+    assert get_json(port, "/api/telemetry")["source"] == "live"
 
 
 def test_missions_are_listed(dashboard, recorded):
@@ -186,7 +288,10 @@ def test_an_empty_archive_is_served_rather_than_refused(dashboard):
     # a satellite in HOSTED looks like.
     _, _, port = dashboard
     assert get_json(port, "/api/missions") == {"count": 0, "missions": []}
-    assert get_json(port, "/api/telemetry") == {"count": 0, "records": []}
+    # `source` is what separates "nothing has been recorded" from "this session
+    # is not being recorded at all" — a viewer that cannot tell them apart
+    # eventually decides the recorder is broken.
+    assert get_json(port, "/api/telemetry") == {"count": 0, "records": [], "source": "live"}
 
 
 # ── photographs ─────────────────────────────────────────────────────────────
@@ -406,8 +511,8 @@ def test_a_file_that_vanishes_between_the_check_and_the_read_is_404(dashboard, r
 
 
 def test_a_message_on_another_topic_changes_nothing(dashboard, recorded):
-    # dhs_status is the only subscription, but the guard is explicit: this
-    # service must not start acting on the bus at large.
+    # Only the recorder's two topics are subscribed, but the guard is explicit:
+    # this service must not start acting on the bus at large.
     service, client, port = dashboard
     before = service._archive.path
     client.deliver(TOPICS["obc_status"], {"status": "NOMINAL", "profile": "FLIGHT"})

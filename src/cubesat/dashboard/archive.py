@@ -116,16 +116,31 @@ class Archive:
 
     # ── what the dashboard asks for ─────────────────────────────────────────
 
-    def telemetry(self, limit: int = DEFAULT_TELEMETRY_LIMIT) -> list[dict[str, Any]]:
-        """The most recent rows, newest first.
+    def telemetry(
+        self, limit: int = DEFAULT_TELEMETRY_LIMIT, *, mission_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """The most recent rows, newest first, optionally within one mission.
 
         Newest first because the caller's first use of them is the *latest* row:
         the host's CPU, RAM and disk are on no status topic, so this is where a
         live dashboard reads them from.
+
+        ``mission_id`` exists because the unfiltered version answers the wrong
+        question. "The last N rows of the table" is not "the current session":
+        measured on the satellite on 2026-09-01, ``?limit=60`` returned 33 rows
+        from that day's mission and 27 from one two days earlier, and the charts
+        drew the two as a single continuous line — on the ground track, as a
+        single path joining two days' positions. The caller passes the open
+        mission when there is one.
         """
+        if mission_id is None:
+            return self._query(
+                "SELECT * FROM telemetry ORDER BY timestamp DESC, id DESC LIMIT ?",
+                (_bounded(limit),),
+            )
         return self._query(
-            "SELECT * FROM telemetry ORDER BY timestamp DESC, id DESC LIMIT ?",
-            (_bounded(limit),),
+            "SELECT * FROM telemetry WHERE mission_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?",
+            (mission_id, _bounded(limit)),
         )
 
     def missions(self) -> list[dict[str, Any]]:

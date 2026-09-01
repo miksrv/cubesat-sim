@@ -1,47 +1,62 @@
-"""Capture policy: when a photo is allowed, where it is filed, and how a
-timelapse runs without either flooding the broker or outliving the service.
+"""Capture policy: when a photo is allowed, where it goes, and how a mission's
+own photography runs without either flooding the broker or outliving the service.
 
 **Capture is gated on the mission state.** ``NOMINAL`` and ``SCIENCE`` only;
 ``LOW_POWER`` and below refuse with a reason. The camera is the most expensive
 thing PAYLOAD can do — the sensor draws power, the encode costs CPU and the
 result costs disk — and ``LOW_POWER`` exists precisely to stop discretionary
-work. ``stop_timelapse`` is permitted from *any* state, because stopping
-something is never the dangerous direction: a gate that refuses to stop a
-running timelapse in ``SAFE`` would keep the camera running in the one state
-that most wanted it off.
+work. Stopping is permitted from *any* state, because stopping something is
+never the dangerous direction: a gate that refused to stop a running series in
+``SAFE`` would keep the camera running in the one state that most wanted it off.
+
+**A mission photographs itself, on a cadence.** There is no ``start_timelapse``
+command and no interval on the wire: while a mission is open, frames are taken
+every ``photos.mission_interval_sec`` (300 by default), and they stop when the
+mission does. Decided 2026-09-01, and the reasoning is the use case rather than
+tidiness — a recorded mission is a trip, a trip wants pictures along the way,
+and nobody was ever going to remember to send a command before walking out of
+the house. What it replaces was a ground-commanded timelapse with an interval
+somebody had to choose, whose only real use was the one now automatic.
 
 **Photos are filed per mission**, under ``<data>/photos/<mission_id>/``, so a
 gallery groups the way the charts do. PAYLOAD does not own missions — DHS does —
-so the id arrives on ``dhs_status`` and is passed in here. When there is no id,
-because DHS is not running or has not opened a mission yet, the photo is filed
-under ``photos/unfiled/`` and the log says so. Inventing an id would put frames
-into a mission that never existed; refusing the photo would lose a capture over
-a bookkeeping detail. Neither is worth it.
+so the id arrives on ``dhs_status`` and is passed in here.
 
-**A timelapse publishes metadata, not pixels.** A single ``take_photo`` puts the
-base64 JPEG on ``cubesat/payload/photo``, because that is how the Telegram bot
-and the dashboard receive it and it is what the README documents. A timelapse
-frame publishes only its path, size, sequence number and mission. Five hundred
-frames at a few hundred kilobytes each is hundreds of megabytes pushed through
-a broker that is simultaneously carrying the telemetry the satellite exists to
-collect — on a Pi, over Wi-Fi, sharing a mesh radio's uplink. The frames are on
-disk, filed under their mission, and that is where a gallery should read them
-from. The ``kind`` field on every ``payload_photo`` message says which of the
-two a consumer is looking at, so nothing has to infer it from the presence of a
-base64 blob.
+**With no mission open, a photo is never written to the card.** It goes to
+``PHOTO_SCRATCH_DIR`` — a directory on ``/run``, which is a tmpfs, so the file
+exists in RAM only — is published as pixels, and is deleted. That is the whole
+of what ``DEMO`` and ``EXPO`` need: a photograph is taken because somebody asked
+for it, they see it, and there is no history worth keeping of a satellite that
+was standing on a desk. It replaces ``photos/unfiled/``, which retention was
+never allowed to touch and which therefore only ever grew — the one directory on
+the card guaranteed to accumulate was the one holding the photographs nobody
+would come back for.
+
+**A mission frame publishes metadata, not pixels.** A ``take_photo`` puts the
+base64 JPEG on ``cubesat/payload/photo``, because that is how the dashboard
+receives it. A mission frame publishes only its path, size, sequence number and
+mission: a hundred frames at a few hundred kilobytes each is tens of megabytes
+pushed through a broker that is simultaneously carrying the telemetry the
+satellite exists to collect — on a Pi, over Wi-Fi, sharing a mesh radio's
+uplink. Those frames are on the card, filed under their mission, and that is
+where a gallery reads them from. The ``kind`` field on every ``payload_photo``
+message says which of the two a consumer is looking at, so nothing has to infer
+it from the presence of a base64 blob.
 
 **The camera is the only unbounded writer on this satellite**, so it is the one
 that has to watch the card. Below ``photos.min_free_mb`` a capture is refused
-and a running timelapse stops itself, because the next write to fail on a full
-card is the telemetry row the mission exists to record — and the recorder
-tidying up later is no comfort when the card is full now. PAYLOAD deletes
-nothing: retention is DHS's job, and a service that writes files and also
-decides which ones to remove is one bug away from removing the wrong ones. The
-science tick is deliberately not gated on it either: that reading is small,
-bounded, and the thing most likely to explain what went wrong.
+and a running series stops itself, because the next write to fail on a full card
+is the telemetry row the mission exists to record — and the recorder tidying up
+later is no comfort when the card is full now. PAYLOAD deletes nothing on the
+card: retention is DHS's job, and a service that writes files and also decides
+which ones to remove is one bug away from removing the wrong ones. (The scratch
+frame above is not on the card and is deleted by the service that published it,
+which is a different thing from a retention policy.) The science tick is
+deliberately not gated on free space either: that reading is small, bounded, and
+the thing most likely to explain what went wrong.
 
 **One capture at a time.** The camera is a single exclusive resource and there
-are two callers — a ground command arriving on the MQTT thread and the timelapse
+are two callers — a ground command arriving on the MQTT thread and the frame
 thread — so every capture goes through one lock. Blocking rather than refusing:
 a capture is a second or so, and turning a common overlap into a lost photo
 would be a worse trade than a brief wait.
@@ -65,28 +80,36 @@ from cubesat.common import config
 from cubesat.common.states import CAMERA_ALLOWED_STATES, MissionState
 from cubesat.hal.interfaces import Camera, Photo
 
-#: Where a photo goes when no mission is open. A real directory rather than the
-#: photos root, so "we did not know the mission" stays visible afterwards
-#: instead of looking like a filing mistake.
-UNFILED = "unfiled"
-
 #: The ``kind`` field on cubesat/payload/photo. One topic, two payload shapes —
 #: see the module docstring for why only one of them carries the image.
+#:
+#: ``KIND_MISSION`` is the wire word for a frame the mission took by itself.
+#: It was ``"timelapse"`` until 2026-09-01, and that rename is the sort that
+#: breaks a consumer silently: the ground segment already lost every frame once
+#: to a `kind` mismatch it invented on its own side. Change it here and in
+#: cubesat-groundstation's decodePhoto in the same breath.
 KIND_PHOTO = "photo"
-KIND_TIMELAPSE = "timelapse"
+KIND_MISSION = "mission_frame"
 
 #: Free space is reported and compared in mebibytes, which is what
 #: ``photos.min_free_mb`` means and what ``df -m`` prints.
 BYTES_PER_MB = 1024 * 1024
 
-#: How many frames in a row may fail before the timelapse gives up. One failure
-#: is a hiccup worth riding out over a long run; three in a row is a camera that
-#: has gone away, and continuing would fill the log for hours.
+#: How many frames in a row may fail before the series gives up. One failure is
+#: a hiccup worth riding out over a long run; three in a row is a camera that has
+#: gone away, and continuing would fill the log for hours.
 MAX_CONSECUTIVE_FRAME_FAILURES = 3
 
-#: How long ``stop_timelapse`` waits for the frame thread. Longer than one
+#: How long ``stop_mission_photos`` waits for the frame thread. Longer than one
 #: capture, so a stop issued mid-frame still returns having actually stopped.
-TIMELAPSE_JOIN_TIMEOUT_SEC = 10.0
+FRAME_THREAD_JOIN_TIMEOUT_SEC = 10.0
+
+#: The floor under ``photos.mission_interval_sec``. A capture takes the better
+#: part of a second, so anything below this is not a faster series — it is a
+#: camera running flat out with a queue behind it. A module constant rather than
+#: a configuration key: the interval is meant to be tuned, this is meant to stop
+#: a typo in it, and a floor somebody can lower is not a floor.
+MIN_MISSION_INTERVAL_SEC = 1.0
 
 
 class StorageFull(Exception):
@@ -143,7 +166,7 @@ def refusal(state: MissionState | None) -> str | None:
 class CaptureContext:
     """What PAYLOAD knows from *other* services at the moment of a capture.
 
-    Passed in rather than reached for, because a timelapse spans minutes: the
+    Passed in rather than reached for, because a series spans minutes: the
     mission can change, the state can change and the satellite can move between
     one frame and the next, and every frame should record the truth of its own
     moment.
@@ -165,7 +188,7 @@ class Capture:
     mission_id: int | None
     #: The sidecar contents when one was written, else None.
     sidecar: dict[str, Any] | None = None
-    #: 1-based, and only for timelapse frames.
+    #: 1-based, and only for mission frames.
     sequence: int | None = None
 
     @property
@@ -174,16 +197,16 @@ class Capture:
 
 
 @dataclass
-class TimelapseState:
-    """What the retained ``payload_status`` says about the timelapse."""
+class MissionPhotoState:
+    """What the retained ``payload_status`` says about the mission's photography."""
 
     active: bool = False
     interval_sec: float | None = None
     #: Frames actually on disk, not frames attempted.
     frames: int = 0
     #: Why the last run ended, or None if none has ever been started. What makes
-    #: "stopped because the card is nearly full" distinguishable from "nobody
-    #: ever asked for one", which is the difference a science fair needs.
+    #: "stopped because the card is nearly full" distinguishable from "no mission
+    #: has been open yet", which is the difference a science fair needs.
     reason: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -195,14 +218,14 @@ class TimelapseState:
         }
 
 
-class _Timelapse:
-    """One timelapse run: its thread, its stop flag and its frame counter.
+class _PhotoRun:
+    """One mission's photography: its thread, its stop flag and its counter.
 
     Not a dataclass, because the thread has to be handed a reference to the run
     it belongs to and that is circular at construction time.
     """
 
-    def __init__(self, interval_sec: float, target: Callable[[_Timelapse], None]) -> None:
+    def __init__(self, interval_sec: float, target: Callable[[_PhotoRun], None]) -> None:
         self.interval_sec = interval_sec
         self.stop = threading.Event()
         #: Frames written. Bumped only after a capture succeeds, so a retried
@@ -212,7 +235,7 @@ class _Timelapse:
         self.thread = threading.Thread(
             target=target,
             args=(self,),
-            name="timelapse",
+            name="mission-photos",
             # Daemon so a hung capture cannot keep the process alive past
             # SIGTERM; close() still joins it for an orderly stop first.
             daemon=True,
@@ -224,25 +247,28 @@ def _iso(timestamp: float) -> str:
 
 
 class CameraController:
-    """PAYLOAD's side of the camera: policy, filing and the timelapse thread."""
+    """PAYLOAD's side of the camera: policy, filing and the frame thread."""
 
     def __init__(
         self,
         camera: Camera,
         *,
         photos_dir: Path | None = None,
+        scratch_dir: Path | None = None,
         log: logging.Logger | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._camera = camera
         self._root = photos_dir if photos_dir is not None else config.PHOTOS_DIR
+        #: Where a photo goes when no mission is open. On the satellite this is
+        #: under /run, which is a tmpfs: the frame never touches the card.
+        self._scratch = scratch_dir if scratch_dir is not None else config.PHOTO_SCRATCH_DIR
         self.log = log or logging.getLogger("payload.camera")
         self._clock = clock
         self._capture_lock = threading.Lock()
-        self._timelapse: _Timelapse | None = None
-        self._unfiled_warned = False
-        #: Why the last timelapse ended. None means none was ever started.
-        self._timelapse_reason: str | None = None
+        self._run_state: _PhotoRun | None = None
+        #: Why the last run ended. None means none was ever started.
+        self._photo_reason: str | None = None
         #: The pending idle close, and the count of camera uses that arms it.
         #: The generation is what makes a stale timer harmless: a timer that was
         #: already firing when a capture re-armed cannot be cancelled, but it
@@ -271,7 +297,7 @@ class CameraController:
         """How much room is left where the photos go.
 
         Cheap — a ``statvfs`` — next to a capture, so it is asked at the moment
-        of writing rather than the moment of asking. A timelapse crossing the
+        of writing rather than the moment of asking. A series crossing the
         floor mid-run is exactly the case that matters, and it cannot be caught
         by a check made when the command arrived.
         """
@@ -310,51 +336,69 @@ class CameraController:
     # ── filing ──────────────────────────────────────────────────────────────
 
     def path_for(self, mission_id: int | None) -> Path:
-        """Where this mission's photos go. Creates nothing — see below.
+        """Where this photo goes. Creates nothing — see below.
 
-        This is the one place the id becomes a string: the directory name is
-        the filesystem's representation of it, while everywhere else — the
-        wire, the sidecar, the logs — carries the integer DHS reported. HOSTD's
-        photo-directory rule ("a run of digits") is matched by exactly this
-        rendering.
+        With a mission, this is the one place the id becomes a string: the
+        directory name is the filesystem's representation of it, while everywhere
+        else — the wire, the sidecar, the logs — carries the integer DHS
+        reported. HOSTD's photo-directory rule ("a run of digits") is matched by
+        exactly this rendering.
+
+        With no mission, it is the scratch directory on the tmpfs, and the
+        photograph is never written to the card at all. See the module docstring:
+        that is the ``DEMO``/``EXPO`` case, where the pixels go to whoever asked
+        and no history is kept.
         """
-        return self._root / (UNFILED if mission_id is None else str(mission_id))
+        return self._scratch if mission_id is None else self._root / str(mission_id)
 
     def directory_for(self, mission_id: int | None) -> Path:
-        """The same directory, brought into existence and complained about.
+        """The same directory, brought into existence.
 
         Separate from ``path_for`` because publishing a status must not create
-        directories or emit warnings: only an actual capture should do either,
-        or a satellite that never takes a photo still grows an ``unfiled/``
-        folder and a log line about a mission it was never asked to file into.
+        directories: only an actual capture should, or a satellite that never
+        takes a photo still grows the folders.
 
-        The state directory itself is systemd's job (``StateDirectory=cubesat``)
-        and nothing here creates it. This subdirectory is different: a mission id
-        does not exist until DHS opens a mission, so no unit file can name it in
-        advance.
+        The state and runtime directories themselves belong to
+        ``config/tmpfiles.d/cubesat.conf`` and nothing here creates them — the
+        scratch directory included. A mission's subdirectory is the exception
+        that has to be made here: its name does not exist until DHS opens the
+        mission, so no unit file and no tmpfiles entry can name it in advance.
         """
-        if mission_id is None and not self._unfiled_warned:
-            self._unfiled_warned = True
-            self.log.warning(
-                "no mission is open, so photos are being filed under %s/ — DHS has not "
-                "reported a mission id",
-                UNFILED,
-            )
-        if mission_id is not None:
-            # Armed again, so a later gap in DHS' reporting is said out loud
-            # rather than swallowed by a flag set hours earlier.
-            self._unfiled_warned = False
         directory = self.path_for(mission_id)
         directory.mkdir(parents=True, exist_ok=True)
         return directory
 
+    def discard(self, path: Path) -> None:
+        """Delete a scratch frame once its pixels have been published.
+
+        Called by PAYLOAD rather than done inside ``capture`` because the frame
+        has to survive long enough to be read and base64-encoded, and the code
+        that publishes it is the code that knows when that is done.
+
+        Deliberately narrow: it refuses anything outside the scratch directory,
+        so the one method in this class that deletes a file cannot be handed a
+        mission's frame by a future caller who did not read the docstring.
+        PAYLOAD deletes nothing on the card — that is retention's job.
+        """
+        if path.parent != self._scratch:
+            self.log.error("refusing to delete %s: not a scratch frame", path)
+            return
+        for target in (path, path.with_suffix(".json")):
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                # A frame left behind in a tmpfs costs a few hundred kilobytes
+                # of RAM until the next reboot; failing the photograph over it
+                # would cost the photograph.
+                self.log.exception("could not remove %s", target)
+
     def _filename(self, taken_at: float, kind: str, sequence: int | None) -> str:
         stamp = datetime.fromtimestamp(taken_at, tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-        if kind == KIND_TIMELAPSE:
-            # The sequence number is in the name because a frame every second
-            # would otherwise collide with the one before it, and because a
-            # directory listing should show the order the frames were taken in.
-            return f"timelapse_{stamp}_{sequence:04d}.jpg"
+        if kind == KIND_MISSION:
+            # The sequence number is in the name because two frames inside the
+            # same second would otherwise collide, and because a directory
+            # listing should show the order the frames were taken in.
+            return f"frame_{stamp}_{sequence:04d}.jpg"
         return f"photo_{stamp}.jpg"
 
     # ── capture ─────────────────────────────────────────────────────────────
@@ -428,10 +472,10 @@ class CameraController:
         Why close at all: an open Picamera2 runs the ISP pipeline — metering,
         white balance, the lores stream — continuously, which is SoC heat for
         as long as nobody takes a photo. Reopening costs about a second, so a
-        timelapse faster than the window never pays it, and a slower one trades
+        series faster than the window never pays it, and a slower one trades
         a second per frame for a camera that is cold between frames.
 
-        Read from config at each call, like the timelapse floor: a bench
+        Read from config at each call, like the mission interval: a bench
         session should be able to change the window without a redeploy.
         """
         self._idle_generation += 1
@@ -442,7 +486,7 @@ class CameraController:
         if window <= 0:
             return
         timer = threading.Timer(window, self._idle_close, args=(self._idle_generation,))
-        # Daemon for the same reason the timelapse thread is: a pending close
+        # Daemon for the same reason the frame thread is: a pending close
         # must not keep the process alive past SIGTERM.
         timer.daemon = True
         timer.name = "camera-idle-close"
@@ -465,24 +509,23 @@ class CameraController:
                 config.CAMERA_IDLE_CLOSE_SEC,
             )
 
-    # ── timelapse ───────────────────────────────────────────────────────────
+    # ── the mission's own photography ───────────────────────────────────────
 
     @property
-    def timelapse(self) -> TimelapseState:
-        active = self._timelapse
+    def mission_photos(self) -> MissionPhotoState:
+        active = self._run_state
         if active is None:
-            return TimelapseState(reason=self._timelapse_reason)
-        return TimelapseState(
+            return MissionPhotoState(reason=self._photo_reason)
+        return MissionPhotoState(
             active=not active.stop.is_set(),
             interval_sec=active.interval_sec,
             frames=active.frames,
             # None while it is still running: a reason is why it ended.
-            reason=None if not active.stop.is_set() else self._timelapse_reason,
+            reason=None if not active.stop.is_set() else self._photo_reason,
         )
 
-    def start_timelapse(
+    def start_mission_photos(
         self,
-        interval_sec: float,
         *,
         context: Callable[[], CaptureContext],
         on_frame: Callable[[Capture], None],
@@ -490,59 +533,61 @@ class CameraController:
     ) -> float:
         """Start the frame thread and return the interval it actually uses.
 
+        The interval comes from configuration (``photos.mission_interval_sec``)
+        and is read here rather than captured at import, so an operator who edits
+        it and restarts PAYLOAD gets the new value without a code change. There
+        is deliberately no parameter: the interval is a property of how this
+        satellite photographs a trip, not of an individual request, and the whole
+        point of the 2026-09-01 change was that nobody has to choose one.
+
         ``context`` is a callable, not a value: the mission, the state and the
         position all change over a run measured in hours, and each frame asks
-        again rather than recording the situation at the moment somebody typed
-        the command.
+        again rather than recording the situation at the moment it started.
         """
-        # The floor is a setting (``camera.min_timelapse_interval_sec``) and is
-        # read here rather than captured at import: a capture takes the better
-        # part of a second, so anything below it is not a faster timelapse, it
-        # is a camera running flat out with a queue behind it.
-        floor = config.MIN_TIMELAPSE_INTERVAL_SEC
-        interval = max(floor, float(interval_sec))
-        if interval != interval_sec:
+        requested = config.PHOTO_MISSION_INTERVAL_SEC
+        interval = max(MIN_MISSION_INTERVAL_SEC, float(requested))
+        if interval != requested:
             self.log.warning(
-                "timelapse interval %.3fs is below the %.1fs floor; using %.1fs",
-                interval_sec,
-                floor,
+                "photos.mission_interval_sec is %.3fs, below the %.1fs floor; using %.1fs",
+                requested,
+                MIN_MISSION_INTERVAL_SEC,
                 interval,
             )
-        timelapse = _Timelapse(
+        run = _PhotoRun(
             interval,
             functools.partial(
                 self._run, context=context, on_frame=on_frame, on_finish=on_finish
             ),
         )
-        self._timelapse = timelapse
-        self._timelapse_reason = None
-        timelapse.thread.start()
-        self.log.info("timelapse started at %.1fs intervals", interval)
+        self._run_state = run
+        self._photo_reason = None
+        run.thread.start()
+        self.log.info("mission photography started at %.1fs intervals", interval)
         return interval
 
-    def stop_timelapse(self) -> bool:
-        """Stop the timelapse if one is running. True if one still was.
+    def stop_mission_photos(self) -> bool:
+        """Stop the frame thread if one is running. True if one still was.
 
         Permitted from every mission state — see the module docstring. False
         covers both "there was never one" and "it already ended itself", because
         to a caller deciding whether anything changed those are the same answer.
         """
-        timelapse, self._timelapse = self._timelapse, None
-        if timelapse is None:
+        run, self._run_state = self._run_state, None
+        if run is None:
             return False
-        running = not timelapse.stop.is_set()
-        timelapse.stop.set()
-        if timelapse.thread is not threading.current_thread():
+        running = not run.stop.is_set()
+        run.stop.set()
+        if run.thread is not threading.current_thread():
             # Not when the frame thread is stopping itself, which would be a
             # thread joining itself and is an error rather than a wait.
-            timelapse.thread.join(timeout=TIMELAPSE_JOIN_TIMEOUT_SEC)
+            run.thread.join(timeout=FRAME_THREAD_JOIN_TIMEOUT_SEC)
         if running:
-            self.log.info("timelapse stopped after %d frame(s)", timelapse.frames)
+            self.log.info("mission photography stopped after %d frame(s)", run.frames)
         return running
 
     def _run(
         self,
-        timelapse: _Timelapse,
+        run: _PhotoRun,
         *,
         context: Callable[[], CaptureContext],
         on_frame: Callable[[Capture], None],
@@ -550,19 +595,19 @@ class CameraController:
     ) -> None:
         """The frame loop. Never raises — it is the whole of its thread."""
         failures = 0
-        reason = "stopped by command"
-        while not timelapse.stop.is_set():
+        reason = "the mission closed"
+        while not run.stop.is_set():
             ctx = context()
             refused = refusal(ctx.state)
             if refused is not None:
-                # The state descended under a running timelapse. The gate is
+                # The state descended under a running series. The gate is
                 # re-asked every frame rather than only at the start, because a
-                # timelapse outlives the state it was started in.
+                # mission outlives the state it opened in.
                 reason = refused
                 break
-            sequence = timelapse.frames + 1
+            sequence = run.frames + 1
             try:
-                capture = self.capture(ctx, kind=KIND_TIMELAPSE, sequence=sequence)
+                capture = self.capture(ctx, kind=KIND_MISSION, sequence=sequence)
             except StorageFull as exc:
                 # Stop, rather than refuse every frame from here on: a loop that
                 # fails forever is a log-flooding machine, and the card is not
@@ -571,37 +616,37 @@ class CameraController:
                 break
             except Exception:
                 failures += 1
-                self.log.exception("timelapse frame %d failed", sequence)
+                self.log.exception("mission frame %d failed", sequence)
                 if failures >= MAX_CONSECUTIVE_FRAME_FAILURES:
                     reason = f"the camera failed {failures} frames in a row"
                     break
             else:
-                timelapse.frames = sequence
+                run.frames = sequence
                 failures = 0
                 try:
                     on_frame(capture)
                 except Exception:
                     # Publishing failed, the frame is still on disk, and the run
                     # is worth continuing: the photos are the deliverable.
-                    self.log.exception("publishing timelapse frame %d failed", sequence)
-            timelapse.stop.wait(timelapse.interval_sec)
+                    self.log.exception("publishing mission frame %d failed", sequence)
+            run.stop.wait(run.interval_sec)
         # Set even when the loop ended on its own, so the reported state stops
         # claiming to be active the moment the last frame is behind us.
-        timelapse.stop.set()
+        run.stop.set()
         # Recorded before on_finish, so the status that handler publishes
         # already carries the reason rather than the run before it.
-        self._timelapse_reason = reason
-        self.log.info("timelapse finished: %s", reason)
+        self._photo_reason = reason
+        self.log.info("mission photography finished: %s", reason)
         try:
             on_finish(reason)
         except Exception:
-            self.log.exception("timelapse finish handler failed")
+            self.log.exception("mission photography finish handler failed")
 
     # ── shutdown ────────────────────────────────────────────────────────────
 
     def close(self) -> None:
-        """Stop the timelapse and give the camera back, in that order."""
-        self.stop_timelapse()
+        """Stop the frame thread and give the camera back, in that order."""
+        self.stop_mission_photos()
         if self._idle_timer is not None:
             self._idle_timer.cancel()
             self._idle_timer = None

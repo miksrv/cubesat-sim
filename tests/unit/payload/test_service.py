@@ -8,9 +8,10 @@ import pytest
 from cubesat.common import config
 from cubesat.common.states import MissionState
 from cubesat.common.topics import RETAINED, TOPICS
+from cubesat.payload import camera as camera_module
 from cubesat.payload.camera import BYTES_PER_MB
 from cubesat.payload.service import PayloadService
-from tests.unit.payload.test_camera import BENCH_POSITION, FakeCamera, Usage
+from tests.unit.payload.test_camera import BENCH_POSITION, JPEG_BYTES, FakeCamera, Usage
 from tests.unit.payload.test_science import BENCH_READING, FakeSensor
 
 
@@ -20,10 +21,24 @@ def payload(service_factory, monkeypatch, tmp_path):
     # a test that takes a photo files it in its own directory and not into the
     # data directory every other test shares.
     monkeypatch.setattr(config, "PHOTOS_DIR", tmp_path / "photos")
-    monkeypatch.setattr(config, "MIN_TIMELAPSE_INTERVAL_SEC", 0.001)
+    # Where a photo goes with no mission open: a tmpfs on the satellite, a
+    # directory of this test's own here.
+    scratch = tmp_path / "run" / "photo"
+    scratch.mkdir(parents=True)
+    monkeypatch.setattr(config, "PHOTO_SCRATCH_DIR", scratch)
+    # Milliseconds rather than the shipped 300 s, and the floor out of the way.
+    monkeypatch.setattr(camera_module, "MIN_MISSION_INTERVAL_SEC", 0.001)
+    monkeypatch.setattr(config, "PHOTO_MISSION_INTERVAL_SEC", 0.01)
     sensor, camera = FakeSensor(), FakeCamera()
     service, client = service_factory(PayloadService, sensor=sensor, camera=camera)
-    return service, client, sensor, camera
+    yield service, client, sensor, camera
+    # A mission now starts photography on its own, so a test that opens one and
+    # says nothing more leaves a frame thread running. Stopped here rather than
+    # in each test: a leaked thread fails whichever *later* test looks at
+    # threading.enumerate(), which is the hardest kind of failure to read.
+    # on_stop is idempotent — a second close stops nothing and closes a closed
+    # camera.
+    service.on_stop()
 
 
 @pytest.fixture
@@ -51,6 +66,15 @@ def wait_until(predicate, timeout=3.0):
             return True
         time.sleep(0.005)
     return False
+
+
+def open_mission(client, mission_id=42):
+    """DHS reporting an open mission — what starts a mission's photography."""
+    client.deliver(TOPICS["dhs_status"], {"mission": {"id": mission_id}})
+
+
+def close_mission(client):
+    client.deliver(TOPICS["dhs_status"], {"mission": None})
 
 
 def photo_messages(client, kind=None):
@@ -185,7 +209,7 @@ def test_the_status_carries_the_mission_the_photos_are_being_filed_under(payload
 def test_a_mission_id_that_is_not_an_integer_reads_as_no_mission(payload, tmp_path):
     # Withhold rather than fabricate: the id is a row id and every topic
     # carries it as an integer. Anything else is treated as no open mission —
-    # photos go to unfiled/ — not coerced into a directory name.
+    # the photo goes to the scratch directory — not coerced into a name.
     service, client, _, _ = payload
     for wrong in ("42", True, 4.2):
         client.deliver(TOPICS["dhs_status"], {"mission": {"id": 7}})
@@ -271,7 +295,9 @@ def test_a_photo_request_answers_with_the_image(payload):
     assert message["kind"] == "photo"
     assert message["file"].startswith("photo_")
     # The bytes on the wire are the bytes on disk, not a re-encoding of them.
-    assert base64.b64decode(message["photo_base64"]) == camera.captures[-1].path.read_bytes()
+    # Compared against what the camera wrote rather than against the file: with
+    # no mission open the frame has already been deleted, which is the point.
+    assert base64.b64decode(message["photo_base64"]) == JPEG_BYTES
 
 
 def test_a_photo_is_filed_under_the_mission_dhs_reported(payload, tmp_path):
@@ -282,24 +308,55 @@ def test_a_photo_is_filed_under_the_mission_dhs_reported(payload, tmp_path):
     assert photo_messages(client)[-1]["path"].startswith(str(tmp_path / "photos" / "42"))
 
 
-def test_a_photo_taken_with_no_mission_open_is_filed_not_refused(payload, tmp_path):
-    # DHS is not written yet, and a DEMO run may have no mission at all.
+def test_a_photo_with_no_mission_open_is_delivered_and_then_deleted(payload, tmp_path):
+    # The DEMO/EXPO case: a photograph is taken because somebody asked, they see
+    # it, and nothing is kept — the card is never touched. The pixels are in the
+    # message, which is the whole delivery.
     service, client, _, _ = payload
     nominal(client)
     client.deliver(TOPICS["command"], {"command": "take_photo", "request_id": "r1"})
     message = photo_messages(client)[-1]
     assert message["status"] == "SUCCESS"
     assert message["mission_id"] is None
-    assert "/unfiled/" in message["path"]
+    assert message["photo_base64"]
+    assert str(tmp_path / "run" / "photo") in message["path"]
+    # Nothing left behind, in the scratch directory or on the card.
+    assert list((tmp_path / "run" / "photo").iterdir()) == []
+    assert not (tmp_path / "photos").exists()
 
 
-def test_a_mission_that_closes_sends_later_photos_back_to_unfiled(payload):
+def test_a_photo_taken_inside_a_mission_stays_on_the_card(payload, tmp_path):
+    # The other half of the same rule: a trip's photographs are the point of
+    # recording one, so these are filed and left alone.
     service, client, _, _ = payload
     nominal(client)
-    client.deliver(TOPICS["dhs_status"], {"mission": {"id": 42}})
-    client.deliver(TOPICS["dhs_status"], {"mission": None})
+    open_mission(client)
+    client.deliver(TOPICS["command"], {"command": "take_photo", "request_id": "r1"})
+    # Only the requested photograph: the mission's own frames are named apart,
+    # and this test is about where a take_photo lands.
+    assert len(list((tmp_path / "photos" / "42").glob("photo_*.jpg"))) == 1
+
+
+def test_a_mission_that_closes_sends_later_photos_to_the_scratch_directory(payload, tmp_path):
+    service, client, _, _ = payload
+    nominal(client)
+    open_mission(client)
+    close_mission(client)
     client.deliver(TOPICS["command"], {"command": "take_photo", "request_id": "r1"})
     assert photo_messages(client)[-1]["mission_id"] is None
+    assert str(tmp_path / "run" / "photo") in photo_messages(client)[-1]["path"]
+
+
+def test_the_retained_photograph_is_cleared_when_the_service_starts(payload):
+    # payload_photo is retained so a page opened minutes later still shows the
+    # last frame. HOSTD starts this service as a profile is applied, so a start
+    # is where one session ends: a visitor at an EXPO stand must not meet the
+    # previous demonstration's photograph as though it were current.
+    service, client, _, _ = payload
+    service.on_start()
+    cleared = [p for p in client.published if p.topic == TOPICS["payload_photo"]]
+    assert cleared and cleared[0].payload == ""
+    assert cleared[0].retain is True
 
 
 def test_a_repeated_dhs_status_does_not_republish_the_payload_status(payload):
@@ -392,7 +449,7 @@ def test_the_status_says_the_card_is_what_is_stopping_the_photos(payload):
     status = client.last(TOPICS["payload_status"])
     assert status["storage"]["blocked"] is False
     assert status["storage"]["min_free_mb"] == float(config.PHOTOS_MIN_FREE_MB)
-    assert status["timelapse"]["reason"] is None  # none was ever started
+    assert status["mission_photos"]["reason"] is None  # none was ever started
 
 
 def test_a_full_card_does_not_cost_us_the_science(payload, free_space):
@@ -405,23 +462,21 @@ def test_a_full_card_does_not_cost_us_the_science(payload, free_space):
     assert client.last(TOPICS["payload_data"])["temperature"] == 27.96
 
 
-def test_a_timelapse_that_the_card_stopped_says_so_in_the_status(payload, free_space):
+def test_a_series_that_the_card_stopped_says_so_in_the_status(payload, free_space):
     service, client, _, _ = payload
     service.on_start()
     nominal(client)
     free_space(config.PHOTOS_MIN_FREE_MB + 10)
-    client.deliver(
-        TOPICS["command"], {"command": "start_timelapse", "params": {"interval_sec": 0.01}}
-    )
-    assert wait_until(lambda: photo_messages(client, "timelapse"))
+    open_mission(client)
+    assert wait_until(lambda: photo_messages(client, "mission_frame"))
     free_space(4)
     assert wait_until(
-        lambda: client.last(TOPICS["payload_status"])["timelapse"]["active"] is False
+        lambda: client.last(TOPICS["payload_status"])["mission_photos"]["active"] is False
     )
-    timelapse = client.last(TOPICS["payload_status"])["timelapse"]
-    assert "MB floor" in timelapse["reason"]
+    reported = client.last(TOPICS["payload_status"])["mission_photos"]
+    assert "MB floor" in reported["reason"]
     # The frames it did take are still on disk and still counted.
-    assert timelapse["frames"] >= 1
+    assert reported["frames"] >= 1
 
 
 def test_nothing_is_deleted_to_make_room(payload, free_space, tmp_path):
@@ -430,11 +485,12 @@ def test_nothing_is_deleted_to_make_room(payload, free_space, tmp_path):
     service, client, _, _ = payload
     service.on_start()
     nominal(client)
+    open_mission(client)
     client.deliver(TOPICS["command"], {"command": "take_photo", "request_id": "r1"})
-    existing = sorted((tmp_path / "photos" / "unfiled").iterdir())
+    existing = sorted((tmp_path / "photos" / "42").iterdir())
     free_space(0)
     client.deliver(TOPICS["command"], {"command": "take_photo", "request_id": "r2"})
-    assert sorted((tmp_path / "photos" / "unfiled").iterdir()) == existing
+    assert sorted((tmp_path / "photos" / "42").iterdir()) == existing
 
 
 # ── the overlay ─────────────────────────────────────────────────────────────
@@ -504,129 +560,109 @@ def test_an_adcs_message_with_no_gnss_object_is_ignored(payload):
     assert photo_messages(client)[-1]["overlay"]["position"] is None
 
 
-# ── the timelapse ───────────────────────────────────────────────────────────
+# ── the mission's own photography ───────────────────────────────────────────
 
 
-def test_a_timelapse_frame_never_carries_the_image(payload):
-    # Five hundred frames at a few hundred kilobytes each is hundreds of
-    # megabytes through a broker that is also carrying the telemetry the
-    # satellite exists to collect. The frames are on disk, filed by mission.
+def test_an_open_mission_starts_photographing_by_itself(payload):
+    # No command, and no interval on the wire: a recorded mission is a trip, a
+    # trip wants pictures along the way, and nobody was going to remember to ask
+    # for them before walking out of the house.
     service, client, _, _ = payload
     nominal(client)
-    client.deliver(
-        TOPICS["command"], {"command": "start_timelapse", "params": {"interval_sec": 0.01}}
-    )
-    assert wait_until(lambda: len(photo_messages(client, "timelapse")) >= 2)
-    client.deliver(TOPICS["command"], {"command": "stop_timelapse"})
-    for frame in photo_messages(client, "timelapse"):
+    open_mission(client)
+    assert wait_until(lambda: len(photo_messages(client, "mission_frame")) >= 2)
+    assert [f["sequence"] for f in photo_messages(client, "mission_frame")[:2]] == [1, 2]
+    assert client.last(TOPICS["payload_status"])["mission_photos"]["active"] is True
+
+
+def test_a_mission_frame_never_carries_the_image(payload):
+    # A mission's frames pushed through the broker would be tens of megabytes
+    # competing with the telemetry the satellite exists to collect. They are on
+    # the card, filed under their mission, and that is where a gallery reads them.
+    service, client, _, _ = payload
+    nominal(client)
+    open_mission(client)
+    assert wait_until(lambda: len(photo_messages(client, "mission_frame")) >= 2)
+    close_mission(client)
+    for frame in photo_messages(client, "mission_frame"):
         assert "photo_base64" not in frame
-        assert frame["size_bytes"] > 0
-        assert frame["path"].endswith(".jpg")
-    assert [f["sequence"] for f in photo_messages(client, "timelapse")[:2]] == [1, 2]
+        assert frame["file"] and frame["size_bytes"] > 0
 
 
 def test_the_kind_field_is_what_tells_the_two_apart(payload):
-    # A consumer should branch on a field, not on whether a base64 blob happens
-    # to be present.
+    # So nothing has to infer the shape from the presence of a base64 blob.
     service, client, _, _ = payload
     nominal(client)
     client.deliver(TOPICS["command"], {"command": "take_photo", "request_id": "r1"})
-    client.deliver(
-        TOPICS["command"], {"command": "start_timelapse", "params": {"interval_sec": 0.01}}
-    )
-    assert wait_until(lambda: photo_messages(client, "timelapse"))
-    client.deliver(TOPICS["command"], {"command": "stop_timelapse"})
-    kinds = [message.get("kind") for message in photo_messages(client)]
-    assert "photo" in kinds and "timelapse" in kinds
+    open_mission(client)
+    assert wait_until(lambda: photo_messages(client, "mission_frame"))
+    close_mission(client)
+    kinds = {message["kind"] for message in photo_messages(client) if "kind" in message}
+    assert kinds == {"photo", "mission_frame"}
 
 
-def test_a_running_timelapse_is_visible_in_the_status(payload):
+def test_the_mission_closing_is_what_ends_the_series(payload):
     service, client, _, _ = payload
     nominal(client)
-    client.deliver(
-        TOPICS["command"], {"command": "start_timelapse", "params": {"interval_sec": 30}}
-    )
-    timelapse = client.last(TOPICS["payload_status"])["timelapse"]
-    assert timelapse["active"] is True
-    assert timelapse["interval_sec"] == 30
-    client.deliver(TOPICS["command"], {"command": "stop_timelapse"})
-    assert client.last(TOPICS["payload_status"])["timelapse"]["active"] is False
+    open_mission(client)
+    assert wait_until(lambda: photo_messages(client, "mission_frame"))
+    close_mission(client)
+    assert client.last(TOPICS["payload_status"])["mission_photos"]["active"] is False
+    assert client.last(TOPICS["payload_status"])["mission_photos"]["reason"] is not None
 
 
-def test_a_timelapse_follows_the_same_gate_as_a_capture(payload):
-    service, client, _, camera = payload
-    nominal(client, MissionState.LOW_POWER)
-    client.deliver(
-        TOPICS["command"], {"command": "start_timelapse", "params": {"interval_sec": 1}}
-    )
-    assert photo_messages(client)[-1]["status"] == "ERROR"
-    assert camera.captures == []
-
-
-def test_a_timelapse_without_a_usable_interval_is_refused(payload):
-    # An interval is the whole content of this command; guessing one would mean
-    # a garbled uplink silently starting a run at a rate nobody chose.
+def test_the_interval_reported_is_the_one_being_used(payload, monkeypatch):
     service, client, _, _ = payload
+    monkeypatch.setattr(config, "PHOTO_MISSION_INTERVAL_SEC", 30.0)
     nominal(client)
-    for params in ({}, {"interval_sec": 0}, {"interval_sec": -5}, {"interval_sec": "fast"},
-                   # True is an int in Python, and a boolean interval is a
-                   # garbled command rather than a one-second one.
-                   {"interval_sec": True}):
-        client.deliver(TOPICS["command"], {"command": "start_timelapse", "params": params})
-        assert photo_messages(client)[-1]["status"] == "ERROR"
-    assert service._controller.timelapse.active is False
+    open_mission(client)
+    reported = client.last(TOPICS["payload_status"])["mission_photos"]
+    assert reported["active"] is True
+    assert reported["interval_sec"] == 30.0
 
 
-def test_a_second_timelapse_does_not_quietly_replace_the_first(payload):
-    # Restarting would abandon a run somebody is watching, and the two intervals
-    # would be indistinguishable in the frames afterwards.
+def test_a_descent_out_of_nominal_stops_the_series(payload, caplog, monkeypatch):
+    # The frame loop re-asks the gate too, but at the shipped 300 s interval that
+    # would be up to five minutes of a state that wanted the camera off.
     service, client, _, _ = payload
+    monkeypatch.setattr(config, "PHOTO_MISSION_INTERVAL_SEC", 30.0)
     nominal(client)
-    client.deliver(
-        TOPICS["command"], {"command": "start_timelapse", "params": {"interval_sec": 30}}
-    )
-    client.deliver(
-        TOPICS["command"], {"command": "start_timelapse", "params": {"interval_sec": 5}}
-    )
-    assert photo_messages(client)[-1]["reason"] == "a timelapse is already running"
-    assert client.last(TOPICS["payload_status"])["timelapse"]["interval_sec"] == 30
-    client.deliver(TOPICS["command"], {"command": "stop_timelapse"})
-
-
-def test_stopping_a_timelapse_is_permitted_from_a_state_that_refuses_captures(payload):
-    # Stopping something is never the dangerous direction.
-    service, client, _, _ = payload
-    nominal(client)
-    client.deliver(
-        TOPICS["command"], {"command": "start_timelapse", "params": {"interval_sec": 30}}
-    )
-    nominal(client, MissionState.SAFE)
-    client.deliver(TOPICS["command"], {"command": "stop_timelapse"})
-    assert client.last(TOPICS["payload_status"])["timelapse"]["active"] is False
-
-
-def test_stopping_when_nothing_is_running_is_not_an_error(payload, caplog):
-    service, client, _, _ = payload
-    with caplog.at_level("INFO"):
-        client.deliver(TOPICS["command"], {"command": "stop_timelapse"})
-    assert "no timelapse was running" in caplog.text
-
-
-def test_a_descent_out_of_nominal_stops_a_running_timelapse(payload, caplog):
-    # Immediately, rather than at the end of the current interval — which on a
-    # slow timelapse could be minutes of a state that wanted the camera off.
-    service, client, _, _ = payload
-    nominal(client)
-    client.deliver(
-        TOPICS["command"], {"command": "start_timelapse", "params": {"interval_sec": 30}}
-    )
+    open_mission(client)
+    assert client.last(TOPICS["payload_status"])["mission_photos"]["active"] is True
     with caplog.at_level("WARNING"):
         nominal(client, MissionState.LOW_POWER)
-    assert client.last(TOPICS["payload_status"])["timelapse"]["active"] is False
-    assert "stopping the timelapse" in caplog.text
+    assert client.last(TOPICS["payload_status"])["mission_photos"]["active"] is False
+    assert "stopping photography" in caplog.text
 
 
-def test_a_state_change_with_no_timelapse_running_changes_nothing(payload):
+def test_a_recovery_starts_the_series_again(payload, monkeypatch):
+    # The loop that would have re-asked the gate has ended by now, so nothing
+    # else could restart it — and a mission that photographed the first half of a
+    # walk and then quietly stopped after a LOW_POWER dip is the failure here.
+    service, client, _, _ = payload
+    monkeypatch.setattr(config, "PHOTO_MISSION_INTERVAL_SEC", 30.0)
+    nominal(client)
+    open_mission(client)
+    nominal(client, MissionState.LOW_POWER)
+    assert client.last(TOPICS["payload_status"])["mission_photos"]["active"] is False
+
+    nominal(client, MissionState.NOMINAL)
+    assert client.last(TOPICS["payload_status"])["mission_photos"]["active"] is True
+
+
+def test_a_state_change_that_still_permits_the_camera_leaves_it_running(payload, monkeypatch):
+    service, client, _, _ = payload
+    monkeypatch.setattr(config, "PHOTO_MISSION_INTERVAL_SEC", 30.0)
+    nominal(client)
+    open_mission(client)
+    published = len(client.payloads(TOPICS["payload_status"]))
+    nominal(client, MissionState.SCIENCE)
+    assert client.last(TOPICS["payload_status"])["mission_photos"]["active"] is True
+    # Nothing changed, so nothing was republished: the reconciler is idempotent.
+    assert len(client.payloads(TOPICS["payload_status"])) == published
+
+
+def test_a_state_change_with_no_mission_open_changes_nothing(payload):
     service, client, _, _ = payload
     nominal(client)
     before = len(client.payloads(TOPICS["payload_status"]))
@@ -634,15 +670,26 @@ def test_a_state_change_with_no_timelapse_running_changes_nothing(payload):
     assert len(client.payloads(TOPICS["payload_status"])) == before
 
 
-def test_a_state_change_that_still_permits_the_camera_leaves_it_running(payload):
+def test_a_mission_that_opens_below_nominal_photographs_nothing(payload):
+    # DHS records through LOW_POWER and SAFE — the track is the point of the
+    # trip — while the camera is exactly the discretionary work those states
+    # exist to stop. So a mission can legitimately be open with no photography.
     service, client, _, _ = payload
+    nominal(client, MissionState.LOW_POWER)
+    open_mission(client)
+    assert client.last(TOPICS["payload_status"])["mission_photos"]["active"] is False
+    assert photo_messages(client, "mission_frame") == []
+
+
+def test_a_camera_that_never_answered_starts_no_series(payload):
+    # Three failures in a row would end the run anyway; the point is not to fill
+    # the log finding that out on every mission.
+    service, client, _, camera = payload
+    camera.fail = True
+    service.on_start()
     nominal(client)
-    client.deliver(
-        TOPICS["command"], {"command": "start_timelapse", "params": {"interval_sec": 30}}
-    )
-    nominal(client, MissionState.SCIENCE)
-    assert client.last(TOPICS["payload_status"])["timelapse"]["active"] is True
-    client.deliver(TOPICS["command"], {"command": "stop_timelapse"})
+    open_mission(client)
+    assert client.last(TOPICS["payload_status"])["mission_photos"]["active"] is False
 
 
 # ── commands in general ─────────────────────────────────────────────────────
@@ -679,16 +726,14 @@ def test_a_photo_request_with_no_request_id_is_still_answered(payload):
 # ── shutdown and wiring ─────────────────────────────────────────────────────
 
 
-def test_stopping_gives_the_camera_back_and_ends_the_timelapse(payload):
+def test_stopping_gives_the_camera_back_and_ends_the_series(payload):
     service, client, _, camera = payload
     nominal(client)
-    client.deliver(
-        TOPICS["command"], {"command": "start_timelapse", "params": {"interval_sec": 0.01}}
-    )
-    assert wait_until(lambda: photo_messages(client, "timelapse"))
+    open_mission(client)
+    assert wait_until(lambda: photo_messages(client, "mission_frame"))
     service.on_stop()
     assert camera.closed is True
-    assert not any(thread.name == "timelapse" for thread in threading.enumerate())
+    assert not any(thread.name == "mission-photos" for thread in threading.enumerate())
 
 
 def test_stopping_closes_a_sensor_that_has_something_to_close(payload):

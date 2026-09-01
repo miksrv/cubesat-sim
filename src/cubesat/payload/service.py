@@ -23,26 +23,41 @@ already has heartbeats.
 **Two payload shapes share ``cubesat/payload/photo``**, and the ``kind`` field
 says which:
 
-    kind="photo"       a take_photo response, carrying photo_base64
-    kind="timelapse"   one timelapse frame: path, size, sequence — no image
+    kind="photo"          a take_photo response, carrying photo_base64
+    kind="mission_frame"  one frame of an open mission: path, size, sequence
 
 That asymmetry is deliberate and is argued out in ``payload/camera.py``: a
-single photo is *for* the ground and the base64 is how it gets there, while five
-hundred timelapse frames pushed through the broker would be hundreds of
-megabytes competing with the telemetry the satellite exists to collect. The
-frames are on disk, filed under their mission.
+single photo is *for* the ground and the base64 is how it gets there, while a
+mission's frames pushed through the broker would be tens of megabytes competing
+with the telemetry the satellite exists to collect. Those are on the card, filed
+under their mission.
+
+The topic is **retained**, and that is the whole mechanism behind "show the last
+photograph" in the profiles that keep no history: a browser opening five minutes
+after somebody pressed the button gets the picture from the broker's own memory.
+Nothing on the satellite stores it — mosquitto runs with ``persistence false``,
+so the retained frame lives in RAM and dies with the broker.
+
+**A mission photographs itself; there is no timelapse command.** While DHS
+reports an open mission and the state permits the camera, frames are taken every
+``photos.mission_interval_sec`` and stop when the mission closes.
+``start_timelapse``/``stop_timelapse`` were removed on 2026-09-01: the automatic
+series is the use case they existed for, and an interval nobody has to choose is
+one fewer thing to garble over a radio link.
 
 **A full card stops the camera, not the science.** The camera is the only
 unbounded writer here, so it is the one that watches free space: below
 ``photos.min_free_mb`` a capture is refused with the room left in the reason and
-a running timelapse stops itself, both visible in ``payload_status.storage``.
-Nothing is deleted — retention belongs to DHS — and the science tick is not
-gated on it, because a reading that is small, bounded and explains what went
-wrong is the last thing to give up.
+a running series stops itself, both visible in ``payload_status.storage``.
+Nothing on the card is deleted — retention belongs to DHS — and the science tick
+is not gated on it, because a reading that is small, bounded and explains what
+went wrong is the last thing to give up.
 
 **PAYLOAD does not own missions.** DHS does, and PAYLOAD learns the id from the
-retained ``dhs_status``. With no id — DHS not running, or no mission open yet —
-photos are filed under ``photos/unfiled/`` and the log says so.
+retained ``dhs_status``. With no id — DHS not running, or a profile that records
+nothing — a photograph is written to the tmpfs, published as pixels and deleted:
+see ``camera.py``. Nothing reaches the SD card, which is the point in ``DEMO``
+and ``EXPO``.
 """
 
 from __future__ import annotations
@@ -67,13 +82,16 @@ from cubesat.payload.camera import (
 )
 
 TAKE_PHOTO = "take_photo"
-START_TIMELAPSE = "start_timelapse"
-STOP_TIMELAPSE = "stop_timelapse"
 
 #: The commands PAYLOAD answers for. Everything else on cubesat/command belongs
 #: to OBC or COMMS and is ignored in silence: those are not errors, and a
 #: warning per set_profile would make every profile change look like a fault.
-HANDLED = frozenset({TAKE_PHOTO, START_TIMELAPSE, STOP_TIMELAPSE})
+#:
+#: ``start_timelapse`` and ``stop_timelapse`` were here until 2026-09-01. A
+#: mission now photographs itself on a configured cadence, which was the only
+#: use those commands had, and one fewer verb on the wire is one fewer thing to
+#: get wrong over a radio link.
+HANDLED = frozenset({TAKE_PHOTO})
 
 STATUS_SUCCESS = "SUCCESS"
 STATUS_ERROR = "ERROR"
@@ -125,6 +143,7 @@ class PayloadService(Service):
         with each device, so the flags in that first message are evidence and
         not optimism.
         """
+        self._clear_retained_photo()
         self._sensor_present = self._probe("SEN0501 environment", self._sensor)
         if self._sensor_present:
             # Report in NOW, with the camera honestly null: the camera probe
@@ -150,7 +169,7 @@ class PayloadService(Service):
 
         A broker restart takes every retained message with it, and PAYLOAD
         otherwise publishes only on change — so after one, `payload_status`
-        would be absent until a device went silent or a timelapse started, and
+        would be absent until a device went silent or a mission opened, and
         DEPLOY would find no evidence for a subsystem that is working perfectly.
         Nothing is republished if nothing ever answered: the gap is still the
         honest signal.
@@ -168,6 +187,21 @@ class PayloadService(Service):
         """
         if self._sensor_present or self._camera_present:
             self._publish_status()
+
+    def _clear_retained_photo(self) -> None:
+        """Drop whatever photograph the broker is still holding from last time.
+
+        ``payload_photo`` is retained so that a page opened minutes after a
+        capture still shows it. The cost is that the frame outlives the session
+        it was taken in — and HOSTD starts this service as a profile is applied,
+        so a start is exactly where one session ends and the next begins. A
+        visitor at an EXPO stand meeting the previous demonstration's photograph
+        as though it were current is the failure this prevents.
+
+        An empty payload with the retain flag is how MQTT says "forget this
+        topic"; the flag itself comes from ``topics.RETAINED``.
+        """
+        self.publish_raw("payload_photo", "")
 
     def _probe(self, label: str, device: Any) -> bool:
         try:
@@ -204,18 +238,18 @@ class PayloadService(Service):
         )
 
     def on_state_change(self, previous: MissionState | None, current: MissionState) -> None:
-        """Stop a timelapse the new state no longer permits.
+        """Follow the state: stop what it no longer permits, resume what it does.
 
-        The frame loop re-asks the gate too, and that is the authority. This is
-        the immediate stop: a descent into LOW_POWER should turn the camera off
-        now, not at the end of the current interval, which on a slow timelapse
-        could be minutes of a state that wanted the camera off.
+        The frame loop re-asks the gate too, and that is the authority for
+        stopping. This is the *immediate* stop — a descent into LOW_POWER should
+        turn the camera off now, not up to five minutes later at the end of the
+        current interval — and it is also the only thing that starts the series
+        again after a recovery, because the loop that would have re-asked has by
+        then already ended.
         """
-        if refusal(current) is None or not self._controller.timelapse.active:
-            return
-        self.log.warning("mission state is now %s; stopping the timelapse", current.value)
-        self._controller.stop_timelapse()
-        self._publish_status()
+        if refusal(current) is not None and self._controller.mission_photos.active:
+            self.log.warning("mission state is now %s; stopping photography", current.value)
+        self._reconcile_mission_photos()
 
     def on_stop(self) -> None:
         """Give the camera back and let the frame thread finish."""
@@ -251,6 +285,9 @@ class PayloadService(Service):
             return
         self.log.info("mission id %s -> %s", self._mission_id, mission_id)
         self._mission_id = mission_id
+        # A mission opening is what starts photography, and its closing is what
+        # ends it. Publishes the status itself when it acts.
+        self._reconcile_mission_photos()
         self._publish_status()
 
     def _on_adcs_status(self, data: dict[str, Any]) -> None:
@@ -275,13 +312,7 @@ class PayloadService(Service):
         params = data.get("params")
         params = params if isinstance(params, dict) else {}
         self.log.info("command %s (request_id=%s)", name, request_id)
-        if name == TAKE_PHOTO:
-            self._take_photo(request_id, params)
-        elif name == START_TIMELAPSE:
-            self._start_timelapse(request_id, params)
-        else:
-            # stop_timelapse, and it is permitted from every mission state.
-            self._stop_timelapse()
+        self._take_photo(request_id, params)
 
     # ── commands ────────────────────────────────────────────────────────────
 
@@ -312,47 +343,58 @@ class PayloadService(Service):
             # The image itself, and only here. See the module docstring.
             photo_base64=base64.b64encode(capture.photo.path.read_bytes()).decode("ascii"),
         )
+        if capture.mission_id is None:
+            # No mission, so the frame was written to the tmpfs and has now been
+            # delivered as pixels: there is nothing left to keep and nothing on
+            # the card to clean up later. The read above is why this happens here
+            # rather than inside capture().
+            self._controller.discard(capture.photo.path)
 
-    def _start_timelapse(self, request_id: str | None, params: dict[str, Any]) -> None:
-        interval = _interval_from(params)
-        if interval is None:
-            self._refuse(request_id, f"start_timelapse needs a positive interval_sec: {params!r}")
-            return
-        reason = refusal(self.mission_state)
-        if reason is not None:
-            self._refuse(request_id, reason)
-            return
-        if self._controller.timelapse.active:
-            # Silently restarting would abandon a run somebody is watching, and
-            # the two intervals would then be indistinguishable in the frames.
-            self._refuse(request_id, "a timelapse is already running")
-            return
-        self._controller.start_timelapse(
-            interval,
-            # A callable, not a snapshot: a timelapse outlives the mission
-            # state, the mission and the position it was started in.
-            context=functools.partial(self._context, params),
-            on_frame=self._publish_frame,
-            on_finish=self._timelapse_finished,
+    # ── the mission's own photography ───────────────────────────────────────
+
+    def _reconcile_mission_photos(self) -> None:
+        """Start or stop the frame thread to match the mission and the state.
+
+        One reconciler rather than a start path and a stop path, because both
+        conditions move on their own: DHS opens and closes missions on
+        ``dhs_status``, the mission state descends and recovers on
+        ``obc_status``, and every combination has to end in the same place. Two
+        handlers that each knew half of it is how a series ends up running with
+        no mission open, or a mission runs with the camera idle after a
+        LOW_POWER it already recovered from.
+
+        Idempotent: called on every message that could have changed either.
+        """
+        wanted = (
+            self._mission_id is not None
+            and refusal(self.mission_state) is None
+            # A camera that never answered cannot photograph, and a frame thread
+            # failing three times in a row to say so is noise.
+            and self._camera_present is not False
         )
+        running = self._controller.mission_photos.active
+        if wanted == running:
+            return
+        if wanted:
+            self._controller.start_mission_photos(
+                # A callable, not a snapshot: the mission, the state and the
+                # position all change over a run measured in hours.
+                context=functools.partial(self._context, {}),
+                on_frame=self._publish_frame,
+                on_finish=self._photos_finished,
+            )
+        else:
+            self._controller.stop_mission_photos()
         self._publish_status()
 
-    def _stop_timelapse(self) -> None:
-        if self._controller.stop_timelapse():
-            self._publish_status()
-            return
-        # Not an error: the retained status already says there is nothing
-        # running, and a ground station repeating a stop is a good habit.
-        self.log.info("stop_timelapse: no timelapse was running")
-
     def _publish_frame(self, capture: Capture) -> None:
-        """One timelapse frame: where it is and what it is, never the image."""
+        """One mission frame: where it is and what it is, never the image."""
         self._note_camera(True)
         self.publish("payload_photo", status=STATUS_SUCCESS, **_frame_fields(capture))
 
-    def _timelapse_finished(self, reason: str) -> None:
+    def _photos_finished(self, reason: str) -> None:
         """Called on the frame thread when the run ends, however it ended."""
-        self.log.info("timelapse finished (%s)", reason)
+        self.log.info("mission photography finished (%s)", reason)
         self._publish_status()
 
     def _refuse(self, request_id: str | None, reason: str) -> None:
@@ -403,7 +445,7 @@ class PayloadService(Service):
             # that describes the payload, not only in a log nobody is reading at
             # a science fair.
             storage=self._controller.storage().as_dict(),
-            timelapse=self._controller.timelapse.as_dict(),
+            mission_photos=self._controller.mission_photos.as_dict(),
             mission_id=self._mission_id,
             photo_dir=str(self._controller.path_for(self._mission_id)),
         )
@@ -426,14 +468,3 @@ def _frame_fields(capture: Capture) -> dict[str, Any]:
     }
 
 
-def _interval_from(params: dict[str, Any]) -> float | None:
-    """The requested timelapse interval, or None if there is not a usable one.
-
-    Refused rather than defaulted: an interval is the whole content of a
-    ``start_timelapse``, and guessing one would mean a garbled uplink silently
-    starting a run at a rate nobody chose.
-    """
-    value = params.get("interval_sec")
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
-        return None
-    return float(value)

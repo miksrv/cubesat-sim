@@ -1,5 +1,6 @@
 import collections
 import json
+import pathlib
 import shutil
 import threading
 import time
@@ -9,11 +10,11 @@ import pytest
 from cubesat.common import config
 from cubesat.common.states import MissionState
 from cubesat.hal.interfaces import Photo
+from cubesat.payload import camera as camera_module
 from cubesat.payload.camera import (
     BYTES_PER_MB,
+    KIND_MISSION,
     KIND_PHOTO,
-    KIND_TIMELAPSE,
-    UNFILED,
     CameraController,
     CaptureContext,
     StorageFull,
@@ -34,6 +35,12 @@ BENCH_POSITION = {
     "satellites": 23,
     "at": 1741863600.0,
 }
+
+
+#: What FakeCamera writes. A real JPEG's first and last two bytes around
+#: nothing, so a test can assert on the delivered image without reading a file
+#: that has deliberately already been deleted.
+JPEG_BYTES = b"\xff\xd8" + b"\x00" * 100 + b"\xff\xd9"
 
 
 class FakeCamera:
@@ -62,7 +69,7 @@ class FakeCamera:
             if self.fail:
                 raise OSError("camera went away")
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"\xff\xd8" + b"\x00" * 100 + b"\xff\xd9")
+            path.write_bytes(JPEG_BYTES)
             photo = Photo(path=path, width=3280, height=2464, taken_at=time.time())
             self.captures.append(photo)
             self.overlays.append(overlay)
@@ -77,12 +84,24 @@ class FakeCamera:
 
 @pytest.fixture
 def fast(monkeypatch):
-    """Drop the interval floor so a timelapse test takes milliseconds.
+    """Drop the interval and its floor so a series test takes milliseconds.
 
     The floor is a guard against a camera running flat out, not a property any
-    of these tests are about — and it has a test of its own below.
+    of these tests are about — and it has a test of its own below. The interval
+    is patched rather than read from the shipped config, which is 300 s.
     """
-    monkeypatch.setattr(config, "MIN_TIMELAPSE_INTERVAL_SEC", 0.001)
+    monkeypatch.setattr(camera_module, "MIN_MISSION_INTERVAL_SEC", 0.001)
+    monkeypatch.setattr(config, "PHOTO_MISSION_INTERVAL_SEC", 0.01)
+
+
+@pytest.fixture
+def mission_interval(monkeypatch):
+    """Set the mission photography interval. Patched, never read from the config."""
+
+    def set_to(seconds):
+        monkeypatch.setattr(config, "PHOTO_MISSION_INTERVAL_SEC", seconds)
+
+    return set_to
 
 
 @pytest.fixture
@@ -105,7 +124,12 @@ def free_space(monkeypatch):
 @pytest.fixture
 def controller(tmp_path):
     device = FakeCamera()
-    return CameraController(device, photos_dir=tmp_path / "photos"), device
+    scratch = tmp_path / "run" / "photo"
+    scratch.mkdir(parents=True)
+    return (
+        CameraController(device, photos_dir=tmp_path / "photos", scratch_dir=scratch),
+        device,
+    )
 
 
 def nominal(**kwargs) -> CaptureContext:
@@ -170,46 +194,77 @@ def test_photos_are_filed_under_their_mission(controller, tmp_path):
     assert capture.photo.path.exists()
 
 
-def test_a_photo_with_no_mission_is_filed_rather_than_refused(controller, tmp_path, caplog):
-    # DHS owns missions and may not be running. Inventing an id would put frames
-    # into a mission that never existed; refusing would lose a capture over a
-    # bookkeeping detail.
+def test_a_photo_with_no_mission_never_reaches_the_card(controller, tmp_path):
+    # DEMO and EXPO keep no photo history: the frame goes to the tmpfs, is
+    # published as pixels and is discarded. It replaced photos/unfiled/, which
+    # retention was forbidden to clean and which therefore only ever grew.
     control, _ = controller
-    with caplog.at_level("WARNING"):
-        capture = control.capture(nominal())
-    assert capture.photo.path.parent == tmp_path / "photos" / UNFILED
+    capture = control.capture(nominal())
+    assert capture.photo.path.parent == tmp_path / "run" / "photo"
     assert capture.mission_id is None
-    assert UNFILED in caplog.text
-
-
-def test_the_unfiled_warning_is_said_once_and_then_re_armed(controller, caplog):
-    # A timelapse of five hundred frames must not be five hundred warnings, but
-    # a later gap in DHS' reporting still has to be said out loud.
-    control, _ = controller
-    with caplog.at_level("WARNING"):
-        control.capture(nominal())
-        control.capture(nominal())
-        assert caplog.text.count("no mission is open") == 1
-        control.capture(nominal(mission_id=42))
-        control.capture(nominal())
-    assert caplog.text.count("no mission is open") == 2
-
-
-def test_asking_where_a_mission_files_creates_nothing(controller, tmp_path):
-    # payload_status reports this path on every publish. A satellite that never
-    # takes a photo should not grow an unfiled/ directory because of it.
-    control, _ = controller
-    assert control.path_for(None) == tmp_path / "photos" / UNFILED
     assert not (tmp_path / "photos").exists()
 
 
-def test_a_single_photo_and_a_timelapse_frame_are_named_apart(controller):
+def test_a_scratch_frame_is_discarded_with_its_sidecar(controller):
+    control, _ = controller
+    capture = control.capture(nominal(overlay=True))
+    sidecar = capture.photo.path.with_suffix(".json")
+    assert capture.photo.path.exists() and sidecar.exists()
+
+    control.discard(capture.photo.path)
+    assert not capture.photo.path.exists()
+    assert not sidecar.exists()
+
+
+def test_discarding_is_refused_outside_the_scratch_directory(controller, caplog):
+    # The one method here that deletes a file. A mission's frame belongs to
+    # retention, and PAYLOAD deletes nothing on the card.
+    control, _ = controller
+    capture = control.capture(nominal(mission_id=42))
+    with caplog.at_level("ERROR"):
+        control.discard(capture.photo.path)
+    assert capture.photo.path.exists()
+    assert "not a scratch frame" in caplog.text
+
+
+def test_discarding_a_frame_that_is_already_gone_is_not_an_error(controller):
+    control, _ = controller
+    capture = control.capture(nominal())
+    control.discard(capture.photo.path)
+    control.discard(capture.photo.path)
+
+
+def test_a_frame_that_will_not_delete_costs_ram_and_not_the_photograph(
+    controller, monkeypatch, caplog
+):
+    control, _ = controller
+    capture = control.capture(nominal())
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("read-only somehow")
+
+    monkeypatch.setattr(pathlib.Path, "unlink", refuse)
+    with caplog.at_level("ERROR"):
+        control.discard(capture.photo.path)
+    assert "could not remove" in caplog.text
+
+
+def test_asking_where_a_photo_goes_creates_nothing(controller, tmp_path):
+    # payload_status reports this path on every publish. A satellite that never
+    # takes a photo should not grow directories because of it.
+    control, _ = controller
+    assert control.path_for(None) == tmp_path / "run" / "photo"
+    assert control.path_for(42) == tmp_path / "photos" / "42"
+    assert not (tmp_path / "photos").exists()
+
+
+def test_a_single_photo_and_a_mission_frame_are_named_apart(controller):
     control, _ = controller
     photo = control.capture(nominal(mission_id=42))
-    frame = control.capture(nominal(mission_id=42), kind=KIND_TIMELAPSE, sequence=7)
-    assert (photo.kind, frame.kind) == (KIND_PHOTO, KIND_TIMELAPSE)
+    frame = control.capture(nominal(mission_id=42), kind=KIND_MISSION, sequence=7)
+    assert (photo.kind, frame.kind) == (KIND_PHOTO, KIND_MISSION)
     assert photo.photo.path.name.startswith("photo_")
-    assert frame.photo.path.name.startswith("timelapse_")
+    assert frame.photo.path.name.startswith("frame_")
     # The sequence is in the name so frames a second apart cannot collide, and
     # so a directory listing shows the order they were taken in.
     assert frame.photo.path.name.endswith("_0007.jpg")
@@ -306,7 +361,7 @@ def test_no_sidecar_survives_a_capture_that_failed(controller, tmp_path):
 
 def test_two_captures_never_run_at_the_same_time(controller):
     # One sensor, two callers: a ground command on the MQTT thread and the
-    # timelapse thread. Overlapping them is not a slow photo, it is an error.
+    # series thread. Overlapping them is not a slow photo, it is an error.
     control, device = controller
     device.delay = 0.05
     threads = [
@@ -400,53 +455,55 @@ def test_closing_cancels_the_pending_idle_close(idle_window, controller):
     assert device.closed is True
 
 
-# ── the timelapse ───────────────────────────────────────────────────────────
+# ── the mission's own photography ───────────────────────────────────────────
 
 
-def start(control, frames, finished, interval=0.01, context=None):
-    return control.start_timelapse(
-        interval,
+def start(control, frames, finished, context=None):
+    """Start the frame thread. The interval comes from config — see the fixtures."""
+    return control.start_mission_photos(
         context=context or (lambda: nominal(mission_id=42)),
         on_frame=frames.append,
         on_finish=finished.append,
     )
 
 
-def test_a_timelapse_captures_frames_in_sequence(fast, controller):
+def test_a_mission_series_captures_frames_in_sequence(fast, controller):
     control, _ = controller
     frames, finished = [], []
     start(control, frames, finished)
     assert wait_until(lambda: len(frames) >= 3)
-    control.stop_timelapse()
+    control.stop_mission_photos()
     assert [frame.sequence for frame in frames[:3]] == [1, 2, 3]
-    assert all(frame.kind == KIND_TIMELAPSE for frame in frames)
+    assert all(frame.kind == KIND_MISSION for frame in frames)
 
 
-def test_the_first_frame_does_not_wait_out_an_interval(fast, controller):
-    # An operator starting a timelapse should see it working, not wonder whether
-    # the command arrived.
+def test_the_first_frame_does_not_wait_out_an_interval(fast, mission_interval, controller):
+    # A mission opening should start photographing now: at the shipped 300 s, a
+    # frame withheld until the end of the first interval is five minutes of a
+    # trip nobody photographed.
     control, _ = controller
+    mission_interval(30.0)
     frames, finished = [], []
-    start(control, frames, finished, interval=30.0)
+    start(control, frames, finished)
     assert wait_until(lambda: len(frames) == 1)
-    control.stop_timelapse()
+    control.stop_mission_photos()
 
 
 def test_every_frame_asks_again_where_the_satellite_is(fast, controller):
-    # A timelapse spans hours: the mission, the state and the position all move
+    # A series spans hours: the mission, the state and the position all move
     # under it, and each frame should record the truth of its own moment.
     control, _ = controller
     missions = iter([1, 2, 3, 4, 5, 6, 7, 8])
     frames, finished = [], []
     start(control, frames, finished, context=lambda: nominal(mission_id=next(missions)))
     assert wait_until(lambda: len(frames) >= 3)
-    control.stop_timelapse()
+    control.stop_mission_photos()
     assert [frame.mission_id for frame in frames[:3]] == [1, 2, 3]
 
 
-def test_a_timelapse_stops_itself_when_the_state_no_longer_permits_it(fast, controller):
+def test_a_series_stops_itself_when_the_state_no_longer_permits_it(fast, controller):
     # The gate is re-asked every frame rather than only at the start, because a
-    # timelapse outlives the state it was started in.
+    # series outlives the state it was started in.
     control, _ = controller
     state = MissionState.NOMINAL
 
@@ -459,7 +516,7 @@ def test_a_timelapse_stops_itself_when_the_state_no_longer_permits_it(fast, cont
     state = MissionState.LOW_POWER
     assert wait_until(lambda: finished)
     assert "LOW_POWER" in finished[0]
-    assert control.timelapse.active is False
+    assert control.mission_photos.active is False
 
 
 def test_one_failed_frame_does_not_end_a_long_run(fast, controller):
@@ -471,7 +528,7 @@ def test_one_failed_frame_does_not_end_a_long_run(fast, controller):
     device.fail = False
     assert wait_until(lambda: len(frames) >= 1)
     assert finished == []
-    control.stop_timelapse()
+    control.stop_mission_photos()
 
 
 def test_the_frame_count_is_what_is_on_disk_not_what_was_attempted(fast, controller):
@@ -483,7 +540,7 @@ def test_the_frame_count_is_what_is_on_disk_not_what_was_attempted(fast, control
     device.fail = True
     start(control, frames, finished)
     assert wait_until(lambda: finished)
-    assert control.timelapse.frames == 0
+    assert control.mission_photos.frames == 0
 
 
 def test_a_camera_that_has_gone_away_ends_the_run_rather_than_filling_the_log(fast, controller):
@@ -506,14 +563,13 @@ def test_a_frame_that_could_not_be_published_stays_on_disk_and_the_run_goes_on(f
         raise RuntimeError("broker went away")
 
     finished: list[str] = []
-    control.start_timelapse(
-        0.01,
+    control.start_mission_photos(
         context=lambda: nominal(mission_id=42),
         on_frame=explode,
         on_finish=finished.append,
     )
     assert wait_until(lambda: len(published) >= 2)
-    control.stop_timelapse()
+    control.stop_mission_photos()
     assert all(capture.photo.path.exists() for capture in published)
 
 
@@ -523,32 +579,32 @@ def test_a_finish_handler_that_raises_does_not_take_the_thread_down_untidily(fas
     def explode(_reason):
         raise RuntimeError("nowhere to publish")
 
-    control.start_timelapse(
-        0.01,
+    control.start_mission_photos(
         context=lambda: nominal(mission_id=42),
         on_frame=lambda _capture: None,
         on_finish=explode,
     )
-    assert wait_until(lambda: control.timelapse.frames >= 1)
-    assert control.stop_timelapse() is True
+    assert wait_until(lambda: control.mission_photos.frames >= 1)
+    assert control.stop_mission_photos() is True
 
 
-def test_stopping_is_permitted_from_any_state(fast, controller):
+def test_stopping_is_permitted_from_any_state(fast, mission_interval, controller):
     # Stopping something is never the dangerous direction: a gate that refused
-    # to stop a timelapse in SAFE would keep the camera running in the one state
+    # to stop a series in SAFE would keep the camera running in the one state
     # that most wanted it off.
     control, _ = controller
+    mission_interval(30.0)
     frames, finished = [], []
-    start(control, frames, finished, interval=30.0)
+    start(control, frames, finished)
     assert wait_until(lambda: len(frames) == 1)
     # No state is consulted here at all — that is the point.
-    assert control.stop_timelapse() is True
-    assert control.timelapse.active is False
+    assert control.stop_mission_photos() is True
+    assert control.mission_photos.active is False
 
 
-def test_stopping_a_timelapse_that_is_not_running_is_not_an_error(controller):
+def test_stopping_a_series_that_is_not_running_is_not_an_error(controller):
     control, _ = controller
-    assert control.stop_timelapse() is False
+    assert control.stop_mission_photos() is False
 
 
 def test_stopping_waits_for_the_frame_thread_to_actually_stop(fast, controller):
@@ -557,42 +613,48 @@ def test_stopping_waits_for_the_frame_thread_to_actually_stop(fast, controller):
     frames, finished = [], []
     start(control, frames, finished)
     assert wait_until(lambda: len(frames) >= 1)
-    control.stop_timelapse()
-    assert not any(thread.name == "timelapse" for thread in threading.enumerate())
+    control.stop_mission_photos()
+    assert not any(thread.name == "mission-photos" for thread in threading.enumerate())
 
 
-def test_an_interval_below_the_floor_is_raised_rather_than_refused(controller, caplog):
+def test_an_interval_below_the_floor_is_raised_rather_than_refused(
+    mission_interval, controller, caplog
+):
     # A full-resolution capture takes the better part of a second, so anything
-    # below the floor is not a faster timelapse, it is a camera running flat out
-    # with a queue behind it. Losing the exact interval beats refusing the run.
+    # below the floor is not a faster series, it is a camera running flat out
+    # with a queue behind it. Losing the exact interval beats refusing the run —
+    # and the floor is a module constant precisely so a typo in the configured
+    # interval cannot lower it.
     control, _ = controller
+    mission_interval(0.001)
     frames, finished = [], []
     with caplog.at_level("WARNING"):
-        interval = start(control, frames, finished, interval=0.001)
-    control.stop_timelapse()
-    assert interval == config.MIN_TIMELAPSE_INTERVAL_SEC
+        interval = start(control, frames, finished)
+    control.stop_mission_photos()
+    assert interval == camera_module.MIN_MISSION_INTERVAL_SEC
     assert "floor" in caplog.text
 
 
-def test_the_reported_timelapse_state_is_what_payload_status_says(controller):
+def test_the_reported_photo_state_is_what_payload_status_says(mission_interval, controller):
     control, _ = controller
     # Never started: no reason, because nobody has stopped anything.
-    assert control.timelapse.as_dict() == {
+    assert control.mission_photos.as_dict() == {
         "active": False, "interval_sec": None, "frames": 0, "reason": None
     }
+    mission_interval(1.0)
     frames, finished = [], []
-    start(control, frames, finished, interval=1.0)
-    assert wait_until(lambda: control.timelapse.frames >= 1)
-    reported = control.timelapse.as_dict()
+    start(control, frames, finished)
+    assert wait_until(lambda: control.mission_photos.frames >= 1)
+    reported = control.mission_photos.as_dict()
     assert reported["active"] is True
     assert reported["interval_sec"] == 1.0
     assert reported["frames"] >= 1
     assert reported["reason"] is None  # it has not ended, so there is no why yet
-    control.stop_timelapse()
-    assert control.timelapse.as_dict()["reason"] == "stopped by command"
+    control.stop_mission_photos()
+    assert control.mission_photos.as_dict()["reason"] == "the mission closed"
 
 
-def test_closing_stops_the_timelapse_before_giving_the_camera_back(fast, controller):
+def test_closing_stops_the_series_before_giving_the_camera_back(fast, controller):
     # A frame thread that outlived the camera it captures with would be an
     # exception a second after a clean shutdown.
     control, device = controller
@@ -601,8 +663,8 @@ def test_closing_stops_the_timelapse_before_giving_the_camera_back(fast, control
     assert wait_until(lambda: len(frames) >= 1)
     control.close()
     assert device.closed is True
-    assert control.timelapse.active is False
-    assert not any(thread.name == "timelapse" for thread in threading.enumerate())
+    assert control.mission_photos.active is False
+    assert not any(thread.name == "mission-photos" for thread in threading.enumerate())
 
 
 def test_the_photos_directory_defaults_to_the_configured_one(tmp_path):
@@ -621,7 +683,7 @@ def test_stopping_a_run_that_already_ended_itself_reports_nothing_to_stop(fast, 
     frames, finished = [], []
     start(control, frames, finished)
     assert wait_until(lambda: finished)
-    assert control.stop_timelapse() is False
+    assert control.stop_mission_photos() is False
 
 
 # ── the free-space floor ────────────────────────────────────────────────────
@@ -674,7 +736,7 @@ def test_a_refused_capture_leaves_nothing_behind(controller, free_space, tmp_pat
     assert device.captures == []
 
 
-def test_a_timelapse_stops_itself_rather_than_refusing_every_frame(fast, controller, free_space):
+def test_a_series_stops_itself_rather_than_refusing_every_frame(fast, controller, free_space):
     # The same argument as the consecutive-failure ceiling: a loop that fails
     # forever is a log-flooding machine, and the card will not empty itself —
     # PAYLOAD deletes nothing.
@@ -686,26 +748,26 @@ def test_a_timelapse_stops_itself_rather_than_refusing_every_frame(fast, control
     free_space(3)
     assert wait_until(lambda: finished)
     assert "MB floor" in finished[0]
-    assert control.timelapse.active is False
+    assert control.mission_photos.active is False
     # And it is not counted as a camera fault: the camera is fine, the card is
     # not, which is why StorageFull is its own exception.
     assert "in a row" not in finished[0]
 
 
-def test_a_stopped_timelapse_is_distinguishable_from_one_never_started(
+def test_a_stopped_series_is_distinguishable_from_one_never_started(
     fast, controller, free_space
 ):
     # A satellite that has stopped taking photos should say why on the topic
     # that describes the payload, not only in a log nobody is reading.
     control, _ = controller
-    assert control.timelapse.reason is None  # never started
+    assert control.mission_photos.reason is None  # never started
     free_space(config.PHOTOS_MIN_FREE_MB + 10)
     frames, finished = [], []
     start(control, frames, finished)
     assert wait_until(lambda: len(frames) >= 1)
     free_space(3)
     assert wait_until(lambda: finished)
-    assert "MB floor" in control.timelapse.reason
+    assert "MB floor" in control.mission_photos.reason
 
 
 def test_free_space_is_read_from_the_filesystem_the_photos_will_land_on(controller, tmp_path):

@@ -5,7 +5,7 @@ The unit tests call ``tick()`` and hand the service messages directly. Here
 ``picamera2`` — so what is checked is the part no single layer can show on its
 own: that the registers measured on the bench arrive on MQTT as the documented
 payload, that OBC's DEPLOY gets its evidence without waiting out a 60 s cadence,
-and that a timelapse started over MQTT stops when the process does.
+and that a mission's own photography stops when the process does.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from cubesat.common import config
 from cubesat.common.topics import TOPICS
 from cubesat.hal.rpi.camera import PiCamera
 from cubesat.hal.rpi.sen0501 import SEN0501
+from cubesat.payload import camera as camera_module
 from cubesat.payload.service import PayloadService
 from tests.unit.hal.test_camera import FakePicamera2, FakeTransform
 from tests.unit.hal.test_sen0501 import FakeSen0501Bus
@@ -44,7 +45,11 @@ def build(service_factory, monkeypatch, tmp_path, *, registers=None):
     monkeypatch.setitem(sys.modules, "picamera2", picamera2_module)
     monkeypatch.setitem(sys.modules, "libcamera", libcamera_module)
     monkeypatch.setattr(config, "PHOTOS_DIR", tmp_path / "photos")
-    monkeypatch.setattr(config, "MIN_TIMELAPSE_INTERVAL_SEC", 0.001)
+    scratch = tmp_path / "run" / "photo"
+    scratch.mkdir(parents=True)
+    monkeypatch.setattr(config, "PHOTO_SCRATCH_DIR", scratch)
+    monkeypatch.setattr(camera_module, "MIN_MISSION_INTERVAL_SEC", 0.001)
+    monkeypatch.setattr(config, "PHOTO_MISSION_INTERVAL_SEC", 0.01)
     bus = FakeSen0501Bus(registers)
     service, client = service_factory(
         PayloadService, sensor=SEN0501(bus=bus), camera=PiCamera()
@@ -116,7 +121,7 @@ def test_the_first_status_arrives_without_waiting_a_whole_cadence(
     # And it says where the photos would go and whether there is room for them,
     # read from the real filesystem this test is running on.
     assert status[1]["storage"]["blocked"] is False
-    assert status[1]["timelapse"] == {
+    assert status[1]["mission_photos"] == {
         "active": False, "interval_sec": None, "frames": 0, "reason": None
     }
 
@@ -163,27 +168,29 @@ def test_a_ground_photo_request_travels_from_the_broker_to_the_disk_and_back(
     service.on_stop()
 
 
-def test_a_timelapse_started_over_mqtt_publishes_no_pixels_and_stops_with_the_service(
+def test_an_open_mission_photographs_itself_and_stops_with_the_service(
     service_factory, monkeypatch, tmp_path
 ):
-    # The asymmetry that keeps a long run off the broker, checked where it
-    # actually matters: through the run loop, with the real capture path.
+    # The asymmetry that keeps a mission's frames off the broker, checked where
+    # it actually matters: through the run loop, with the real capture path.
+    # Started by DHS reporting a mission rather than by a command — there is no
+    # command any more.
     monkeypatch.setattr(config, "HEARTBEAT_INTERVAL_SEC", 5.0)
     service, client, _ = build(service_factory, monkeypatch, tmp_path)
     client.connect_ok()
-    client.deliver(TOPICS["obc_status"], {"status": "NOMINAL", "profile": "DEMO"})
+    client.deliver(TOPICS["obc_status"], {"status": "NOMINAL", "profile": "FLIGHT"})
     monkeypatch.setattr(type(service), "interval", property(lambda _self: 60.0))
 
     thread = threading.Thread(target=service.run, daemon=True)
     thread.start()
-    client.deliver(
-        TOPICS["command"], {"command": "start_timelapse", "params": {"interval_sec": 0.01}}
-    )
+    client.deliver(TOPICS["dhs_status"], {"mission": {"id": 7}})
     deadline = time.monotonic() + 3.0
     frames: list[dict] = []
     while time.monotonic() < deadline and len(frames) < 3:
         frames = [
-            p for p in client.payloads(TOPICS["payload_photo"]) if p.get("kind") == "timelapse"
+            p
+            for p in client.payloads(TOPICS["payload_photo"])
+            if p.get("kind") == "mission_frame"
         ]
         time.sleep(0.005)
     service.stop()
@@ -192,8 +199,10 @@ def test_a_timelapse_started_over_mqtt_publishes_no_pixels_and_stops_with_the_se
     assert len(frames) >= 3
     for frame in frames:
         assert "photo_base64" not in frame
-        assert (tmp_path / "photos" / "unfiled" / frame["file"]).exists()
+        # Filed under the mission, on the card, which is where a gallery reads
+        # them from — and the reason the pixels are not on the bus.
+        assert (tmp_path / "photos" / "7" / frame["file"]).exists()
     assert [frame["sequence"] for frame in frames[:3]] == [1, 2, 3]
     # The frame thread does not outlive the service, and the camera went back.
-    assert not any(t.name == "timelapse" for t in threading.enumerate())
+    assert not any(t.name == "mission-photos" for t in threading.enumerate())
     assert FakePicamera2.instances[0].closed is True

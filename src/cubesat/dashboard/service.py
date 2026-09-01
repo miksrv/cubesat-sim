@@ -10,8 +10,15 @@ One codebase for both, and no PHP or MySQL on a Pi on battery.
 own WebSocket listener and get every retained message the moment they connect —
 so there is no MQTT-to-WebSocket bridge here to write, to test, or to keep in
 step with ``topics.py``. What is left for HTTP is what the broker cannot answer:
-the archive, and the host's own CPU, RAM and disk, which live only in rows DHS
-wrote down.
+a *history*, and the host's own CPU, RAM and disk, which appear in no status
+message at all.
+
+**Since 2026-09-01 that history has two homes** (Q7: only ``FLIGHT`` and ``DIAG``
+record). While a mission is open it is on the card, and ``/api/telemetry``
+reads that mission back. In ``DEMO`` and ``EXPO`` nothing is written, so the
+rows DHS publishes are kept in a bounded ring in this process instead — see
+``live.py`` for why the ring is here and not in the browser. Either way the
+endpoint answers "the current session" and cannot return another one's rows.
 
 **It publishes no status of its own.** Every other service has one because OBC's
 ``DEPLOY`` is waiting for evidence that a device answered; this one owns no
@@ -43,6 +50,7 @@ from cubesat.common.service import Service
 from cubesat.common.topics import TOPICS
 from cubesat.dashboard.archive import Archive
 from cubesat.dashboard.http import DashboardServer
+from cubesat.dashboard.live import LiveHistory
 
 #: Bound to every interface on purpose. In ``EXPO`` the satellite *is* the
 #: network and the audience is on it; in ``DEMO`` it is a phone on the LAN. The
@@ -57,15 +65,18 @@ SHUTDOWN_TIMEOUT_SEC = 5.0
 
 class DashboardService(Service):
     name = "dashboard"
-    #: A liveness tick and nothing else — the archive is read on request and the
-    #: live data never passes through this process at all.
+    #: A liveness tick and nothing else: the archive is read on request, and the
+    #: ring below fills from the broker thread. Nothing here is periodic.
     cadence_key = "dashboard"
     #: Not needed: this service does not act on the mission state, and reading
     #: it would invite the first "and while we're here" that turns a viewer into
     #: a participant.
     track_mission_state = False
-    #: For the database path alone. See the module docstring.
-    subscriptions = ("dhs_status",)
+    #: ``dhs_status`` for the database path and the open mission's id;
+    #: ``dhs_telemetry`` for the ring. Both come from the recorder because both
+    #: are the recorder's business — this service only decides which of the two
+    #: places a session's rows are currently in.
+    subscriptions = ("dhs_status", "dhs_telemetry")
 
     def __init__(
         self,
@@ -87,6 +98,14 @@ class DashboardService(Service):
         # a swap is how a request ends up reading a closed connection.
         self._lock = threading.RLock()
         self._archive = Archive(self._default_db, log=self.log)
+        #: The charts' history in the profiles that record nothing. Holds its own
+        #: lock: the broker thread fills it while request threads read it.
+        self._live = LiveHistory(config.DASHBOARD_LIVE_ROWS)
+        #: The mission /api/telemetry answers from, mirrored onto the server so a
+        #: request thread does not have to reach back into this object. Kept here
+        #: as well because a retained ``dhs_status`` can arrive before the socket
+        #: is bound.
+        self._mission_id: int | None = None
         self._server: DashboardServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -134,8 +153,15 @@ class DashboardService(Service):
     # ── inbound ─────────────────────────────────────────────────────────────
 
     def on_message(self, topic: str, data: dict[str, Any]) -> None:
+        if topic == TOPICS["dhs_telemetry"]:
+            # One assembled row, exactly as DHS would have written it. Kept
+            # whether or not it was written: in DEMO and EXPO it was not, and
+            # this ring is then the only history the charts have.
+            self._live.offer(data.get("row"))
+            return
         if topic != TOPICS["dhs_status"]:
             return
+        self._follow_mission(data)
         raw = data.get("database")
         # Null while no mission is open. The archive of past trips is still
         # worth serving then, so this falls back rather than closing.
@@ -149,6 +175,28 @@ class DashboardService(Service):
             if self._server is not None:
                 self._server.archive = self._archive
 
+    def _follow_mission(self, data: dict[str, Any]) -> None:
+        """Note which mission is open, so ``/api/telemetry`` can be filtered by it.
+
+        A null mission is the normal case now rather than an edge one: ``DEMO``
+        and ``EXPO`` never open one, and that is precisely when the ring is what
+        gets served.
+        """
+        mission = data.get("mission")
+        mission_id = mission.get("id") if isinstance(mission, dict) else None
+        mission_id = mission_id if isinstance(mission_id, int) else None
+        with self._lock:
+            if mission_id == self._mission_id:
+                return
+            self._mission_id = mission_id
+            if self._server is not None:
+                self._server.session_mission_id = mission_id
+        self.log.info(
+            "telemetry now served from %s",
+            f"mission {mission_id} in the database" if mission_id is not None
+            else "the in-memory ring (no mission is being recorded)",
+        )
+
     # ── the server ──────────────────────────────────────────────────────────
 
     def _serve(self) -> None:
@@ -156,6 +204,7 @@ class DashboardService(Service):
             server = DashboardServer(
                 (BIND_HOST, self._port),
                 archive=self._archive,
+                live=self._live,
                 static_root=self._static_root,
                 photos_root=self._photos_root,
             )
@@ -169,6 +218,8 @@ class DashboardService(Service):
             )
             return
         self._server = server
+        # A retained dhs_status may have arrived before the socket was bound.
+        server.session_mission_id = self._mission_id
         self._thread = threading.Thread(target=server.serve_forever, name="dashboard-http",
                                         daemon=True)
         self._thread.start()

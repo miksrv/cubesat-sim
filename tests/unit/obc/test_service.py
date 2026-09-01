@@ -1,3 +1,5 @@
+import dataclasses
+
 import pytest
 
 from cubesat.common import profiles
@@ -48,6 +50,24 @@ class FakeBus:
 @pytest.fixture
 def clock():
     return Clock()
+
+
+def pinned_power(cfg, profile, *, governor, cadence_scale):
+    """Give one profile the power knobs a test needs, in place of the shipped ones.
+
+    Both values below used to be read straight out of ``config/profiles.yaml``,
+    where ``DIAG`` carried ``performance`` and ``0.2``. On 2026-09-01 DIAG became
+    a rehearsal of FLIGHT and legitimately went to ``ondemand`` and ``1.0``,
+    which left two tests asserting the defaults and therefore proving nothing:
+    a delivery mechanism that carries 1.0 correctly would carry a broken 1.0
+    just as well. The knobs a test needs belong to the test.
+    """
+    spec = cfg.get(profile)
+    cfg.profiles[profile] = dataclasses.replace(
+        spec,
+        power=dataclasses.replace(spec.power, governor=governor, cadence_scale=cadence_scale),
+    )
+    return cfg
 
 
 @pytest.fixture
@@ -297,10 +317,16 @@ def test_a_profile_running_before_obc_restarted_is_adopted(obc):
     assert service.profile_machine.achieved is Profile.EXPO
 
 
-def test_the_profile_cadence_scale_reaches_every_service_through_the_status(obc):
-    # DIAG polls everything five times faster with one number in profiles.yaml
-    # rather than a second copy of the cadence table.
-    service, client, _ = obc
+def test_the_profile_cadence_scale_reaches_every_service_through_the_status(
+    service_factory, clock
+):
+    # One number in a profile reaches every subsystem through obc_status rather
+    # than through a second copy of the cadence table. The scale is pinned here,
+    # not read from the shipped profiles — see pinned_power.
+    cfg = pinned_power(profiles.load(), Profile.DIAG, governor="ondemand", cadence_scale=0.2)
+    service, client = service_factory(
+        ObcService, profiles=cfg, bus=FakeBus(), clock=clock, wall_clock=clock
+    )
     service.on_start()
     host_status(client, "DIAG")
     assert status(client)["cadence_scale"] == 0.2
@@ -876,10 +902,15 @@ def test_low_power_asks_hostd_to_drop_the_cpu_governor(obc):
     assert governors(client) == ["powersave"]
 
 
-def test_recovery_restores_the_profile_s_own_governor(obc):
-    # DIAG deliberately runs `performance`; restoring a hardcoded `ondemand` here
-    # would quietly undo the profile that asked for it.
-    service, client, _ = obc
+def test_recovery_restores_the_profile_s_own_governor(service_factory, clock):
+    # A profile that asks for something other than `ondemand` must get it back
+    # after LOW_POWER, rather than the hardcoded default: restoring `ondemand`
+    # would quietly undo the profile. `performance` is pinned by the test — no
+    # shipped profile has to keep asking for it for this to stay a real check.
+    cfg = pinned_power(profiles.load(), Profile.DIAG, governor="performance", cadence_scale=1.0)
+    service, client = service_factory(
+        ObcService, profiles=cfg, bus=FakeBus(), clock=clock, wall_clock=clock
+    )
     service.on_start()
     host_status(client, "DIAG")
     report_in(client, "adcs", "payload", "dhs")

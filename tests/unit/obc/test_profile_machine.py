@@ -1,7 +1,7 @@
 import pytest
 
 from cubesat.common import profiles
-from cubesat.common.states import Persistence, Profile
+from cubesat.common.states import Profile
 from cubesat.obc.profile_machine import ProfileMachine
 
 
@@ -88,7 +88,12 @@ def test_the_achieved_profile_is_learned_only_from_host_status(machine):
     assert machine.achieved is None
     update = machine.observe(host_status("EXPO"))
     assert update.achieved is Profile.EXPO
-    assert machine.spec.persistence is Persistence.MISSION_DB
+    # The spec that comes with it is the achieved profile's own, asserted by
+    # identity rather than by one of its values: which knobs EXPO sets is the
+    # profile file's business and legitimately changes (its persistence did, on
+    # 2026-09-01), while "the spec follows the achieved profile" is this
+    # machine's business and must not.
+    assert machine.spec.name is Profile.EXPO
 
 
 def test_a_profile_nobody_asked_for_is_adopted_as_the_truth(machine):

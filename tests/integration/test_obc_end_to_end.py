@@ -14,7 +14,7 @@ import threading
 import time
 
 from cubesat.common import config, profiles
-from cubesat.common.states import MissionState
+from cubesat.common.states import MissionState, Profile
 from cubesat.common.topics import TOPICS
 from cubesat.obc import deploy
 from cubesat.obc import service as obc_service
@@ -184,7 +184,11 @@ def test_a_profile_switch_from_the_ground_brings_the_satellite_up(
     # 5. The one retained message carries everything DHS needs to open a mission.
     status = client.payloads(TOPICS["obc_status"])[-1]
     assert status["profile"] == "EXPO"
-    assert status["persistence"] == "mission_db"
+    # Read from the profile rather than spelled out: what EXPO permits is the
+    # profile file's decision and legitimately changed (to `none`, on
+    # 2026-09-01, when recording became FLIGHT's privilege). What this test is
+    # for is that the value reaches DHS on this one retained message.
+    assert status["persistence"] == profiles.load().get(Profile.EXPO).persistence.value
     assert status["cadence_scale"] == 1.0
 
     # 6. Science on and off, from the ground.

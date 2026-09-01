@@ -247,13 +247,13 @@ def test_a_ground_command_cannot_switch_on_a_channel_the_profile_forbids(
     service_factory, monkeypatch
 ):
     # The profile is the envelope; a command inside it must not be able to widen
-    # it. DIAG forbids LoRa outright — the bench has the LAN and this profile
-    # transmits nothing — so the radio cannot carry the command that would
+    # it. MAINTENANCE forbids LoRa outright — the serial port is being used to
+    # reflash the radio — so the radio cannot carry the command that would
     # reopen it, and the request arrives over MQTT as a laptop would send it.
     radio = MockRadio()
     service, client = build(service_factory, monkeypatch, radio=radio)
     thread = start(service)
-    announce(client, profile=Profile.DIAG)
+    announce(client, profile=Profile.MAINTENANCE)
     client.deliver(
         TOPICS["command"],
         {"command": "set_comms_config", "params": {"lora_enabled": True}},
@@ -442,10 +442,13 @@ def test_a_clean_shutdown_gives_the_serial_port_back(service_factory, monkeypatc
     assert closed == [True]
 
 
-@pytest.mark.parametrize("profile", [Profile.DIAG, Profile.MAINTENANCE])
+@pytest.mark.parametrize("profile", [Profile.MAINTENANCE])
 def test_a_profile_with_no_lora_transmits_nothing_at_all(service_factory, monkeypatch, profile):
-    # DIAG and MAINTENANCE are the two deliberately deaf profiles — everywhere
-    # else the radio at least listens.
+    # MAINTENANCE is the one deliberately deaf profile — everywhere else the
+    # radio at least listens. DIAG was the second until it became a rehearsal of
+    # FLIGHT (2026-09-01), where the beacon is part of what is being rehearsed.
+    # Parametrised still, because the property is about the class of profile and
+    # the next one added belongs here rather than in a second copy of the test.
     radio = MockRadio()
     service, client = build(service_factory, monkeypatch, radio=radio)
     thread = start(service)

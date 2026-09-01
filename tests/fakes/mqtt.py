@@ -85,7 +85,15 @@ class FakeMqttClient:
         self.on_message(self, None, _Message(topic, body))
 
     def payloads(self, topic: str) -> list[dict[str, Any]]:
-        return [p.data for p in self.published if p.topic == topic]
+        """Every message published on ``topic``, decoded.
+
+        An empty payload is skipped rather than decoded: in MQTT that is not a
+        message but the instruction to forget a retained one, and PAYLOAD sends
+        exactly that to clear the last photograph when it starts. Handing a
+        caller a JSONDecodeError for it would make every assertion about a topic
+        depend on whether anything had ever been cleared on it.
+        """
+        return [p.data for p in self.published if p.topic == topic and p.payload]
 
     def last(self, topic: str) -> dict[str, Any]:
         return self.payloads(topic)[-1]

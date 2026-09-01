@@ -178,8 +178,20 @@ def test_the_status_carries_the_mission_the_photos_are_being_filed_under(payload
     service, client, _, _ = payload
     client.deliver(TOPICS["dhs_status"], {"mission": {"id": 42}})
     status = client.last(TOPICS["payload_status"])
-    assert status["mission_id"] == "42"
+    assert status["mission_id"] == 42
     assert status["photo_dir"] == str(tmp_path / "photos" / "42")
+
+
+def test_a_mission_id_that_is_not_an_integer_reads_as_no_mission(payload, tmp_path):
+    # Withhold rather than fabricate: the id is a row id and every topic
+    # carries it as an integer. Anything else is treated as no open mission —
+    # photos go to unfiled/ — not coerced into a directory name.
+    service, client, _, _ = payload
+    for wrong in ("42", True, 4.2):
+        client.deliver(TOPICS["dhs_status"], {"mission": {"id": 7}})
+        client.deliver(TOPICS["dhs_status"], {"mission": {"id": wrong}})
+        status = client.last(TOPICS["payload_status"])
+        assert status["mission_id"] is None
 
 
 def test_on_start_says_which_device_answered(payload, caplog):

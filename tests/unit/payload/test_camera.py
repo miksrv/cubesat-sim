@@ -165,7 +165,7 @@ def test_an_unknown_state_refuses_rather_than_assumes():
 
 def test_photos_are_filed_under_their_mission(controller, tmp_path):
     control, _ = controller
-    capture = control.capture(nominal(mission_id="42"))
+    capture = control.capture(nominal(mission_id=42))
     assert capture.photo.path.parent == tmp_path / "photos" / "42"
     assert capture.photo.path.exists()
 
@@ -190,7 +190,7 @@ def test_the_unfiled_warning_is_said_once_and_then_re_armed(controller, caplog):
         control.capture(nominal())
         control.capture(nominal())
         assert caplog.text.count("no mission is open") == 1
-        control.capture(nominal(mission_id="42"))
+        control.capture(nominal(mission_id=42))
         control.capture(nominal())
     assert caplog.text.count("no mission is open") == 2
 
@@ -205,8 +205,8 @@ def test_asking_where_a_mission_files_creates_nothing(controller, tmp_path):
 
 def test_a_single_photo_and_a_timelapse_frame_are_named_apart(controller):
     control, _ = controller
-    photo = control.capture(nominal(mission_id="42"))
-    frame = control.capture(nominal(mission_id="42"), kind=KIND_TIMELAPSE, sequence=7)
+    photo = control.capture(nominal(mission_id=42))
+    frame = control.capture(nominal(mission_id=42), kind=KIND_TIMELAPSE, sequence=7)
     assert (photo.kind, frame.kind) == (KIND_PHOTO, KIND_TIMELAPSE)
     assert photo.photo.path.name.startswith("photo_")
     assert frame.photo.path.name.startswith("timelapse_")
@@ -228,7 +228,7 @@ def test_the_overlay_is_a_sidecar_file_and_not_ink_on_the_photo(controller):
     # defaced with text that cannot be removed.
     control, device = controller
     capture = control.capture(
-        nominal(mission_id="42", position=BENCH_POSITION, overlay=True)
+        nominal(mission_id=42, position=BENCH_POSITION, overlay=True)
     )
     sidecar = capture.photo.path.with_suffix(".json")
     assert sidecar.exists()
@@ -239,10 +239,10 @@ def test_the_overlay_is_a_sidecar_file_and_not_ink_on_the_photo(controller):
 def test_the_sidecar_records_the_moment_the_photo_belongs_to(controller):
     control, _ = controller
     capture = control.capture(
-        nominal(mission_id="42", position=BENCH_POSITION, overlay=True)
+        nominal(mission_id=42, position=BENCH_POSITION, overlay=True)
     )
     sidecar = capture.sidecar
-    assert sidecar["mission_id"] == "42"
+    assert sidecar["mission_id"] == 42
     assert sidecar["mission_state"] == "NOMINAL"
     assert sidecar["position"]["lat"] == 37.676896
     assert sidecar["captured_at"].endswith("Z")
@@ -259,13 +259,13 @@ def test_the_recorded_position_carries_its_own_age(controller):
 
 def test_a_photo_taken_with_no_fix_still_gets_its_sidecar(controller):
     control, _ = controller
-    capture = control.capture(nominal(mission_id="42", overlay=True))
+    capture = control.capture(nominal(mission_id=42, overlay=True))
     assert capture.sidecar["position"] is None
 
 
 def test_nothing_is_written_beside_a_photo_that_asked_for_no_overlay(controller):
     control, _ = controller
-    capture = control.capture(nominal(mission_id="42"))
+    capture = control.capture(nominal(mission_id=42))
     assert capture.sidecar is None
     assert not capture.photo.path.with_suffix(".json").exists()
 
@@ -274,7 +274,7 @@ def test_the_overlay_text_still_reaches_the_driver(controller):
     # The driver files it rather than drawing it, but it is passed down so that
     # a driver which can draw needs no new plumbing here.
     control, device = controller
-    control.capture(nominal(mission_id="42", overlay=True))
+    control.capture(nominal(mission_id=42, overlay=True))
     assert "NOMINAL" in device.overlays[-1]
     assert "mission 42" in device.overlays[-1]
 
@@ -297,7 +297,7 @@ def test_no_sidecar_survives_a_capture_that_failed(controller, tmp_path):
     control, device = controller
     device.fail = True
     with pytest.raises(OSError):
-        control.capture(nominal(mission_id="42", overlay=True))
+        control.capture(nominal(mission_id=42, overlay=True))
     assert list((tmp_path / "photos" / "42").glob("*.json")) == []
 
 
@@ -310,7 +310,7 @@ def test_two_captures_never_run_at_the_same_time(controller):
     control, device = controller
     device.delay = 0.05
     threads = [
-        threading.Thread(target=lambda: control.capture(nominal(mission_id="42")))
+        threading.Thread(target=lambda: control.capture(nominal(mission_id=42)))
         for _ in range(4)
     ]
     for thread in threads:
@@ -345,7 +345,7 @@ def test_an_idle_camera_is_given_back_after_the_window(idle_window, controller):
     # satellite that photographs on demand — so the sensor goes back by itself.
     idle_window(0.02)
     control, device = controller
-    control.capture(nominal(mission_id="42"))
+    control.capture(nominal(mission_id=42))
     assert device.closed is False
     assert wait_until(lambda: device.closed)
 
@@ -364,7 +364,7 @@ def test_a_failed_capture_still_arms_the_idle_close(idle_window, controller):
     control, device = controller
     device.fail = True
     with pytest.raises(OSError):
-        control.capture(nominal(mission_id="42"))
+        control.capture(nominal(mission_id=42))
     assert wait_until(lambda: device.closed)
 
 
@@ -374,7 +374,7 @@ def test_a_stale_timer_declines_to_close_a_camera_that_was_just_used(idle_window
     # after the capture that re-armed it.
     idle_window(0)  # no real timers: the race is exercised by hand
     control, device = controller
-    control.capture(nominal(mission_id="42"))
+    control.capture(nominal(mission_id=42))
     stale = control._idle_generation - 1
     control._idle_close(stale)
     assert device.closed is False
@@ -385,7 +385,7 @@ def test_a_stale_timer_declines_to_close_a_camera_that_was_just_used(idle_window
 def test_a_zero_window_keeps_the_camera_open_forever(idle_window, controller):
     idle_window(0)
     control, device = controller
-    control.capture(nominal(mission_id="42"))
+    control.capture(nominal(mission_id=42))
     assert control._idle_timer is None
     assert device.closed is False
 
@@ -393,7 +393,7 @@ def test_a_zero_window_keeps_the_camera_open_forever(idle_window, controller):
 def test_closing_cancels_the_pending_idle_close(idle_window, controller):
     idle_window(60.0)
     control, device = controller
-    control.capture(nominal(mission_id="42"))
+    control.capture(nominal(mission_id=42))
     assert control._idle_timer is not None
     control.close()
     assert control._idle_timer is None
@@ -406,7 +406,7 @@ def test_closing_cancels_the_pending_idle_close(idle_window, controller):
 def start(control, frames, finished, interval=0.01, context=None):
     return control.start_timelapse(
         interval,
-        context=context or (lambda: nominal(mission_id="42")),
+        context=context or (lambda: nominal(mission_id=42)),
         on_frame=frames.append,
         on_finish=finished.append,
     )
@@ -436,12 +436,12 @@ def test_every_frame_asks_again_where_the_satellite_is(fast, controller):
     # A timelapse spans hours: the mission, the state and the position all move
     # under it, and each frame should record the truth of its own moment.
     control, _ = controller
-    missions = iter(["1", "2", "3", "4", "5", "6", "7", "8"])
+    missions = iter([1, 2, 3, 4, 5, 6, 7, 8])
     frames, finished = [], []
     start(control, frames, finished, context=lambda: nominal(mission_id=next(missions)))
     assert wait_until(lambda: len(frames) >= 3)
     control.stop_timelapse()
-    assert [frame.mission_id for frame in frames[:3]] == ["1", "2", "3"]
+    assert [frame.mission_id for frame in frames[:3]] == [1, 2, 3]
 
 
 def test_a_timelapse_stops_itself_when_the_state_no_longer_permits_it(fast, controller):
@@ -451,7 +451,7 @@ def test_a_timelapse_stops_itself_when_the_state_no_longer_permits_it(fast, cont
     state = MissionState.NOMINAL
 
     def context():
-        return CaptureContext(mission_id="42", state=state)
+        return CaptureContext(mission_id=42, state=state)
 
     frames, finished = [], []
     start(control, frames, finished, context=context)
@@ -508,7 +508,7 @@ def test_a_frame_that_could_not_be_published_stays_on_disk_and_the_run_goes_on(f
     finished: list[str] = []
     control.start_timelapse(
         0.01,
-        context=lambda: nominal(mission_id="42"),
+        context=lambda: nominal(mission_id=42),
         on_frame=explode,
         on_finish=finished.append,
     )
@@ -525,7 +525,7 @@ def test_a_finish_handler_that_raises_does_not_take_the_thread_down_untidily(fas
 
     control.start_timelapse(
         0.01,
-        context=lambda: nominal(mission_id="42"),
+        context=lambda: nominal(mission_id=42),
         on_frame=lambda _capture: None,
         on_finish=explode,
     )
@@ -609,7 +609,7 @@ def test_the_photos_directory_defaults_to_the_configured_one(tmp_path):
     from cubesat.common import config
 
     control = CameraController(FakeCamera())
-    assert control.path_for("42") == config.PHOTOS_DIR / "42"
+    assert control.path_for(42) == config.PHOTOS_DIR / "42"
 
 
 def test_stopping_a_run_that_already_ended_itself_reports_nothing_to_stop(fast, controller):
@@ -634,7 +634,7 @@ def test_a_capture_is_permitted_exactly_at_the_floor(controller, free_space):
     control, _ = controller
     free_space(config.PHOTOS_MIN_FREE_MB)
     assert control.storage().blocked is False
-    assert control.capture(nominal(mission_id="42")).photo.path.exists()
+    assert control.capture(nominal(mission_id=42)).photo.path.exists()
 
 
 def test_a_capture_is_refused_one_megabyte_below_the_floor(controller, free_space):
@@ -642,13 +642,13 @@ def test_a_capture_is_refused_one_megabyte_below_the_floor(controller, free_spac
     free_space(config.PHOTOS_MIN_FREE_MB - 1)
     assert control.storage().blocked is True
     with pytest.raises(StorageFull):
-        control.capture(nominal(mission_id="42"))
+        control.capture(nominal(mission_id=42))
 
 
 def test_a_capture_is_permitted_one_megabyte_above_the_floor(controller, free_space):
     control, device = controller
     free_space(config.PHOTOS_MIN_FREE_MB + 1)
-    control.capture(nominal(mission_id="42"))
+    control.capture(nominal(mission_id=42))
     assert len(device.captures) == 1
 
 
@@ -658,7 +658,7 @@ def test_the_refusal_says_how_much_room_is_left_and_what_the_floor_is(controller
     control, _ = controller
     free_space(12)
     with pytest.raises(StorageFull) as refused:
-        control.capture(nominal(mission_id="42"))
+        control.capture(nominal(mission_id=42))
     assert "12 MB free" in str(refused.value)
     assert f"{config.PHOTOS_MIN_FREE_MB} MB floor" in str(refused.value)
 
@@ -669,7 +669,7 @@ def test_a_refused_capture_leaves_nothing_behind(controller, free_space, tmp_pat
     control, device = controller
     free_space(0)
     with pytest.raises(StorageFull):
-        control.capture(nominal(mission_id="42"))
+        control.capture(nominal(mission_id=42))
     assert not (tmp_path / "photos").exists()
     assert device.captures == []
 
@@ -726,7 +726,7 @@ def test_an_unreadable_filesystem_does_not_cost_us_the_photo(controller, monkeyp
     control, device = controller
     monkeypatch.setattr(shutil, "disk_usage", explode)
     with caplog.at_level("WARNING"):
-        control.capture(nominal(mission_id="42"))
+        control.capture(nominal(mission_id=42))
     assert len(device.captures) == 1
     assert "unreadable" in caplog.text
 

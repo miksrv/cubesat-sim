@@ -111,7 +111,7 @@ class PayloadService(Service):
         self._readings = 0
         self._last_read: float | None = None
         #: From dhs_status. None until DHS opens a mission.
-        self._mission_id: str | None = None
+        self._mission_id: int | None = None
         #: The last GNSS sub-object that carried a fix, with its own timestamp.
         self._position: dict[str, Any] | None = None
 
@@ -237,14 +237,16 @@ class PayloadService(Service):
     def _on_dhs_status(self, data: dict[str, Any]) -> None:
         """Take the mission id from DHS, which owns it.
 
-        Retained, so it arrives on connect. The id is stringified because it is
-        about to become a directory name and DHS reports it as an integer row
-        id; keeping it a string here means one representation of it in the
-        filesystem, the payloads and the logs.
+        Retained, so it arrives on connect. Kept as the integer DHS reports —
+        the id is a row id, and every topic that names one (``dhs_status``,
+        ``comms_data``, and now the payload topics) carries the same type; it
+        becomes a directory name only at the filesystem boundary, in
+        ``CameraController.path_for``. An id that is not an integer is treated
+        as no mission rather than guessed at.
         """
         mission = data.get("mission")
         raw = mission.get("id") if isinstance(mission, dict) else None
-        mission_id = None if raw is None else str(raw)
+        mission_id = raw if isinstance(raw, int) and not isinstance(raw, bool) else None
         if mission_id == self._mission_id:
             return
         self.log.info("mission id %s -> %s", self._mission_id, mission_id)

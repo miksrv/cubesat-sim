@@ -149,7 +149,7 @@ class CaptureContext:
     moment.
     """
 
-    mission_id: str | None = None
+    mission_id: int | None = None
     state: MissionState | None = None
     #: The last known GNSS sub-object from ``adcs_status``, or None.
     position: dict[str, Any] | None = None
@@ -162,7 +162,7 @@ class Capture:
 
     photo: Photo
     kind: str
-    mission_id: str | None
+    mission_id: int | None
     #: The sidecar contents when one was written, else None.
     sidecar: dict[str, Any] | None = None
     #: 1-based, and only for timelapse frames.
@@ -309,11 +309,18 @@ class CameraController:
 
     # ── filing ──────────────────────────────────────────────────────────────
 
-    def path_for(self, mission_id: str | None) -> Path:
-        """Where this mission's photos go. Creates nothing — see below."""
-        return self._root / (UNFILED if mission_id is None else mission_id)
+    def path_for(self, mission_id: int | None) -> Path:
+        """Where this mission's photos go. Creates nothing — see below.
 
-    def directory_for(self, mission_id: str | None) -> Path:
+        This is the one place the id becomes a string: the directory name is
+        the filesystem's representation of it, while everywhere else — the
+        wire, the sidecar, the logs — carries the integer DHS reported. HOSTD's
+        photo-directory rule ("a run of digits") is matched by exactly this
+        rendering.
+        """
+        return self._root / (UNFILED if mission_id is None else str(mission_id))
+
+    def directory_for(self, mission_id: int | None) -> Path:
         """The same directory, brought into existence and complained about.
 
         Separate from ``path_for`` because publishing a status must not create

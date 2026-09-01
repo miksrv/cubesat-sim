@@ -67,13 +67,22 @@ profiles:
 
   # Showing the satellite off at home: full stack alongside the unrelated
   # services, home network up, dashboard reachable from a phone on the LAN.
+  #
+  # persistence: none, decided 2026-09-01 (Q7). A demonstration is not a
+  # mission: the satellite sits on a desk, so there is no track to record, and
+  # every showing used to leave a row in the same table as real trips — three of
+  # the first eleven missions came from demos. What the dashboard needs instead
+  # is served without touching the card: the live widgets read the broker, and
+  # the charts' history comes from DASHBOARD's in-memory ring, fed by
+  # cubesat/dhs/telemetry. DHS still runs — it assembles that row and it is the
+  # only source of the host's own CPU, RAM and disk.
   DEMO:
     mission: active
     network: { mode: client, advertise_mdns: true }
     external_units: start
     services: [adcs, payload, dhs, comms]
     dashboard: true
-    persistence: mission_db
+    persistence: none
     downlink: { lora: true }
     power: { governor: ondemand, cadence_scale: 1.0 }
     ttl_minutes: null
@@ -82,13 +91,15 @@ profiles:
   # usually on battery. LOW_POWER and SAFE deliberately keep the AP and the
   # dashboard: losing the display in front of an audience because the battery
   # hit 39% would be the wrong behaviour.
+  # persistence: none for the same reason as DEMO, and more so: a room full of
+  # visitors reloading the page must not each cost SD-card writes.
   EXPO:
     mission: active
     network: { mode: ap, ssid: cubesat, advertise_mdns: true }
     external_units: stop
     services: [adcs, payload, dhs, comms]
     dashboard: true
-    persistence: mission_db
+    persistence: none
     downlink: { lora: true }
     power: { governor: ondemand, cadence_scale: 1.0 }
     ttl_minutes: null
@@ -104,13 +115,27 @@ profiles:
     persistence: mission_db
     downlink: { lora: true }
     power: { governor: powersave, cadence_scale: 1.0 }
-    timelapse: false          # opt-in: costs battery and card space
     ttl_minutes: 600          # ~a working day, then fall back to HOSTED
 
-  # Bench work after re-assembly or a hardware swap. Everything polled fast,
-  # nothing written to the mission database, nothing sent anywhere. COMMS runs
-  # so the radio's presence is part of the DEPLOY evidence — but deaf and
-  # silent (downlink false): the bench has the LAN, and DIAG transmits nothing.
+  # FLIGHT, rehearsed on the desk. Redefined 2026-09-01: this profile used to
+  # mean "everything polled fast after a re-assembly", and that job turned out
+  # to belong elsewhere — the I2C sweep and the self-test report are what DEPLOY
+  # already does on every ascent, in every profile.
+  #
+  # What has no other home is the question "will the trip I am about to take
+  # actually be recorded": FLIGHT takes Wi-Fi down, so the one profile whose
+  # recording matters most is the one whose recording cannot be watched. DIAG is
+  # FLIGHT with the network and the dashboard kept — same cadences, same radio,
+  # same automatic photography, mission written by the same code through the same
+  # migrations — into diag.db rather than comms.db, so a rehearsal never lands in
+  # the archive of real trips.
+  #
+  # cadence_scale is 1.0, not the 0.2 this profile used to carry: a rehearsal at
+  # five times the real rate rehearses something else, and 10 Hz on a bus clamped
+  # to 10 kHz was a standing question of its own.
+  #
+  # downlink.lora is true for the same reason the dashboard is: the beacon and
+  # the uplink are exactly what FLIGHT cannot show you.
   DIAG:
     mission: active
     network: { mode: client, advertise_mdns: true }
@@ -118,8 +143,8 @@ profiles:
     services: [adcs, payload, dhs, comms]
     dashboard: true
     persistence: diag_db
-    downlink: { lora: false }
-    power: { governor: performance, cadence_scale: 0.2 }
+    downlink: { lora: true }
+    power: { governor: ondemand, cadence_scale: 1.0 }
     ttl_minutes: 120
 
   # apt upgrade, git pull, reflashing the radio. Nothing of ours writes to the

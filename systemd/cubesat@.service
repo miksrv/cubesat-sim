@@ -15,27 +15,41 @@ PartOf=cubesat.target
 
 [Service]
 Type=simple
-User=mik
-Group=mik
+# A dedicated service account, not a human one: flight software has no business
+# running with a person's login, and the checkout lives outside anyone's home so
+# that ProtectHome can be absolute below.
+User=cubesat
+Group=cubesat
 # I2C, GPIO and the camera; the serial group is for the Meshtastic node.
 SupplementaryGroups=i2c gpio video dialout
-WorkingDirectory=/home/mik/cubesat-sim
-ExecStart=/home/mik/cubesat-sim/venv/bin/python -m cubesat.%i
+WorkingDirectory=/opt/cubesat-sim
+ExecStart=/opt/cubesat-sim/venv/bin/python -m cubesat.%i
 Restart=always
 RestartSec=5
 
-# systemd creates and owns these, so nothing in the code ever mkdirs a system
-# path: /var/lib/cubesat (database, photos), /run/cubesat (bus lock, socket),
-# /var/log/cubesat (rotating logs).
-StateDirectory=cubesat
-RuntimeDirectory=cubesat
-RuntimeDirectoryPreserve=yes
-LogsDirectory=cubesat
+# lgpio drops a notification FIFO (.lgd-nfy*) into its working directory unless
+# LG_WD names somewhere else — and the working directory here is a checkout the
+# service may not write. Without this, EPS logs "xCreatePipe: Can't set
+# permissions ... Read-only file system" and only keeps working while an old
+# FIFO happens to survive from an earlier run; delete that file and the PLD pin
+# stops being readable, taking external_power — and with it the whole
+# suppression of the power-driven descents — down with it.
+Environment=LG_WD=/run/cubesat
+
+# The three runtime directories are created by config/tmpfiles.d/cubesat.conf,
+# NOT by StateDirectory/LogsDirectory/RuntimeDirectory. Those re-chown the tree
+# to the starting unit's own User on every start, and cubesat-hostd is root over
+# the same paths — so ownership followed whoever restarted last. The file there
+# carries the full account. ReadWritePaths is what re-opens them for writing
+# under ProtectSystem=strict.
+ReadWritePaths=/var/lib/cubesat /var/log/cubesat /run/cubesat
 
 # Unprivileged: only HOSTD may touch the host.
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=read-only
+# Absolute rather than read-only: nothing this service needs lives in a home
+# directory any more, so there is no reason for it to see one.
+ProtectHome=yes
 PrivateTmp=yes
 
 [Install]

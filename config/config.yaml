@@ -137,28 +137,59 @@ retention:
   # satellite left on a windowsill overnight reports a walk it never took.
   min_segment_m: 5.0
 
+dashboard:
+  # How many telemetry rows the dashboard keeps in memory for its charts.
+  #
+  # This is the history in DEMO and EXPO, which deliberately write nothing to
+  # the card (see profiles.yaml): DHS publishes each assembled row on
+  # cubesat/dhs/telemetry and the service keeps the last this many. At the 30 s
+  # NOMINAL cadence 720 rows is about six hours — longer than any demonstration,
+  # and a few megabytes of RAM on a machine that has gigabytes.
+  #
+  # It is not an archive: it starts empty on every service start and dies with
+  # the process. A recorded mission is read from SQLite instead, and while one
+  # is open — FLIGHT and DIAG — /api/telemetry serves that mission rather than
+  # this ring, because the database survives a restart of the dashboard and the
+  # ring does not.
+  live_history_rows: 720
+
 photos:
   # The camera is the only unbounded writer on this satellite: telemetry rows are
-  # small and bounded by a retention horizon, while a timelapse has neither. Below
-  # this much free space PAYLOAD refuses to capture and stops a running timelapse,
-  # because the next write to fail on a full card is the telemetry row the mission
-  # exists to record. It never deletes anything — retention is DHS's job.
+  # small and bounded by a retention horizon, while a mission's photographs are
+  # bounded only by how long the trip lasts. Below this much free space PAYLOAD
+  # refuses to capture and stops the running series, because the next write to
+  # fail on a full card is the telemetry row the mission exists to record. It
+  # never deletes anything on the card — retention is DHS's job.
   min_free_mb: 512
+
+  # How often an open mission photographs by itself, in seconds.
+  #
+  # There is no take-a-timelapse command any more (decided 2026-09-01): a
+  # recorded mission is a trip, a trip wants pictures along the way, and nobody
+  # was going to remember to ask for them before walking out of the house. So
+  # frames are taken on this cadence for as long as a mission is open, and they
+  # stop when it closes. On foot, 300 s is a frame every few hundred metres.
+  #
+  # Two things it costs, both worth knowing before lowering it. Each frame is a
+  # few hundred kilobytes on the card, and the card is what wears out. And with
+  # camera.idle_close_sec below this, every frame is a *cold* capture: the sensor
+  # is reopened for it, and whether Picamera2's auto-exposure has converged by
+  # then is bench check V11 — which this setting promotes from an occasional
+  # question to one that applies to a whole mission's photographs.
+  mission_interval_sec: 300
 
 camera:
   resolution: [1920, 1080]   # still capture size, [width, height]
-  # A timelapse frame is written to disk and announced by metadata only; the
-  # interval below is a floor, not a default — a ground command chooses the
-  # rate, and anything faster than this is clamped rather than refused.
-  min_timelapse_interval_sec: 1.0
   # How long the camera stays open after its last use. An open Picamera2 runs
   # the whole ISP pipeline continuously — auto-exposure and white balance never
   # sleep — which is measurable SoC heat on a satellite that may not take a
   # photo for hours. After this many seconds of no captures the sensor is given
-  # back; the next capture re-opens it (about a second). A timelapse faster
+  # back; the next capture re-opens it (about a second). A mission series faster
   # than this keeps the camera warm; a slower one lets it cool between frames,
-  # which is the right trade at the intervals where reopening is cheap
-  # relative to the wait. 0 keeps the camera open forever, as before.
+  # which is the right trade at the intervals where reopening is cheap relative
+  # to the wait — and photos.mission_interval_sec is deliberately slower, so a
+  # mission's frames are cold captures by design. 0 keeps the camera open
+  # forever, as before.
   idle_close_sec: 60.0
 
 science:

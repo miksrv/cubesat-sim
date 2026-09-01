@@ -99,6 +99,11 @@ DASHBOARD_ROOT = Path(os.getenv("CUBESAT_DASHBOARD_ROOT", str(DATA_DIR / "dashbo
 I2C_LOCK_FILE = RUN_DIR / "i2c.lock"
 #: HOSTD's break-glass channel, for when the broker itself is down.
 HOSTD_SOCKET = RUN_DIR / "hostd.sock"
+#: Where a photograph goes when no mission is open. Under RUN_DIR because /run is
+#: a tmpfs: in DEMO and EXPO the frame is published as pixels and deleted, and
+#: the SD card is never touched. It replaced photos/unfiled/, which retention was
+#: never allowed to remove and which therefore only grew (decided 2026-09-01).
+PHOTO_SCRATCH_DIR = RUN_DIR / "photo"
 
 # ── Hardware ────────────────────────────────────────────────────────────────
 #: 1 selects the mock HAL: the whole stack then runs with no Raspberry Pi.
@@ -125,6 +130,16 @@ LORA_CHANNEL_INDEX: int = int(os.getenv("LORA_CHANNEL_INDEX", 1))
 
 # ── Services ────────────────────────────────────────────────────────────────
 DASHBOARD_PORT: int = int(os.getenv("DASHBOARD_PORT", 8080))
+
+_dashboard = _yaml.get("dashboard", {})
+
+#: How many published telemetry rows DASHBOARD holds in memory. This is the
+#: charts' whole history in the profiles that do not record — see
+#: ``dashboard/live.py`` for why the ring is on the satellite rather than in the
+#: browser, and ``config/config.yaml`` for what the number buys.
+DASHBOARD_LIVE_ROWS: int = int(
+    os.getenv("DASHBOARD_LIVE_ROWS", _dashboard.get("live_history_rows", 720))
+)
 
 _dhs = _yaml.get("dhs", {})
 
@@ -167,7 +182,6 @@ _science = _yaml.get("science", {})
 
 _res = _camera.get("resolution", [1920, 1080])
 PHOTO_RESOLUTION: tuple[int, int] = (int(_res[0]), int(_res[1]))
-MIN_TIMELAPSE_INTERVAL_SEC: float = float(_camera.get("min_timelapse_interval_sec", 1.0))
 
 #: How long the camera stays open after its last use, in seconds. An open
 #: Picamera2 runs its ISP loops continuously and that is SoC heat for nothing
@@ -179,7 +193,16 @@ CAMERA_IDLE_CLOSE_SEC: float = float(_camera.get("idle_close_sec", 60.0))
 #: DHS's retention headroom: the camera's floor and the recorder's horizon are
 #: the same number seen from two sides, and a floor set below the recorder's
 #: needs lets the card fill anyway.
-PHOTOS_MIN_FREE_MB: int = int(_yaml.get("photos", {}).get("min_free_mb", 512))
+_photos = _yaml.get("photos", {})
+PHOTOS_MIN_FREE_MB: int = int(_photos.get("min_free_mb", 512))
+
+#: How often an open mission photographs by itself, in seconds. There is no
+#: ground command for this and no interval on the wire: while a mission is open
+#: the camera fires on this cadence, and it stops when the mission does. 300 s
+#: on foot is a frame every few hundred metres.
+PHOTO_MISSION_INTERVAL_SEC: float = float(
+    os.getenv("PHOTO_MISSION_INTERVAL_SEC", _photos.get("mission_interval_sec", 300.0))
+)
 
 #: SEN0501 board revision, "v1" or "v3". None means the UV index is withheld:
 #: the two revisions read one raw register with formulas that disagree by a

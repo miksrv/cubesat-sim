@@ -15,15 +15,18 @@ Wants=mosquitto.service
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/home/mik/cubesat-sim
-ExecStart=/home/mik/cubesat-sim/venv/bin/python -m cubesat.hostd
+WorkingDirectory=/opt/cubesat-sim
+ExecStart=/opt/cubesat-sim/venv/bin/python -m cubesat.hostd
 Restart=always
 RestartSec=5
 
-StateDirectory=cubesat
-RuntimeDirectory=cubesat
-RuntimeDirectoryPreserve=yes
-LogsDirectory=cubesat
+# No StateDirectory/RuntimeDirectory/LogsDirectory here, and this is the unit
+# that made removing them necessary: being root, its start re-chowned all three
+# shared directories — and their contents — to root:root, after which every
+# unprivileged service lost write access to the database, the photo tree, its
+# own log and the I2C lock. config/tmpfiles.d/cubesat.conf creates them once,
+# owned by cubesat; root writes there regardless of who owns them, so this unit
+# gives up nothing by not declaring them.
 
 [Install]
 WantedBy=multi-user.target

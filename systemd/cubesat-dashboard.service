@@ -1,5 +1,6 @@
-# The local dashboard: MQTT to WebSocket, read-only REST over the database, and
-# the static React build deployed from cubesat-groundstation.
+# The local dashboard: read-only REST over the database plus the static React
+# build deployed from cubesat-groundstation. Browsers get their live data from
+# mosquitto's own WebSocket listener, not from this service.
 #
 # Separate from the template because it binds a port and reads the database
 # read-only, and because HOSTD starts it only in profiles that ask for it.
@@ -12,24 +13,23 @@ PartOf=cubesat.target
 
 [Service]
 Type=simple
-User=mik
-Group=mik
-WorkingDirectory=/home/mik/cubesat-sim
-ExecStart=/home/mik/cubesat-sim/venv/bin/python -m cubesat.dashboard
+User=cubesat
+Group=cubesat
+WorkingDirectory=/opt/cubesat-sim
+ExecStart=/opt/cubesat-sim/venv/bin/python -m cubesat.dashboard
 Restart=always
 RestartSec=5
 
-# The second entry creates /var/lib/cubesat/dashboard, where the interface's
-# built files are deployed from cubesat-groundstation. systemd makes it, so
-# nothing in the code ever mkdirs a system path.
-StateDirectory=cubesat cubesat/dashboard
-RuntimeDirectory=cubesat
-RuntimeDirectoryPreserve=yes
-LogsDirectory=cubesat
+# As in cubesat@.service: the runtime directories come from
+# config/tmpfiles.d/cubesat.conf so that ownership does not follow whichever
+# unit restarted last, and ReadWritePaths re-opens them under ProtectSystem.
+# /var/lib/cubesat/dashboard is where scripts/deploy-dashboard.sh rsyncs the
+# built interface; this service only ever reads it.
+ReadWritePaths=/var/lib/cubesat /var/log/cubesat /run/cubesat
 
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=read-only
+ProtectHome=yes
 PrivateTmp=yes
 
 [Install]

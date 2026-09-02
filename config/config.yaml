@@ -37,7 +37,6 @@ cadence:
     STANDBY: 60
     DEPLOY: 10
     NOMINAL: 30
-    SCIENCE: 30
     LOW_POWER: 60
     SAFE: 60
     CRITICAL: 10         # watch closely while deciding to shut down
@@ -45,21 +44,18 @@ cadence:
   adcs:
     DEPLOY: 0.5          # report in well inside the bring-up window
     NOMINAL: 0.5         # 2 Hz
-    SCIENCE: 0.5
     LOW_POWER: 5.0       # 0.2 Hz
     SAFE: 5.0
 
   payload:
     DEPLOY: 2            # report in well inside the bring-up window
     NOMINAL: 60
-    SCIENCE: 60
     LOW_POWER: 300
     SAFE: 300
 
   dhs:
     DEPLOY: 2            # report in well inside the bring-up window
     NOMINAL: 30
-    SCIENCE: 30
     LOW_POWER: 300
     SAFE: 300
 
@@ -67,7 +63,6 @@ cadence:
     STANDBY: 30          # HOSTED: wake to poll the radio inbox; never beacons
     DEPLOY: 2            # report in well inside the bring-up window
     NOMINAL: 30
-    SCIENCE: 30
     LOW_POWER: 60
     SAFE: 60             # keep listening — see the beacon table below
 
@@ -92,7 +87,6 @@ beacon:
   # query commands (!sys, !env, !pos, !mission) now answer on demand — routine
   # airtime on a shared mesh was not buying anything a minute would not.
   NOMINAL: 60
-  SCIENCE: 60
   LOW_POWER: 300
   SAFE: 600
 

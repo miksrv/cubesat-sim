@@ -24,13 +24,23 @@ class Profile(str, Enum):
 
 
 class MissionState(str, Enum):
-    """Mission state — the satellite's own activity level. Chosen by the satellite."""
+    """Mission state — the satellite's own activity level. Chosen by the satellite.
+
+    There was a ``SCIENCE`` here, entered and left by ground command, and it was
+    removed on 2026-09-02 because it had no content: every cadence row, the
+    beacon interval, the camera permission and the recording rule were identical
+    to ``NOMINAL``, so the two commands changed a label and nothing else. What it
+    used to gate — whether telemetry was written at all — belongs to the profile
+    now, and how often to the state, which is why nothing was left for it to do.
+    Cadence and photo interval are configuration; the only state that changes
+    them is ``LOW_POWER``, and that is the satellite's decision, not an
+    operator's.
+    """
 
     BOOT = "BOOT"
     STANDBY = "STANDBY"
     DEPLOY = "DEPLOY"
     NOMINAL = "NOMINAL"
-    SCIENCE = "SCIENCE"
     LOW_POWER = "LOW_POWER"
     SAFE = "SAFE"
     CRITICAL = "CRITICAL"
@@ -73,9 +83,11 @@ ACTIVE_PROFILES = frozenset(
 )
 
 #: States in which the payload camera may be used.
-CAMERA_ALLOWED_STATES = frozenset({MissionState.NOMINAL, MissionState.SCIENCE})
+CAMERA_ALLOWED_STATES = frozenset({MissionState.NOMINAL})
 
-#: States in which a mission is actively recording.
+#: States in which a mission is actively recording. A power-driven descent does
+#: not stop the recording — the trip is still happening, and the reason the
+#: battery is going down is exactly what a later reader wants to see.
 RECORDING_STATES = frozenset(
-    {MissionState.NOMINAL, MissionState.SCIENCE, MissionState.LOW_POWER, MissionState.SAFE}
+    {MissionState.NOMINAL, MissionState.LOW_POWER, MissionState.SAFE}
 )

@@ -5,19 +5,22 @@ from cubesat.obc.commands import Command, parse, profile_request
 
 
 @pytest.mark.parametrize(
-    "name", ["set_profile", "science_start", "science_stop", "safe_mode", "recover"]
+    "name", ["set_profile", "safe_mode", "recover", "restart_service"]
 )
 def test_the_mission_decisions_are_ours(name):
     assert parse({"command": name}).name == name
 
 
 @pytest.mark.parametrize(
-    "name", ["take_photo", "start_timelapse", "stop_timelapse", "get_telemetry",
-             "set_comms_config"]
+    "name", ["take_photo", "get_telemetry", "set_comms_config",
+             "start_timelapse", "science_start", "science_stop"]
 )
-def test_another_service_s_command_is_ignored_without_complaint(name):
+def test_a_command_that_is_not_ours_is_ignored_without_complaint(name):
     # All commands share one topic, so OBC sees PAYLOAD's and COMMS' too. They
     # are not errors; warning about each would make every photo look like a fault.
+    # The last three are retired verbs — `start_timelapse` (2026-09-01) and the
+    # two science ones (2026-09-02). An old ground client can still publish them,
+    # and they must land here as "not mine" rather than as anything at all.
     assert parse({"command": name}) is None
 
 

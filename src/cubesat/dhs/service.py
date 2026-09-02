@@ -15,11 +15,11 @@ persists nothing.
 **Whether a row may be written is the profile's decision; how often is the
 state's.** ``Persistence.MISSION_DB`` writes to ``comms.db`` and ``DIAG_DB`` to
 ``diag.db``; the cadence table turns 30 s in ``NOMINAL`` into 300 s in
-``LOW_POWER``. The pre-rewrite gate — write only while the mission state is
-``SCIENCE`` — is deliberately gone, and it is worth remembering why: keeping it
-would mean ``FLIGHT``, the profile whose entire purpose is recording a track,
-recorded nothing unless somebody remembered to send ``science_start`` before
-leaving the house.
+``LOW_POWER``. The pre-rewrite gate — write only while the mission state was
+``SCIENCE``, a state since removed — is deliberately gone, and it is worth
+remembering why: keeping it would mean ``FLIGHT``, the profile whose entire
+purpose is recording a track, recorded nothing unless somebody remembered to
+send a command before leaving the house.
 
 **The row is assembled and published whether or not it is written**, on
 ``cubesat/dhs/telemetry``. Since 2026-09-01 only ``FLIGHT`` and ``DIAG`` persist

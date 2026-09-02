@@ -81,7 +81,7 @@ picam2.close()
 ```bash
 mosquitto_pub -t cubesat/command -m '{"command": "take_photo", "request_id": "req_1", "params": {"overlay": false}}'
 ```
-(Accepted only while the mission state permits the camera — `NOMINAL` or `SCIENCE`, `CAMERA_ALLOWED_STATES` in `src/cubesat/common/states.py` — and only above the `photos.min_free_mb` floor. A refusal is published on the same topic with the reason, so nothing waits for a photo that will never come.)
+(Accepted only while the mission state permits the camera — `NOMINAL`, per `CAMERA_ALLOWED_STATES` in `src/cubesat/common/states.py` — and only above the `photos.min_free_mb` floor. A refusal is published on the same topic with the reason, so nothing waits for a photo that will never come.)
 
 ## Further reading
 

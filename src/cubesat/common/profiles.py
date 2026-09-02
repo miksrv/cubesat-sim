@@ -99,8 +99,10 @@ class ProfileSpec:
 
         Persistence is a property of the profile; how *often* rows are written
         is a property of the mission state. The pre-rewrite code gated writes on
-        the state being SCIENCE, which meant FLIGHT recorded nothing unless
-        someone remembered to send science_start before leaving the house.
+        a SCIENCE state entered by ground command, which meant FLIGHT recorded
+        nothing unless someone remembered to send that command before leaving
+        the house. The gate went first, and the state itself followed once it
+        was clear nothing else had ever depended on it.
         """
         return self.persistence is not Persistence.NONE
 

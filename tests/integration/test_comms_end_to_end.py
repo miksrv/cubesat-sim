@@ -84,7 +84,7 @@ def build(service_factory, monkeypatch, *, radio=None, profiles=None):
     monkeypatch.setattr(
         config,
         "BEACON_INTERVALS",
-        {"NOMINAL": 0.0, "SCIENCE": 0.0, "LOW_POWER": 0.0, "SAFE": 3600.0},
+        {"NOMINAL": 0.0, "LOW_POWER": 0.0, "SAFE": 3600.0},
     )
     client.connect_ok()
     return service, client

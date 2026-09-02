@@ -306,7 +306,7 @@ def test_the_envelope_is_resolved_once_per_profile_and_not_once_per_message(comm
     with caplog.at_level(logging.INFO):
         obc(client)
         obc(client)
-        obc(client, state=MissionState.SCIENCE)
+        obc(client, state=MissionState.LOW_POWER)
     assert caplog.text.count("permits lora=") == 1
 
 
@@ -601,7 +601,7 @@ def test_a_profile_with_no_radio_says_nothing_even_on_the_way_down(comms):
 )
 def test_no_other_state_change_sends_one(comms, state):
     service, client = comms()
-    obc(client, state=MissionState.SCIENCE)
+    obc(client, state=MissionState.DEPLOY)
     service._mesh._radio.sent.clear()
     obc(client, state=state)
     assert service._mesh._radio.sent == []

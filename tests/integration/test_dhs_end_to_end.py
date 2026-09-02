@@ -131,8 +131,9 @@ def test_a_flight_profile_records_a_track_and_closes_it_on_shutdown(
     assert mission["first_fix_at"] is not None
     # Two steps of about 111 m each, measured from the mission's own rows.
     assert 200 < mission["distance_m"] < 260
-    # No science_start was ever sent. Under the pre-rewrite gate this file would
-    # be empty, which is why that gate is gone.
+    # Nobody sent a command to start recording. Under the pre-rewrite gate — write
+    # only in a ground-commanded SCIENCE state, itself removed on 2026-09-02 —
+    # this file would be empty, which is why that gate is gone.
     assert mission["rows"] > 0
 
 

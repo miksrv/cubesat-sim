@@ -161,11 +161,11 @@ without SSH. Transmission is still rationed by the per-state beacon table, which
  DEPLOY         ──► SAFE, if an expected address is silent or a subsystem never reports
    │  bring-up complete
    ▼
- NOMINAL   ⇄   SCIENCE        start_science / end_science
+ NOMINAL        ──► the state an active profile stays in; the recorder runs here
    │
-   │  battery < 40 %
+   │  battery < 30 %
    ▼
- LOW_POWER      ──► NOMINAL, on recover: battery ≥ 50 %, or mains restored
+ LOW_POWER      ──► NOMINAL, on recover: battery ≥ 40 %, or mains restored
    │
    │  battery < 20 %, a subsystem lost, or the safe_mode command
    ▼
@@ -183,13 +183,14 @@ without SSH. Transmission is still rationed by the per-state beacon table, which
 | `BOOT` | Power-on self-test |
 | `STANDBY` | Bus alive, mission not active — the state under `HOSTED` and `MAINTENANCE` |
 | `DEPLOY` | Subsystem bring-up: an I2C presence sweep for the addresses this profile's services need, then a first **status** message from each of them. A heartbeat is not enough — a service whose sensor is dead still heartbeats. On failure → `SAFE`, not a pretended `NOMINAL` |
-| `NOMINAL` | Healthy, subsystems polled at nominal cadence |
-| `SCIENCE` | Payload actively collecting |
-| `LOW_POWER` | Battery < 40 %: cadence stretched, camera refused, radio duty-cycled, `powersave` governor |
+| `NOMINAL` | Healthy, subsystems polled at nominal cadence. Where an active profile lives: the mission records, the camera is permitted, the beacon runs |
+| `LOW_POWER` | Battery < 30 %: cadence stretched, camera refused, radio duty-cycled, `powersave` governor |
 | `SAFE` | Battery < 20 %, a fault, or a ground command |
 | `CRITICAL` | Battery < 10 % **and not on mains**: flush and `poweroff`. The X728 brings the Pi back when mains returns |
 
-Entering an active profile triggers `DEPLOY`; leaving one returns to `STANDBY`. Recovery from `LOW_POWER` happens at ≥ 50 % — a 10-point band, so the state does not flap around the threshold.
+Entering an active profile triggers `DEPLOY`; leaving one returns to `STANDBY`. Recovery from `LOW_POWER` happens at ≥ 40 % — a 10-point band, so the state cannot flap around the threshold. The band tracks the trigger rather than staying where it was: a band wide enough that a pack on a walk never climbs out of it would be a one-way door, not hysteresis.
+
+**There was a `SCIENCE` state above `NOMINAL`, entered and left by ground command, and it was removed on 2026-09-02.** It had no content: every cadence row, the beacon interval, the camera permission and the recording rule were identical to `NOMINAL`, so `science start` changed a word on the wire and nothing a service could act on. What such a state would have been *for* — deciding whether telemetry is recorded — belongs to the profile, and how often to the state; the pre-rewrite build gated writes on it and that gate is what made `FLIGHT` record nothing unless somebody remembered a command. Cadence and photo interval are configuration, and the only thing that changes them at runtime is the power-driven descent, which is the satellite's decision rather than an operator's.
 
 **Every power-driven descent is suppressed while mains is present**, because on mains there is no power emergency to react to. This is not a refinement, it is the difference between working and bricked: come back from a trip with a flat pack, plug the satellite in, and a `CRITICAL` keyed on battery level alone would power the host off — and the X728 would not bring it back, because mains never left. Plugging in a satellite at 5 % must take it to `NOMINAL`.
 
@@ -208,7 +209,9 @@ Two things `DEPLOY` deliberately does **not** do. It does not require a GNSS fix
 | LoRa TX | every cycle | every Nth cycle |
 | CPU governor | `ondemand` | `powersave` |
 
-Notably, `LOW_POWER` and `SAFE` do **not** tear down the access point or the dashboard under `EXPO`: losing the display in front of an audience because the battery hit 39 % would be the wrong behaviour, and the AP costs far less than the sensors it is throttling.
+Notably, `LOW_POWER` and `SAFE` do **not** tear down the access point or the dashboard under `EXPO`: losing the display in front of an audience because the battery crossed a threshold would be the wrong behaviour, and the AP costs far less than the sensors it is throttling.
+
+The trigger was 40 % until 2026-09-02 and is now 30 %. 40 % of an 18650 pair is a long way from an emergency, and throttling there cost the second half of a trip — the more interesting half — for no gain: what protects the card is `SAFE` at 20 % and `CRITICAL` at 10 %, and both are unchanged.
 
 ---
 
@@ -309,7 +312,7 @@ The head. `OBC` owns both state machines, decides what the platform should look 
 Responsibilities:
 
 - the **profile** machine: validate a requested profile, translate it into `apply_profile`, reconcile intent against what `HOSTD` reports back
-- the **mission state** machine: `BOOT → STANDBY → DEPLOY → NOMINAL ↔ SCIENCE`, plus the power-driven descent through `LOW_POWER` → `SAFE` → `CRITICAL`
+- the **mission state** machine: `BOOT → STANDBY → DEPLOY → NOMINAL`, plus the power-driven descent through `LOW_POWER` → `SAFE` → `CRITICAL`
 - **health monitoring**: every service publishes to `cubesat/heartbeat` on a fixed interval, independent of its poll cadence — a subsystem told to poll every 300 s in `LOW_POWER` must still prove it is alive more often than that. Three consecutive misses and the subsystem is declared lost, dropping the state to `SAFE`. A service that dies *ungracefully* is announced by its MQTT **last will** on the same topic, so OBC learns in milliseconds instead of waiting out the timeout.
 
   A heartbeat is **liveness only, and never bring-up evidence**. Every service in this project logs a silent device and stays up — that is deliberate, so that OBC reacts to missing telemetry rather than to a vanished process — which means a heartbeat proves the process started and says nothing at all about whether its sensor answered. `DEPLOY` therefore waits for a subsystem's *status* message, which only exists because its hardware was read
@@ -346,7 +349,7 @@ Two responsibilities, one owner of the camera:
 
 1. **Science** — the SEN0501 environmental package (I2C `0x22`): temperature, humidity, atmospheric pressure, ambient light and UV. Replaces the LPS22HB + SHTC3 pair of the Sense HAT (C).
 2. **Camera** — a JPEG capture via Picamera2, either on a `take_photo` command or on the mission's
-   own cadence. Capture is gated: permitted in `NOMINAL` and `SCIENCE`, refused in `LOW_POWER` and
+   own cadence. Capture is gated: permitted in `NOMINAL`, refused in `LOW_POWER` and
    below; *stopping* is always permitted.
 
 **A mission photographs itself, and there is no timelapse command** (decided 2026-09-01). While DHS
@@ -371,7 +374,7 @@ The flight recorder — the Data Handling Subsystem (the *OBDH* / mass-memory ro
 
 **This is a deliberate split from COMMS**, where persistence used to live, and the reason is a use case: in `FLIGHT` and in `SAFE` the radio goes off, but the GNSS track must keep recording. With the database owned by the link service, turning off the link meant losing the recorder. It also keeps chart history out of a process that is busy doing radio I/O with timeouts.
 
-Whether a row may be written at all is decided by the **profile**; how often is decided by the **mission state**. (The pre-rewrite code gated writes on the state being `SCIENCE`, which would mean `FLIGHT` recorded nothing unless someone remembered to send `science_start` before leaving the house.)
+Whether a row may be written at all is decided by the **profile**; how often is decided by the **mission state**. (The pre-rewrite code gated writes on a ground-commanded `SCIENCE` state, which would mean `FLIGHT` recorded nothing unless someone remembered a command before leaving the house. The gate went first; the state itself followed on 2026-09-02, once it was clear nothing else had ever depended on it.)
 
 **SQLite schema** — `/var/lib/cubesat/comms.db`, table `telemetry` (renamed from `comms_log`: `COMMS` no longer owns it); `/var/lib/cubesat/diag.db` under `DIAG`:
 
@@ -1144,7 +1147,6 @@ not here, it does not exist.
 | Action | Radio & dashboard console | Shell | On the bus | Handler |
 |---|---|---|---|---|
 | Switch profile | `profile flight` | `cubesat profile flight [--ttl 8h] [--mission "walk to work"]` | `set_profile` `{profile, ttl_minutes?, mission_label?}` | OBC |
-| Enter / leave `SCIENCE` | `science start` / `science stop` | — | `science_start` / `science_stop` | OBC |
 | Latch `SAFE` / clear it | `safe` / `recover` | — | `safe_mode` / `recover` | OBC |
 | Take one photograph | `photo` | — | `take_photo` `{overlay?}` | PAYLOAD |
 | Start / stop transmitting | `beacon on` / `beacon off` | `cubesat beacon on\|off` | `set_comms_config` `{lora_enabled}` | COMMS |
@@ -1303,8 +1305,8 @@ This is the recovery path for `FLIGHT`, where Wi-Fi is down and there is no SSH.
 1. {"command": "take_photo", "request_id": "req_001"}  →  cubesat/command
 
 2. PAYLOAD checks the mission state from the retained obc/status:
-   NOMINAL or SCIENCE → capture via Picamera2, save under photos/<mission_id>/, base64-encode
-   anything else       → publish an error with the reason
+   NOMINAL      → capture via Picamera2, save under photos/<mission_id>/, base64-encode
+   anything else → publish an error with the reason
 
 3. Publishes the response  →  cubesat/payload/photo
 ```
@@ -1312,9 +1314,9 @@ This is the recovery path for `FLIGHT`, where Wi-Fi is down and there is no SSH.
 ### Battery descent
 
 ```
-1. EPS publishes battery = 38 %  →  cubesat/eps/status
+1. EPS publishes battery = 28 %  →  cubesat/eps/status
 
-2. OBC: 38 % < 40 %, and not on mains  → LOW_POWER
+2. OBC: 28 % < 30 %, and not on mains  → LOW_POWER
    ADCS drops to 0.2 Hz, PAYLOAD to 300 s, DHS to 300 s, camera refused,
    OBC asks HOSTD for the powersave governor.
    Under EXPO the AP and the dashboard stay up.
@@ -1328,7 +1330,7 @@ This is the recovery path for `FLIGHT`, where Wi-Fi is down and there is no SSH.
 
 5. Plug the satellite in at any point and the descent stops: mains recovers it to
    NOMINAL from LOW_POWER or SAFE at any battery level, and suppresses the descent
-   in the first place. On battery, recovery needs ≥ 50 %.
+   in the first place. On battery, recovery needs ≥ 40 %.
    Either way the mission continues uninterrupted — a state change happens inside
    a mission, it does not end one.
 

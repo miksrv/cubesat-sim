@@ -5,7 +5,6 @@ from cubesat.obc import power_policy
 from cubesat.obc.power_policy import PowerReading, evaluate, reading_from
 
 NOMINAL = MissionState.NOMINAL
-SCIENCE = MissionState.SCIENCE
 DEPLOY = MissionState.DEPLOY
 STANDBY = MissionState.STANDBY
 LOW_POWER = MissionState.LOW_POWER
@@ -23,6 +22,9 @@ LOW_POWER_EDGE = power_policy.LOW_POWER_PERCENT - JUST_UNDER
 SAFE_EDGE = power_policy.SAFE_PERCENT - JUST_UNDER
 CRITICAL_EDGE = power_policy.CRITICAL_PERCENT - JUST_UNDER
 RECOVERED = power_policy.RECOVERY_PERCENT + JUST_UNDER
+#: Above the descent threshold but still inside the band: on battery this is not
+#: enough to climb out, which is what makes the mains path worth its own test.
+NOT_RECOVERED_YET = power_policy.RECOVERY_PERCENT - JUST_UNDER
 
 
 def on_battery(percent):
@@ -38,16 +40,17 @@ def on_mains(percent, charge_rate=1.5):
 # ── descent ──────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("state", [DEPLOY, NOMINAL, SCIENCE])
-def test_a_battery_under_forty_percent_calls_for_low_power(state):
+@pytest.mark.parametrize("state", [DEPLOY, NOMINAL])
+def test_a_battery_under_the_throttling_threshold_calls_for_low_power(state):
     assert evaluate(on_battery(LOW_POWER_EDGE), state) is LOW_POWER
 
 
-@pytest.mark.parametrize("state", [DEPLOY, NOMINAL, SCIENCE])
+@pytest.mark.parametrize("state", [DEPLOY, NOMINAL])
 def test_a_charging_satellite_is_not_throttled(state):
     # There is no battery life to stretch while mains is present, and the rule
-    # has to be symmetrical with recovery below: if plugging in recovers at 35 %,
-    # descending at 35 % while plugged in would flap on every EPS message.
+    # has to be symmetrical with recovery below: if plugging in recovers at a
+    # level, descending at that same level while plugged in would flap on every
+    # EPS message.
     assert evaluate(on_mains(LOW_POWER_EDGE), state) is None
 
 
@@ -58,13 +61,13 @@ def test_standby_is_not_throttled():
 
 
 @pytest.mark.parametrize("state", list(MissionState))
-def test_a_battery_under_twenty_percent_reaches_safe_from_anywhere(state):
+def test_a_battery_under_the_safe_threshold_reaches_safe_from_anywhere(state):
     expected = None if state in (SAFE, CRITICAL) else SAFE
     assert evaluate(on_battery(SAFE_EDGE), state) is expected
 
 
 @pytest.mark.parametrize("state", list(MissionState))
-def test_a_battery_under_ten_percent_reaches_critical_from_anywhere(state):
+def test_a_battery_under_the_critical_threshold_reaches_critical_from_anywhere(state):
     expected = None if state is CRITICAL else CRITICAL
     assert evaluate(on_battery(CRITICAL_EDGE), state) is expected
 
@@ -72,7 +75,7 @@ def test_a_battery_under_ten_percent_reaches_critical_from_anywhere(state):
 # ── mains outranks every descent ─────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("state", [NOMINAL, SCIENCE, DEPLOY, STANDBY])
+@pytest.mark.parametrize("state", [NOMINAL, DEPLOY, STANDBY])
 def test_a_flat_pack_on_mains_is_not_a_power_emergency(state):
     # The sequence this prevents: the satellite comes home with a flat pack, is
     # plugged in, reports 5 %, powers the host off — and the X728 never brings it
@@ -124,16 +127,18 @@ def test_critical_is_not_left_once_entered():
 # ── recovery, and the band that makes it possible ────────────────────────────
 
 
-def test_recovery_needs_ten_points_more_than_the_descent_took():
-    # Without the band the state flaps every time the reading crosses 40 %.
-    assert evaluate(on_battery(41.0), LOW_POWER) is None
-    assert evaluate(on_battery(50.0), LOW_POWER) is MissionState.NOMINAL
+def test_recovery_needs_more_than_undoing_the_descent():
+    # Without the band the state flaps every time the reading crosses the
+    # threshold that got it here, so climbing just back over it is not enough.
+    assert evaluate(on_battery(power_policy.LOW_POWER_PERCENT + JUST_UNDER), LOW_POWER) is None
+    assert evaluate(on_battery(RECOVERED), LOW_POWER) is MissionState.NOMINAL
 
 
 def test_external_power_recovers_immediately_whatever_the_charge():
-    # A pack on a desk charger may read 35 % for an hour. Staying throttled for
-    # that hour is the wrong answer to "I am plugged in".
-    assert evaluate(on_mains(35.0), LOW_POWER) is MissionState.NOMINAL
+    # A pack on a desk charger may sit just under the recovery level for an hour.
+    # Staying throttled for that hour is the wrong answer to "I am plugged in" —
+    # this is the one path that does not wait for the band.
+    assert evaluate(on_mains(NOT_RECOVERED_YET), LOW_POWER) is MissionState.NOMINAL
 
 
 def test_safe_recovers_on_a_charged_pack_with_no_mains_at_all():
@@ -143,7 +148,7 @@ def test_safe_recovers_on_a_charged_pack_with_no_mains_at_all():
     assert evaluate(on_battery(RECOVERED), SAFE) is MissionState.NOMINAL
 
 
-@pytest.mark.parametrize("state", [STANDBY, NOMINAL, SCIENCE, DEPLOY])
+@pytest.mark.parametrize("state", [STANDBY, NOMINAL, DEPLOY])
 def test_a_healthy_battery_changes_nothing_in_a_healthy_state(state):
     assert evaluate(on_mains(88.0), state) is None
     assert evaluate(on_battery(88.0), state) is None

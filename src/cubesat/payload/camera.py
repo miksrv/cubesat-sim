@@ -1,8 +1,8 @@
 """Capture policy: when a photo is allowed, where it goes, and how a mission's
 own photography runs without either flooding the broker or outliving the service.
 
-**Capture is gated on the mission state.** ``NOMINAL`` and ``SCIENCE`` only;
-``LOW_POWER`` and below refuse with a reason. The camera is the most expensive
+**Capture is gated on the mission state.** ``NOMINAL`` only; ``LOW_POWER`` and
+below refuse with a reason. The camera is the most expensive
 thing PAYLOAD can do — the sensor draws power, the encode costs CPU and the
 result costs disk — and ``LOW_POWER`` exists precisely to stop discretionary
 work. Stopping is permitted from *any* state, because stopping something is

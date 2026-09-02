@@ -105,8 +105,8 @@ def test_raw_publish_passes_the_payload_through_untouched(service_factory):
 
 def test_mission_state_and_profile_are_absorbed(service_factory):
     service, client = service_factory(Probe)
-    client.deliver(TOPICS["obc_status"], {"status": "SCIENCE", "profile": "EXPO"})
-    assert service.mission_state is MissionState.SCIENCE
+    client.deliver(TOPICS["obc_status"], {"status": "LOW_POWER", "profile": "EXPO"})
+    assert service.mission_state is MissionState.LOW_POWER
     assert service.profile is Profile.EXPO
 
 

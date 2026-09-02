@@ -28,8 +28,6 @@ def canonical(text):
         ("!recover", {"command": "recover"}),
         ("!safe", {"command": "safe_mode"}),
         ("!profile FLIGHT", {"command": "set_profile", "params": {"profile": "FLIGHT"}}),
-        ("!science start", {"command": "science_start"}),
-        ("!science stop", {"command": "science_stop"}),
         ("!beacon on", {"command": "set_comms_config", "params": {"lora_enabled": True}}),
         ("!beacon off", {"command": "set_comms_config", "params": {"lora_enabled": False}}),
     ],

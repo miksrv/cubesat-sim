@@ -117,16 +117,17 @@ source of confusion later.
 
 ## Mission states
 
-The existing six states stay. Two are added, and one gets actual content.
+The existing six states stay. Two are added, one gets actual content — and one, `SCIENCE`, was
+later taken away again.
 
 | State | Meaning | Change |
 |---|---|---|
 | `BOOT` | Power-on self-test | unchanged |
 | `STANDBY` | **new** — bus alive, mission not active. The state OBC sits in under `HOSTED` and `MAINTENANCE` | added |
 | `DEPLOY` | Bring-up of the subsystems | **given real work** — see below |
-| `NOMINAL` | Healthy, subsystems polled at nominal cadence | unchanged |
-| `SCIENCE` | Payload actively collecting | unchanged |
-| `LOW_POWER` | Battery < 40 % | **given real content** — see below |
+| `NOMINAL` | Healthy, subsystems polled at nominal cadence | unchanged; where an active profile lives |
+| ~~`SCIENCE`~~ | ~~Payload actively collecting~~ | **removed 2026-09-02** — see below |
+| `LOW_POWER` | Battery < 30 % (40 % until 2026-09-02) | **given real content** — see below |
 | `SAFE` | Battery < 20 %, or a fault, or a ground command | unchanged |
 | `CRITICAL` | **new** — battery < 10 %: graceful `poweroff` | added |
 
@@ -157,6 +158,18 @@ something to do:
 | LoRa TX | every loop | every Nth loop |
 | CPU governor | `ondemand` | `powersave` |
 
+**`SCIENCE` was removed on 2026-09-02, and the reasoning is worth keeping.** It came through the
+rewrite untouched, entered and left by ground command — and once persistence stopped being gated on
+it (below), it had nothing left to change: every cadence row, the beacon interval, the camera
+permission and the recording rule were identical to `NOMINAL`, so `science start` moved a word on
+the wire and no service could act on it. A button that does nothing observable is worse than no
+button, and the two axes already answer what it was reaching for: **the profile decides whether
+telemetry is recorded, the state decides how often, and both cadence and photo interval are
+configuration.** The only thing that changes them at runtime is the power-driven descent — which is
+the satellite's own decision from its own telemetry, not an operator's verb. If an "intensive
+observation" mode is ever genuinely wanted, it needs to arrive with its own numbers rather than as
+a state that shares `NOMINAL`'s.
+
 `CRITICAL` is not a nicety: in `EXPO` and `FLIGHT` the unit runs off the X728 UPS, and a Pi
 that browns out mid-write risks the SD card. At < 10 % OBC must stop the services, flush the
 database and call `poweroff`; the X728 brings the Pi back up by itself when mains returns.
@@ -175,9 +188,10 @@ state-of-charge history over a ten-minute window and publishes `null` until it h
 means "trust the pin" — the honest fallback, and the only one that lets a flat pack just plugged in
 climb out of `SAFE` rather than power itself off.
 
-Recovery also needs hysteresis, which today's handler lacks: `handlers.py` drops to
-`LOW_POWER` below 40 % and only ever leaves it when external power appears. Returning to
-`NOMINAL` at ≥ 50 % on battery (a 10-point band) prevents flapping around the threshold and
+Recovery also needs hysteresis, which the pre-rewrite handler lacked: `handlers.py` dropped to
+`LOW_POWER` below its threshold and only ever left it when external power appeared. Returning to
+`NOMINAL` at ≥ 40 % on battery — ten points above the 30 % trigger, the band moving with it —
+prevents flapping around the threshold and
 makes recovery possible at all in `FLIGHT`. Mains recovers from any level, but "mains" has to
 mean the pin *and* a charge rate that is not still falling — see the paragraph on suppressing
 the descents below.
@@ -189,14 +203,14 @@ the descents below.
 What the profile *permits*, versus what the state *asks for*. `—` means the profile forbids
 it outright, no matter what the state wants.
 
-| | `STANDBY` | `NOMINAL` | `SCIENCE` | `LOW_POWER` | `SAFE` | `CRITICAL` |
-|---|---|---|---|---|---|---|
-| `HOSTED` | idle, EPS watch | — | — | — | log + alert | poweroff |
-| `DEMO` | — | poll + log + stream | + camera | throttled, dashboard kept | sensors only | poweroff |
-| `EXPO` | — | poll + log + stream | + camera | throttled, AP + dashboard kept | sensors only, AP kept | poweroff |
-| `FLIGHT` | — | poll + log + track | + a frame every 5 min | throttled, radio duty-cycled | log only, radio off | poweroff |
-| `DIAG` | — | as `FLIGHT`, separate DB | + a frame every 5 min | *not applicable* (mains) | report and stop | poweroff |
-| `MAINTENANCE` | services down | — | — | — | — | poweroff |
+| | `STANDBY` | `NOMINAL` | `LOW_POWER` | `SAFE` | `CRITICAL` |
+|---|---|---|---|---|---|
+| `HOSTED` | idle, EPS watch | — | — | log + alert | poweroff |
+| `DEMO` | — | poll + stream + camera | throttled, dashboard kept | sensors only | poweroff |
+| `EXPO` | — | poll + stream + camera | throttled, AP + dashboard kept | sensors only, AP kept | poweroff |
+| `FLIGHT` | — | poll + log + track, a frame every 5 min | throttled, radio duty-cycled | log only, radio off | poweroff |
+| `DIAG` | — | as `FLIGHT`, separate DB | *not applicable* (mains) | report and stop | poweroff |
+| `MAINTENANCE` | services down | — | — | — | poweroff |
 
 The important reading: `LOW_POWER` and `SAFE` do **not** tear down the AP or the dashboard in
 `EXPO`. Losing the display in front of an audience because the battery hit 39 % would be the
@@ -530,11 +544,12 @@ needs the serial port free).
 
 Two changes to today's behaviour follow from this table:
 
-**Persistence stops being gated on `SCIENCE`.** Today COMMS writes to SQLite only while the OBC
-state is `SCIENCE` and `aggregation_enabled` is on. Under this concept the *profile* decides
-whether persistence is permitted, and the *state* decides how often rows are written. Keeping
-the `SCIENCE` gate would mean `FLIGHT` records nothing unless someone remembers to send
-`science_start` before leaving the house.
+**Persistence stops being gated on `SCIENCE`.** The pre-rewrite COMMS wrote to SQLite only while
+the OBC state was `SCIENCE` and `aggregation_enabled` was on. Under this concept the *profile*
+decides whether persistence is permitted, and the *state* decides how often rows are written. Keeping
+the `SCIENCE` gate would mean `FLIGHT` records nothing unless someone remembers to send a command
+before leaving the house. Removing the gate is also what left the state itself with nothing to do,
+which is why it is gone as well — see [Mission states](#mission-states).
 
 **The telemetry table needs position columns.** The current schema keeps GNSS data only inside
 `raw_json` — there are no `lat`/`lon` columns (see the [SQLite schema](../README.md#dhs) in

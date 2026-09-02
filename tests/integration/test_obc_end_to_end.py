@@ -16,9 +16,16 @@ import time
 from cubesat.common import config, profiles
 from cubesat.common.states import MissionState, Profile
 from cubesat.common.topics import TOPICS
-from cubesat.obc import deploy
+from cubesat.obc import deploy, power_policy
 from cubesat.obc import service as obc_service
 from cubesat.obc.service import ObcService
+
+#: Battery levels placed relative to the thresholds rather than spelled out, so
+#: that moving one — LOW_POWER went 40 % to 30 % on 2026-09-02 — does not break
+#: a test that is about the descent rather than about the number.
+THROTTLED = power_policy.LOW_POWER_PERCENT - 1.0
+SAVED = power_policy.SAFE_PERCENT - 1.0
+DYING = power_policy.CRITICAL_PERCENT - 1.0
 
 #: What DEMO, EXPO and FLIGHT all ask for.
 MISSION_SERVICES = ("adcs", "payload", "dhs", "comms")
@@ -191,10 +198,13 @@ def test_a_profile_switch_from_the_ground_brings_the_satellite_up(
     assert status["persistence"] == profiles.load().get(Profile.EXPO).persistence.value
     assert status["cadence_scale"] == 1.0
 
-    # 6. Science on and off, from the ground.
-    client.deliver(TOPICS["command"], {"command": "science_start"})
-    wait_for_state(client, MissionState.SCIENCE.value)
-    client.deliver(TOPICS["command"], {"command": "science_stop"})
+    # 6. SAFE from the ground, and back with a recover — the pair of commands
+    #    that actually move the state machine from outside. (There was a
+    #    science_start/stop pair here until 2026-09-02, when the state they
+    #    entered was removed for having no content of its own.)
+    client.deliver(TOPICS["command"], {"command": "safe_mode"})
+    wait_for_state(client, MissionState.SAFE.value)
+    client.deliver(TOPICS["command"], {"command": "recover"})
     wait_for_state(client, MissionState.NOMINAL.value)
 
     shut_down(service, thread)
@@ -236,14 +246,14 @@ def test_a_draining_battery_descends_and_finally_powers_the_host_off(
     wait_for_state(client, MissionState.NOMINAL.value)
     client.deliver(TOPICS["dhs_status"], {"recording": True, "rows": 12})
 
-    battery(client, 38.0)
+    battery(client, THROTTLED)
     wait_for_state(client, MissionState.LOW_POWER.value)
     # LOW_POWER is not a label: the governor drops with it.
     assert host_actions(client, "set_governor")[-1]["params"] == {"governor": "powersave"}
-    battery(client, 18.0)
+    battery(client, SAVED)
     wait_for_state(client, MissionState.SAFE.value)
 
-    battery(client, 9.0)
+    battery(client, DYING)
     wait_for_state(client, MissionState.CRITICAL.value)
     # DHS closes its mission on seeing CRITICAL in the retained status — no new
     # command for it — and OBC waits for it to say the recorder is idle.
@@ -262,9 +272,9 @@ def test_mains_at_a_desk_brings_a_throttled_satellite_back(service_factory, monk
     report_in(client, *MISSION_SERVICES)
     wait_for_state(client, MissionState.NOMINAL.value)
 
-    battery(client, 25.0)
+    battery(client, THROTTLED - 4.0)
     wait_for_state(client, MissionState.LOW_POWER.value)
-    battery(client, 26.0, external_power=True)
+    battery(client, THROTTLED - 3.0, external_power=True)
     # A state change happens inside a mission; it does not end one, so the
     # profile and the label are untouched by the round trip.
     wait_for_state(client, MissionState.NOMINAL.value)
@@ -339,9 +349,9 @@ def test_coming_home_with_a_flat_pack_and_plugging_in_recovers(service_factory, 
     report_in(client, *MISSION_SERVICES)
     wait_for_state(client, MissionState.NOMINAL.value)
 
-    battery(client, 15.0)
+    battery(client, SAVED - 4.0)
     wait_for_state(client, MissionState.SAFE.value)
-    battery(client, 11.0, external_power=True, charge_rate=3.2)
+    battery(client, DYING + 2.0, external_power=True, charge_rate=3.2)
 
     wait_for_state(client, MissionState.NOMINAL.value)
     assert host_actions(client, "poweroff") == []

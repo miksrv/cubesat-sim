@@ -148,9 +148,11 @@ def wait_until(predicate, timeout=3.0):
 # ── the gate ────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("state", [MissionState.NOMINAL, MissionState.SCIENCE])
-def test_capture_is_permitted_in_the_two_states_that_have_power_for_it(state):
-    assert refusal(state) is None
+def test_capture_is_permitted_in_the_one_state_that_has_power_for_it():
+    # NOMINAL, and only NOMINAL. There was a SCIENCE beside it until 2026-09-02,
+    # which permitted the camera on exactly the same terms and was removed with
+    # the rest of that state's non-existent content.
+    assert refusal(MissionState.NOMINAL) is None
 
 
 @pytest.mark.parametrize(

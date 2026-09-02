@@ -171,10 +171,6 @@ class ObcService(Service):
         self.log.info("command %s (request_id=%s)", command.name, command.request_id)
         if command.name == commands.SET_PROFILE:
             self._set_profile(command)
-        elif command.name == commands.SCIENCE_START:
-            self.mission.fire(mission_machine.SCIENCE_START)
-        elif command.name == commands.SCIENCE_STOP:
-            self.mission.fire(mission_machine.SCIENCE_STOP)
         elif command.name == commands.SAFE_MODE:
             self._enter_safe("ground command", latch=True)
         elif command.name == commands.RESTART_SERVICE:

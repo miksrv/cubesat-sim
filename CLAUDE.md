@@ -62,8 +62,13 @@ state machines drive it:
   units run at all, the dashboard, the CPU governor, and whether persistence and each downlink
   channel are permitted.
 - **Mission state** — chosen by the satellite from its own telemetry
-  (`BOOT → STANDBY → DEPLOY → NOMINAL ⇄ SCIENCE`, descending through `LOW_POWER → SAFE → CRITICAL`).
-  Governs sensor cadence, camera permission, logging cadence, radio duty cycle.
+  (`BOOT → STANDBY → DEPLOY → NOMINAL`, descending through `LOW_POWER → SAFE → CRITICAL`).
+  Governs sensor cadence, camera permission, logging cadence, radio duty cycle. There was a
+  `SCIENCE` above `NOMINAL`, entered by ground command; it was **removed on 2026-09-02** because
+  every cadence, the beacon, the camera and the recording rule were identical to `NOMINAL` — a
+  command that changed a label and nothing else. Do not reintroduce a state without its own
+  numbers: cadence and photo interval are configuration, and the only thing that changes them at
+  runtime is the power-driven descent, which the satellite decides for itself.
 
 The profile is the **envelope of what is permitted**; the state is the **activity level inside it**.
 A state change never alters the profile — except `CRITICAL`, the only state allowed to power the
@@ -96,7 +101,8 @@ Three structural decisions that are easy to accidentally undo:
    persists nothing.
 
 Whether a telemetry row may be written is decided by the **profile**; how often, by the **state**.
-The pre-rewrite gate ("write only while the OBC state is `SCIENCE`") is deliberately gone.
+The pre-rewrite gate ("write only while the OBC state is `SCIENCE`") is deliberately gone, and so
+is that state.
 
 **Only `FLIGHT` and `DIAG` write to the card** (Q7, decided 2026-09-01). A demonstration is not a
 mission: the satellite stands on a desk, there is no track, and the card is the component that wears

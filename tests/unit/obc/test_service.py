@@ -5,12 +5,20 @@ import pytest
 from cubesat.common import profiles
 from cubesat.common.states import MissionState, Persistence, Profile
 from cubesat.common.topics import TOPICS
-from cubesat.obc import deploy
+from cubesat.obc import deploy, power_policy
 from cubesat.obc import service as obc_service
 from cubesat.obc.service import ObcService
 
 #: What DEMO, EXPO and FLIGHT all ask for.
 MISSION_SERVICES = ("adcs", "payload", "dhs", "comms")
+
+#: Battery levels placed relative to the thresholds rather than spelled out. The
+#: LOW_POWER trigger moved from 40 % to 30 % on 2026-09-02, and a test that was
+#: about the descent rather than about the number should not have noticed.
+THROTTLED = power_policy.LOW_POWER_PERCENT - 1.0
+SAVED = power_policy.SAFE_PERCENT - 1.0
+DYING = power_policy.CRITICAL_PERCENT - 1.0
+RECOVERED = power_policy.RECOVERY_PERCENT + 1.0
 
 #: A plausible first status message per service — enough that the payload is
 #: recognisably the real one rather than an empty object.
@@ -173,7 +181,7 @@ def test_it_does_not_subscribe_to_its_own_status(obc):
     service, client, _ = obc
     client.connect_ok()
     assert TOPICS["obc_status"] not in client.subscribed
-    client.deliver(TOPICS["obc_status"], {"status": "SCIENCE", "profile": "EXPO"})
+    client.deliver(TOPICS["obc_status"], {"status": "SAFE", "profile": "EXPO"})
     assert service.mission_state is None
 
 
@@ -583,20 +591,18 @@ def test_a_goodbye_during_deploy_is_not_a_report(obc):
 # ── ground commands ──────────────────────────────────────────────────────────
 
 
-def test_science_starts_and_stops(obc):
+def test_a_retired_command_is_ignored_rather_than_answered(obc):
+    # `science_start` and `science_stop` were removed on 2026-09-02 along with
+    # the state they entered. An old ground client, a dashboard build that has
+    # not been redeployed or somebody's muscle memory can still publish one, and
+    # an unknown command on this topic belongs to another service — so it is
+    # dropped, not treated as `recover`, which the fall-through would otherwise
+    # have made of it.
     service, client, _ = obc
     bring_up(service, client)
+    command(client, "safe_mode")
     command(client, "science_start")
-    assert service.mission.state is MissionState.SCIENCE
-    command(client, "science_stop")
-    assert service.mission.state is MissionState.NOMINAL
-
-
-def test_science_is_refused_where_it_does_not_apply(obc):
-    service, client, _ = obc
-    service.on_start()
-    command(client, "science_start")
-    assert service.mission.state is MissionState.STANDBY
+    assert service.mission.state is MissionState.SAFE
 
 
 def test_safe_mode_reaches_safe_from_anywhere(obc):
@@ -648,17 +654,17 @@ def test_a_malformed_command_does_not_take_obc_down(obc, payload):
 def test_a_draining_battery_throttles_then_saves_itself(obc):
     service, client, _ = obc
     bring_up(service, client)
-    battery(client, 38.0)
+    battery(client, THROTTLED)
     assert service.mission.state is MissionState.LOW_POWER
-    battery(client, 18.0)
+    battery(client, SAVED)
     assert service.mission.state is MissionState.SAFE
 
 
 def test_a_recovering_battery_climbs_back_to_nominal(obc):
     service, client, _ = obc
     bring_up(service, client)
-    battery(client, 38.0)
-    battery(client, 52.0)
+    battery(client, THROTTLED)
+    battery(client, RECOVERED)
     assert service.mission.state is MissionState.NOMINAL
 
 
@@ -694,7 +700,7 @@ def test_critical_is_published_before_the_power_off_is_asked_for(obc, monkeypatc
     service, client, _ = obc
     bring_up(service, client)
     client.deliver(TOPICS["dhs_status"], {"recording": True})
-    battery(client, 9.0)
+    battery(client, DYING)
     assert service.mission.state is MissionState.CRITICAL
     assert states(client)[-1] == "CRITICAL"
     flush_thread(service)
@@ -707,7 +713,7 @@ def test_the_power_off_waits_for_dhs_to_close_its_mission(obc, monkeypatch):
     service, client, _ = obc
     bring_up(service, client)
     client.deliver(TOPICS["dhs_status"], {"recording": True})
-    battery(client, 9.0)
+    battery(client, DYING)
     assert [c for c in host_commands(client) if c["action"] == "poweroff"] == []
     client.deliver(TOPICS["dhs_status"], {"recording": False})
     flush_thread(service)
@@ -720,7 +726,7 @@ def test_the_grace_expires_rather_than_hanging(obc, monkeypatch, caplog):
     bring_up(service, client)
     client.deliver(TOPICS["dhs_status"], {"recording": True})
     with caplog.at_level("WARNING"):
-        battery(client, 9.0)
+        battery(client, DYING)
         flush_thread(service)
     assert "powering off anyway" in caplog.text
     assert host_commands(client)[-1]["action"] == "poweroff"
@@ -733,7 +739,7 @@ def test_a_profile_with_no_recorder_is_not_waited_for(obc, monkeypatch):
     service, client, _ = obc
     service.on_start()
     host_status(client, "HOSTED")
-    battery(client, 9.0)
+    battery(client, DYING)
     flush_thread(service, timeout=1.0)
     assert host_commands(client)[-1]["action"] == "poweroff"
 
@@ -742,7 +748,7 @@ def test_critical_before_any_profile_is_known_still_powers_off(obc, monkeypatch)
     monkeypatch.setattr(obc_service, "CRITICAL_FLUSH_GRACE_SEC", 30.0)
     service, client, _ = obc
     service.on_start()
-    battery(client, 5.0)
+    battery(client, DYING)
     flush_thread(service, timeout=1.0)
     assert host_commands(client)[-1]["action"] == "poweroff"
 
@@ -751,10 +757,10 @@ def test_nothing_leaves_critical(obc, monkeypatch):
     monkeypatch.setattr(obc_service, "CRITICAL_FLUSH_GRACE_SEC", 0.05)
     service, client, _ = obc
     bring_up(service, client)
-    battery(client, 5.0)
+    battery(client, DYING)
     flush_thread(service)
     command(client, "recover")
-    command(client, "science_start")
+    command(client, "safe_mode")
     # Not even a profile change: an active profile arriving now would otherwise
     # walk a satellite that is powering off back into a bring-up.
     host_status(client, "EXPO")
@@ -770,7 +776,7 @@ def test_critical_is_entered_only_once(obc, monkeypatch):
     monkeypatch.setattr(obc_service, "CRITICAL_FLUSH_GRACE_SEC", 0.05)
     service, client, _ = obc
     bring_up(service, client)
-    battery(client, 5.0)
+    battery(client, DYING)
     flush_thread(service)
     first = service._flush_thread
     service._enter_critical()
@@ -782,9 +788,9 @@ def test_the_flush_is_started_once_per_descent(obc, monkeypatch):
     monkeypatch.setattr(obc_service, "CRITICAL_FLUSH_GRACE_SEC", 0.05)
     service, client, _ = obc
     bring_up(service, client)
-    battery(client, 5.0)
+    battery(client, DYING)
     flush_thread(service)
-    battery(client, 4.0)
+    battery(client, DYING - 1.0)
     poweroffs = [c for c in host_commands(client) if c["action"] == "poweroff"]
     assert len(poweroffs) == 1
 
@@ -997,7 +1003,7 @@ def test_low_power_asks_hostd_to_drop_the_cpu_governor(obc):
     # mean something measurable.
     service, client, _ = obc
     bring_up(service, client, "DEMO")
-    battery(client, 38.0)
+    battery(client, THROTTLED)
     assert governors(client) == ["powersave"]
 
 
@@ -1013,8 +1019,8 @@ def test_recovery_restores_the_profile_s_own_governor(service_factory, clock):
     service.on_start()
     host_status(client, "DIAG")
     report_in(client, "adcs", "payload", "dhs")
-    battery(client, 38.0)
-    battery(client, 52.0)
+    battery(client, THROTTLED)
+    battery(client, RECOVERED)
     assert governors(client) == ["powersave", "performance"]
 
 
@@ -1024,9 +1030,9 @@ def test_the_governor_is_restored_even_when_safe_came_in_between(obc):
     # through LOW_POWER.
     service, client, _ = obc
     bring_up(service, client, "DEMO")
-    battery(client, 38.0)
-    battery(client, 18.0)
-    battery(client, 55.0)
+    battery(client, THROTTLED)
+    battery(client, SAVED)
+    battery(client, RECOVERED)
     assert service.mission.state is MissionState.NOMINAL
     assert governors(client) == ["powersave", "ondemand"]
 
@@ -1034,9 +1040,9 @@ def test_the_governor_is_restored_even_when_safe_came_in_between(obc):
 def test_the_governor_is_asked_for_once_per_descent(obc):
     service, client, _ = obc
     bring_up(service, client)
-    battery(client, 38.0)
-    battery(client, 37.0)
-    battery(client, 36.0)
+    battery(client, THROTTLED)
+    battery(client, THROTTLED - 1.0)
+    battery(client, THROTTLED - 2.0)
     assert governors(client) == ["powersave"]
 
 
@@ -1052,7 +1058,7 @@ def test_a_profile_change_leaves_the_governor_to_apply_profile(obc):
     # on the way out would be a second, racing source of truth.
     service, client, _ = obc
     bring_up(service, client, "DEMO")
-    battery(client, 38.0)
+    battery(client, THROTTLED)
     host_status(client, "EXPO")
     report_in(client, *MISSION_SERVICES)
     assert governors(client) == ["powersave"]
@@ -1079,9 +1085,9 @@ def test_a_flat_satellite_plugged_in_at_a_desk_is_not_powered_off(obc, monkeypat
     monkeypatch.setattr(obc_service, "CRITICAL_FLUSH_GRACE_SEC", 0.05)
     service, client, _ = obc
     bring_up(service, client, "EXPO")
-    battery(client, 18.0)
+    battery(client, SAVED)
     assert service.mission.state is MissionState.SAFE
-    battery(client, 5.0, external_power=True, charge_rate=2.0)
+    battery(client, DYING, external_power=True, charge_rate=2.0)
     assert service.mission.state is MissionState.NOMINAL
     assert [c for c in host_commands(client) if c["action"] == "poweroff"] == []
 
@@ -1090,7 +1096,7 @@ def test_a_charger_that_stopped_charging_does_not_suppress_the_power_off(obc, mo
     monkeypatch.setattr(obc_service, "CRITICAL_FLUSH_GRACE_SEC", 0.05)
     service, client, _ = obc
     bring_up(service, client, "EXPO")
-    battery(client, 5.0, external_power=True, charge_rate=-3.0)
+    battery(client, DYING, external_power=True, charge_rate=-3.0)
     assert service.mission.state is MissionState.CRITICAL
     flush_thread(service)
     assert host_commands(client)[-1]["action"] == "poweroff"

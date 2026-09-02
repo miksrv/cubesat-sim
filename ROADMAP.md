@@ -49,6 +49,23 @@ unwritten — the chart line that should break on a gap, and an end-to-end test 
 build. The one defect the hardware found in the logic, `restart_service` latching `SAFE`, is fixed:
 `health.expect_restart` waives the departure OBC itself asked for, for one loss grace.
 
+### The dashboard still offers `science start` / `science stop` — 2026-09-02
+
+The `SCIENCE` mission state was removed from the satellite on 2026-09-02 (the reasoning is in
+[`docs/concept.md` → Mission states](docs/concept.md#mission-states): every cadence, the beacon,
+the camera permission and the recording rule were identical to `NOMINAL`, so the two commands
+changed a label and nothing a service could act on). The commands are gone from the vocabulary,
+from OBC, from the compact radio syntax and from `MissionState`.
+
+**The Quick Commands buttons live in the groundstation repo**, which this repository does not
+contain — the dashboard arrives as a built artifact. So until that client is edited and
+redeployed, those two buttons publish commands the satellite now ignores. Nothing breaks: an
+unrecognised command on `cubesat/command` belongs to another service by construction and is
+dropped without complaint (there is a test for exactly that). But a button that does nothing is
+worth removing, along with any `SCIENCE` case in the state colouring and in `observed.ts`, and any
+mission recorded before this date can still hold `SCIENCE` in `telemetry.obc_state` — a replay
+must not fall over on a state the enum no longer has.
+
 ### Mission archive as a real dialog — requested 2026-08-31
 
 `MISSION ARCHIVE` today opens an inline list inside `MissionTimelineBar` (`phase === 'picking'`)

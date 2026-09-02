@@ -99,14 +99,6 @@ def _profile(args: list[str]) -> Compact | None:
     return _command("set_profile", profile=args[0].upper())
 
 
-def _science(args: list[str]) -> Compact | None:
-    if args == ["start"]:
-        return _command("science_start")
-    if args == ["stop"]:
-        return _command("science_stop")
-    return None
-
-
 def _restart(args: list[str]) -> Compact | None:
     """``restart adcs`` — one subsystem, by the name the vocabulary uses.
 
@@ -151,7 +143,6 @@ _TABLE = {
     "recover": _bare("recover"),
     "safe": _bare("safe_mode"),
     "profile": _profile,
-    "science": _science,
     "restart": _restart,
     "beacon": _beacon,
     # The name this verb had until 2026-09-01, kept because it may be in

@@ -19,7 +19,13 @@ from typing import Any
 from cubesat.common.states import MissionState
 
 #: Throttle everything: stretch the poll intervals, refuse the camera.
-LOW_POWER_PERCENT = 40.0
+#:
+#: Lowered from 40 % on 2026-09-02. 40 % of an 18650 pair is a long way from an
+#: emergency, and throttling there cost the most interesting part of a trip — the
+#: second half of it — for no gain: the descent that actually protects the card
+#: is SAFE at 20 % and CRITICAL at 10 %, and both are still where they were. What
+#: 30 % buys is a wider band of full-rate recording before anything is given up.
+LOW_POWER_PERCENT = 30.0
 #: Sensors only, radio quiet.
 SAFE_PERCENT = 20.0
 #: Flush the recorder and power the host off while that is still possible.
@@ -32,20 +38,25 @@ CRITICAL_PERCENT = 10.0
 #: protection it is meant to preserve.
 DRAINING_PERCENT_PER_HOUR = -1.0
 
-#: Climb back out at 50 %, ten points above the level that got us here.
+#: Climb back out at 40 %, ten points above the level that got us here.
 #:
-#: The band is the whole point. Recovering at the same 40 % that triggers
+#: The band is the whole point. Recovering at the same level that triggers
 #: LOW_POWER makes the state flap every time the reading crosses it, and the
 #: pre-rewrite handler avoided that by only ever recovering on external power —
 #: which meant that on battery, in FLIGHT, the satellite could never recover at
 #: all no matter how much the pack had charged.
-RECOVERY_PERCENT = 50.0
+#:
+#: Ten points, and it tracked LOW_POWER down when that moved from 40 % to 30 %
+#: (2026-09-02). The alternative was leaving it at 50 % and living with a
+#: twenty-point band, which on this pack means recovery that never arrives on a
+#: walk: the descent is minutes of load, the climb back is a charger the X728 is
+#: not currently delivering (V13). A band wide enough to be unreachable is not
+#: hysteresis, it is a one-way door.
+RECOVERY_PERCENT = 40.0
 
 #: LOW_POWER only applies where power is actually being spent. STANDBY is
 #: already idle, and throttling it would change nothing.
-LOW_POWER_SOURCES = frozenset(
-    {MissionState.DEPLOY, MissionState.NOMINAL, MissionState.SCIENCE}
-)
+LOW_POWER_SOURCES = frozenset({MissionState.DEPLOY, MissionState.NOMINAL})
 #: States a healthy battery can climb out of. CRITICAL is not among them: the
 #: poweroff is already in flight, and reversing that decision half-way is worse
 #: than completing it.

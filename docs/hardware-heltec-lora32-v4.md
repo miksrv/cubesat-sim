@@ -156,7 +156,7 @@ Sharing the channel with a phone or a second node is done with the URL from:
 meshtastic --port /dev/serial0 --qr-all      # prints "Complete URL (includes all channels)"
 ```
 
-**That URL embeds the channel's pre-shared key, and it is deliberately not recorded here.** Anyone holding it can not only decrypt telemetry but *send commands* — COMMS republishes anything arriving over LoRa onto `cubesat/command`, so a leaked key means a stranger can trigger `safe_mode`, `take_photo` or `science_stop`. Treat it as a secret: environment or personal notes, never `config.yaml`, never a committed document. Regenerate with `--ch-set psk random --ch-index 1` if it is ever exposed, then re-import on every node.
+**That URL embeds the channel's pre-shared key, and it is deliberately not recorded here.** Anyone holding it can not only decrypt telemetry but *send commands* — COMMS republishes anything arriving over LoRa onto `cubesat/command`, so a leaked key means a stranger can trigger `safe_mode`, `take_photo` or `set_profile`. Treat it as a secret: environment or personal notes, never `config.yaml`, never a committed document. Regenerate with `--ch-set psk random --ch-index 1` if it is ever exposed, then re-import on every node.
 
 Two practical notes when importing:
 

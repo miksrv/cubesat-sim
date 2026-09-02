@@ -37,8 +37,6 @@ BOOT_COMPLETE = "boot_complete"
 BEGIN_DEPLOY = "begin_deploy"
 DEPLOY_COMPLETE = "deploy_complete"
 STAND_DOWN = "stand_down"
-SCIENCE_START = "science_start"
-SCIENCE_STOP = "science_stop"
 ENTER_LOW_POWER = "enter_low_power"
 ENTER_SAFE = "enter_safe"
 ENTER_CRITICAL = "enter_critical"
@@ -66,13 +64,11 @@ TRANSITIONS: list[dict[str, Any]] = [
         "source": _all_but(MissionState.STANDBY, MissionState.CRITICAL),
         "dest": MissionState.STANDBY,
     },
-    {"trigger": SCIENCE_START, "source": MissionState.NOMINAL, "dest": MissionState.SCIENCE},
-    {"trigger": SCIENCE_STOP, "source": MissionState.SCIENCE, "dest": MissionState.NOMINAL},
     # Only from the states that are actually spending power. Dropping STANDBY to
     # LOW_POWER would throttle a satellite that is already doing nothing.
     {
         "trigger": ENTER_LOW_POWER,
-        "source": [MissionState.DEPLOY, MissionState.NOMINAL, MissionState.SCIENCE],
+        "source": [MissionState.DEPLOY, MissionState.NOMINAL],
         "dest": MissionState.LOW_POWER,
     },
     {

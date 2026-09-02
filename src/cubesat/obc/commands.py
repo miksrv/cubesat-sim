@@ -17,8 +17,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 SET_PROFILE = "set_profile"
-SCIENCE_START = "science_start"
-SCIENCE_STOP = "science_stop"
 SAFE_MODE = "safe_mode"
 RECOVER = "recover"
 RESTART_SERVICE = "restart_service"
@@ -30,7 +28,7 @@ RESTART_SERVICE = "restart_service"
 #: inbox and the browser ACL denies it outright, so a ground client must not be
 #: able to publish there. It asks OBC, which decides whether to ask HOSTD.
 HANDLED = frozenset(
-    {SET_PROFILE, SCIENCE_START, SCIENCE_STOP, SAFE_MODE, RECOVER, RESTART_SERVICE}
+    {SET_PROFILE, SAFE_MODE, RECOVER, RESTART_SERVICE}
 )
 
 

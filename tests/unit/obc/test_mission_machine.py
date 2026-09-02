@@ -8,7 +8,6 @@ BOOT = MissionState.BOOT
 STANDBY = MissionState.STANDBY
 DEPLOY = MissionState.DEPLOY
 NOMINAL = MissionState.NOMINAL
-SCIENCE = MissionState.SCIENCE
 LOW_POWER = MissionState.LOW_POWER
 SAFE = MissionState.SAFE
 CRITICAL = MissionState.CRITICAL
@@ -44,19 +43,6 @@ def test_an_active_profile_walks_standby_through_deploy_to_nominal(machine):
     assert machine.state is NOMINAL
 
 
-def test_nominal_and_science_swap_both_ways(machine):
-    drive(
-        machine,
-        mission_machine.BOOT_COMPLETE,
-        mission_machine.BEGIN_DEPLOY,
-        mission_machine.DEPLOY_COMPLETE,
-        mission_machine.SCIENCE_START,
-    )
-    assert machine.state is SCIENCE
-    machine.fire(mission_machine.SCIENCE_STOP)
-    assert machine.state is NOMINAL
-
-
 def test_deploy_cannot_be_skipped(machine):
     # Reaching NOMINAL without a self-test would be pretending the hardware
     # answered. The absent transition is the specification.
@@ -65,10 +51,20 @@ def test_deploy_cannot_be_skipped(machine):
     assert machine.state is STANDBY
 
 
-def test_science_is_refused_outside_nominal(machine):
-    machine.fire(mission_machine.BOOT_COMPLETE)
-    assert machine.fire(mission_machine.SCIENCE_START) is False
-    assert machine.state is STANDBY
+def test_nominal_is_where_an_active_profile_stays(machine):
+    # There is no state above NOMINAL any more. A SCIENCE state sat here until
+    # 2026-09-02, entered and left by ground command, and it changed nothing a
+    # service could act on: same cadences, same beacon interval, same camera
+    # permission. Cadence belongs to the power-driven descent, not to an
+    # operator's verb.
+    drive(
+        machine,
+        mission_machine.BOOT_COMPLETE,
+        mission_machine.BEGIN_DEPLOY,
+        mission_machine.DEPLOY_COMPLETE,
+    )
+    assert machine.state is NOMINAL
+    assert [state for state in MissionState if state.value == "SCIENCE"] == []
 
 
 @pytest.mark.parametrize(

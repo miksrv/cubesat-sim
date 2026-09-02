@@ -389,13 +389,6 @@ def test_a_photo_is_refused_before_the_mission_state_is_known(payload):
     assert photo_messages(client)[-1]["status"] == "ERROR"
 
 
-def test_a_photo_is_permitted_in_science(payload):
-    service, client, _, _ = payload
-    nominal(client, MissionState.SCIENCE)
-    client.deliver(TOPICS["command"], {"command": "take_photo", "request_id": "r1"})
-    assert photo_messages(client)[-1]["status"] == "SUCCESS"
-
-
 def test_a_capture_that_fails_answers_with_the_error(payload, caplog):
     service, client, _, camera = payload
     service.on_start()
@@ -651,13 +644,15 @@ def test_a_recovery_starts_the_series_again(payload, monkeypatch):
     assert client.last(TOPICS["payload_status"])["mission_photos"]["active"] is True
 
 
-def test_a_state_change_that_still_permits_the_camera_leaves_it_running(payload, monkeypatch):
+def test_the_same_state_arriving_again_leaves_the_series_running(payload, monkeypatch):
+    # OBC republishes its retained status on its own tick and on every reconnect,
+    # so PAYLOAD sees the state it is already in over and over.
     service, client, _, _ = payload
     monkeypatch.setattr(config, "PHOTO_MISSION_INTERVAL_SEC", 30.0)
     nominal(client)
     open_mission(client)
     published = len(client.payloads(TOPICS["payload_status"]))
-    nominal(client, MissionState.SCIENCE)
+    nominal(client, MissionState.NOMINAL)
     assert client.last(TOPICS["payload_status"])["mission_photos"]["active"] is True
     # Nothing changed, so nothing was republished: the reconciler is idempotent.
     assert len(client.payloads(TOPICS["payload_status"])) == published
@@ -701,6 +696,8 @@ def test_commands_addressed_to_other_services_are_ignored_in_silence(payload):
     # make every profile change look like a fault.
     service, client, _, _ = payload
     nominal(client)
+    # `science_start` is in the list on purpose: it was retired on 2026-09-02,
+    # and a stale ground client publishing it must still be a non-event here.
     for command in ("set_profile", "science_start", "get_telemetry", "safe_mode"):
         client.deliver(TOPICS["command"], {"command": command})
     assert client.payloads(TOPICS["payload_photo"]) == []

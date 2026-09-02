@@ -216,10 +216,12 @@ def test_a_mission_label_applies_to_the_next_mission_and_not_to_a_running_one(dh
 # ── the recording gate ──────────────────────────────────────────────────────
 
 
-def test_nominal_records_without_anybody_sending_science_start(dhs, tmp_path):
-    # The pre-rewrite gate is deliberately gone. Keeping it would mean FLIGHT —
-    # the profile whose entire purpose is recording a track — recorded nothing
-    # unless somebody remembered a command before leaving the house.
+def test_nominal_records_with_no_command_from_the_ground(dhs, tmp_path):
+    # The pre-rewrite gate — write only while a ground-commanded SCIENCE state
+    # was active — is deliberately gone, and so is that state. Keeping it would
+    # have meant FLIGHT, the profile whose entire purpose is recording a track,
+    # recorded nothing unless somebody remembered a command before leaving the
+    # house.
     service, client = dhs
     service.on_start()
     obc(client, state=MissionState.NOMINAL)
@@ -228,9 +230,7 @@ def test_nominal_records_without_anybody_sending_science_start(dhs, tmp_path):
     assert rows_in(tmp_path / "comms.db") == 1
 
 
-@pytest.mark.parametrize(
-    "state", [MissionState.SCIENCE, MissionState.LOW_POWER, MissionState.SAFE]
-)
+@pytest.mark.parametrize("state", [MissionState.LOW_POWER, MissionState.SAFE])
 def test_a_descending_satellite_keeps_recording_it_just_records_less_often(dhs, tmp_path, state):
     # In SAFE the radio goes off while the track must keep going: that use case
     # is the whole reason the recorder is not inside the link service.

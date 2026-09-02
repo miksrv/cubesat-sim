@@ -95,6 +95,64 @@ command like delete, not an upload endpoint.
 listed separately — so an archive dialog that exports a mission and gets no pictures back will
 surprise someone, and the backend-less demo build replays a trip with an empty camera panel.
 
+### ADCS mounting offset — requested 2026-09-01, to be done on the running satellite
+
+With the satellite level on a desk, `Roll (X)` reads 2.6° and `Pitch (Y)` −4.1°: the BNO055 is
+mounted a few degrees off the frame. Aligning it mechanically is the wrong tool — by eye it cannot
+be brought within a degree, and every reassembly moves it again — so the offset becomes **data**,
+the way every real vehicle treats IMU mounting.
+
+What to build:
+
+1. **A mounting rotation in configuration**, as a quaternion (sensor frame → body frame), with
+   the date it was captured. Data, not code: it is a property of this assembly and changes whenever
+   the frame is opened. Zero rotation is the default, so nothing changes until it is captured.
+2. **Applied in ADCS, not in the driver.** The driver reports what the sensor measures; ADCS knows
+   how the sensor is bolted to the frame. Body attitude is `q_mount⁻¹ · q_sensor`, and `roll`,
+   `pitch`, `yaw` are then derived from the corrected quaternion — **not** by subtracting two Euler
+   angles, which stops being right the moment the satellite turns about its vertical axis. The same
+   rotation goes onto `accel_g` and `gyro_dps`, or the dashboard's own frame check ("measured g up
+   at rest") reports the 5° the attitude no longer has.
+3. **A capture procedure that cancels the desk.** A desk is not level either, and a naive "level
+   here" bakes its tilt into the satellite. Capture with the satellite on the desk, turn it 180°
+   about vertical, capture again: the desk's tilt changes sign relative to the frame while the mount
+   offset does not, so the mean of the two is the mount alone. Ten seconds of samples each, averaged.
+   A `level` (or `calibrate mount`) command on the usual `cubesat/command` topic, so it works from the
+   shell, the console and the radio alike, and prints the quaternion for the config file.
+4. **Say so on the wire.** `adcs_status` carries the offset that was applied (or that none was), so a
+   consumer can tell corrected attitude from raw. Recorded missions before this change hold sensor
+   frame attitude, later ones body frame — worth a line in the schema notes, not worth a migration.
+5. The BNO055's own `AXIS_MAP` remap is not the tool: it swaps axes in 90° steps only.
+
+After any reassembly the capture is repeated and the new value recorded in
+`docs/hardware-bno055-bmp280-imu.md` beside the axis convention already written there.
+
+### A ship's log, not "Mission Events" — requested 2026-09-01
+
+The dashboard's `Mission Events` widget is built in the browser from transitions the page itself
+witnessed (`features/events/observed.ts` in the groundstation repo): mission state, profile applied
+or partly applied, a mission opening or closing, a subsystem going quiet, a photo refused, a
+transmit failing. Wanted — and every one of these is already on the bus, so the first step is
+client-side and cheap:
+
+- **Power source changed** — `eps_status.external_power` flipping either way ("mains lost", "mains
+  restored"), the event that today's charging investigation kept wanting a timestamp for.
+- **Photograph taken** — from the retained `payload_photo`: an on-demand `photo` and a mission
+  `mission_frame` are different lines, with the file name and, for a frame, its sequence number.
+- **GNSS fix acquired / lost** — `adcs_status.gnss.fix` flipping, with the satellite count.
+- **Beacon on / off** — `comms_status.lora_enabled` flipping, and whether it was the profile's own
+  default on entry or a command.
+- **Rename it.** The widget is a ship's log — *бортовой журнал* — and should be titled as one.
+
+The structural question underneath, to decide rather than to drift into: the browser log **starts
+when the page does** and is empty after a reload, which the widget honestly says. A ship's log that
+means the term keeps its entries on the satellite — a small `events(mission_id, t, kind, detail)`
+table owned by DHS, fed from the same transitions DHS already sees on the topics it subscribes to,
+exported with the mission and replayed with it. That is a fifth table beside `radio_log`, which is
+the precedent: discrete events with their own timestamps, kept because a 30 s telemetry row cannot
+stand for them. Until that decision is made, the four events above go into `observed.ts`; when the
+table exists, the widget reads it for history and keeps deriving live entries the same way.
+
 ### The walk to work: what to check on the first real trip
 
 The use case `FLIGHT` exists for, written down as a sequence because every piece of it is now built
@@ -148,7 +206,7 @@ and the mosquitto ACL that must not sit in `conf.d/` in `config/mosquitto/`.
 | V6 | **NetworkManager client mode.** `nmcli connection down Hotspot` with a pinned `wlan0` | Written against the documentation, never run on the Pi. `EXPO` depends on it |
 | V7 | **SEN0501 board revision.** Read the silkscreen, or compare the pair of candidate values the driver logs against a known UV source | One raw register, two formulas: at raw 14 they give 0.00 and 84.35. `uv_index` stays null until this is settled |
 | V10 | **Meshtastic hop count.** `hops = hopStart − hopLimit` is read from the library's documentation, not from a bench run. The check: a packet relayed through a third node should arrive with `hops = 1`; everything heard so far has been direct | Every direct packet reads 0 whichever interpretation is right, so no traffic to date can falsify it. Wrong arithmetic would put a plausible small integer in `radio_log.hops` |
-| V13 | **The X728 does not appear to be charging on mains, and it should be.** Observed 2026-08-31 with the satellite plugged in all evening: 3.92 V, SOC ~66 %, `CRATE` one LSB from zero, and the board's own charge LEDs agreeing with roughly that level. The datasheet figures in `docs/hardware-x728-ups-hat.md` say the recharge threshold is **4.1 V** and cutoff 4.24 V — at 3.92 V the board is well past the point where it should have resumed, so "it deliberately holds a partial charge" does not explain this reading. Two candidates, cheap to separate. First, the **`CHG Ctrl` jumper**: on the V2.5 board, opening it hands charge control to **GPIO16**, and nothing in this repo drives that pin (the only GPIO the code touches is `PLD_PIN = 6`, and it only reads it) — so if the jumper is open, charging is simply disabled by a floating input. Check the jumper physically first. Second, tired 18650s: capacity loss shows up as a cell that will not hold a charge, and the pack is unbranded. `vcgencmd get_throttled` reads `0x0`, so the 5 V supply is not sagging and can be ruled out. **If the jumper turns out to be the answer, it is an opportunity rather than a defect** — GPIO16 would let EPS decide when to charge, which is exactly the wanted behaviour: hold a partial charge on the desk, where a Li-ion cell ages fastest sitting full, and top the pack up deliberately before a `FLIGHT` outing. That would be a driver and a policy, not a jumper left closed | Nothing errors and nothing looks broken: the dashboard shows a plausible 66 %, the LEDs agree, and the satellite runs happily on mains. It is discovered at the worst possible moment — leaving for a trip with a pack that was never full — which is precisely the failure `FLIGHT` cannot afford. While charging is in doubt, the 2026-08-31 mains-day drift (SOC down while voltage rose) cannot be interpreted either — that drift is now this item's question, since the "70× disagreement" it was filed under turned out to be a comparison against a constant (see `docs/hardware-x728-ups-hat.md`, 2026-09-01) |
+| V13 | **The X728 charges on mains, but at ~+3 %/h — a fraction of its rated 2.3–3.2 A.** Measured 2026-09-01 with `charge_rate` a real quantity (see `docs/hardware-x728-ups-hat.md`): CanaKit 3.5 A on USB-C, LEDs one steady one blinking, SOC 50.39 → 50.78 % in fifteen minutes, voltage +17 mV. Next check: a 5.1 V ≥ 4 A supply on the DC jack, the input Geekworm rates for full charging current; if the rate does not change, the cells or the charger stage are the question. The original observation follows for the record. Observed 2026-08-31 with the satellite plugged in all evening: 3.92 V, SOC ~66 %, `CRATE` one LSB from zero, and the board's own charge LEDs agreeing with roughly that level. The datasheet figures in `docs/hardware-x728-ups-hat.md` say the recharge threshold is **4.1 V** and cutoff 4.24 V — at 3.92 V the board is well past the point where it should have resumed, so "it deliberately holds a partial charge" does not explain this reading. The **`CHG Ctrl` jumper was checked on 2026-09-01 and is installed**, which per Geekworm means automatic charging whenever the adapter is connected — so a floating GPIO16 is ruled out. Two candidates remain. First, the **supply**: the X728 charges only from its own DC jack and wants 2.3–3.2 A for the pack on top of the Pi's load; `PLD` proves the jack sees power, not enough of it. Second, tired 18650s: capacity loss shows up as a cell that will not hold a charge, and the pack is unbranded. `vcgencmd get_throttled` reads `0x0`, so the 5 V supply is not sagging and can be ruled out. **The decisive check is now cheap, because `charge_rate` is a real measurement:** plug in and watch `voltage` and `charge_rate` for ten minutes — a charger delivering current lifts the terminal voltage within seconds and turns the rate positive after the five-minute window. (Opening the jumper on purpose stays an opportunity: GPIO16 would let EPS hold a partial charge on the desk and top up before a `FLIGHT`. A driver and a policy, later) | Nothing errors and nothing looks broken: the dashboard shows a plausible 66 %, the LEDs agree, and the satellite runs happily on mains. It is discovered at the worst possible moment — leaving for a trip with a pack that was never full — which is precisely the failure `FLIGHT` cannot afford. While charging is in doubt, the 2026-08-31 mains-day drift (SOC down while voltage rose) cannot be interpreted either — that drift is now this item's question, since the "70× disagreement" it was filed under turned out to be a comparison against a constant (see `docs/hardware-x728-ups-hat.md`, 2026-09-01) |
 | V14 | **BNO055 low-byte bit-7 flips reach the record.** Measured 2026-09-01 in `DEMO` at rest: about one published sample in twenty carries an undetectable +128 LSB step — `gyro_x` exactly 8.0 °/s between neighbours of 0.06, `acc_x` 0.07 → 0.20 g and back — while the detectable high-byte flips ran at one read in eleven, all caught. The plausibility check cannot see these by construction. The check the hardware doc has asked for since 2026-08-28: move the sensor to a bit-banged `i2c-gpio` bus, which honours clock stretching, and measure both rates again. Until then a median-of-three in the driver would hide the isolated ones at the cost of half a second of latency — a decision, not a fix | They are physically plausible values and DHS writes them into `attitude` as measured, so a replay shows an 8° twitch or a 0.13 g kick that never happened |
 
 ---

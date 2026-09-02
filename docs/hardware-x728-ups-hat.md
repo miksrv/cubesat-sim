@@ -247,18 +247,54 @@ But it is not charging in earnest, and by this document's own specification tabl
 the recharge threshold is **4.1 V** and 3.92 V is well below it. So "the UPS deliberately holds a
 partial charge" does not fit the numbers. Things to check, cheapest first:
 
-1. **The `CHG Ctrl` jumper.** On the V2.5 board, opening it moves charge control to **GPIO16**.
-   Nothing in this repository drives that pin — the only GPIO the code touches is the PLD input on
-   GPIO6 — so an open jumper means charging is gated by a floating input. Check it physically.
-2. **The cells.** Unbranded 18650s that no longer hold a charge look exactly like this.
-3. Ruled out already: the 5 V supply. `vcgencmd get_throttled` reads `0x0`, so the rail is not
-   sagging.
+1. ~~**The `CHG Ctrl` jumper.**~~ **Checked 2026-09-01: the jumper is installed.** Per Geekworm's
+   X728-script page, *shorted* means "battery automatic charging when power adapter connected" and
+   *open* hands control to GPIO16 (high = charging enabled, low = disabled). So charging is not
+   gated by a floating input, and this explanation is ruled out. The GPIO16 idea below still
+   stands as a *future* feature, no longer as a diagnosis.
+2. **The adapter and where it is plugged in.** The X728 charges only from its own DC jack, and the
+   charger wants 2.3–3.2 A on top of the Pi's load; a 5 V supply feeding the Pi's USB-C, or one too
+   weak for both, keeps the Pi up and the pack flat. `PLD` reading "AC present" proves the jack sees
+   power, not that it sees enough of it. `vcgencmd get_throttled` = `0x0` clears the 5 V *output*
+   only.
+3. **The cells.** Unbranded 18650s that no longer hold a charge look exactly like this.
 
-If the jumper is the answer, it is worth keeping open rather than closing: GPIO16 would let EPS
-decide *when* to charge. Holding a partial charge on the desk is genuinely better for a Li-ion
-cell than sitting at 4.2 V for weeks, and a deliberate top-up before a `FLIGHT` outing is exactly
-the behaviour wanted. That turns a puzzle into a feature — but only after the jumper is looked at,
-because right now nobody knows which of the three explanations is true.
+The decisive check is now cheap, because `charge_rate` is a measurement: plug the satellite in
+and watch `voltage` and `charge_rate` for ten minutes. A charger delivering current lifts the
+terminal voltage by tens of millivolts within seconds and turns the fitted rate positive after the
+five-minute window; the 2026-08-31 evening on mains showed neither (3.905 → 3.920 V over 85 minutes,
+SOC falling), which is what "not charging" looks like from the bus.
+
+**Measured 2026-09-01, 21:53–22:08, CanaKit 5.1 V / 3.5 A adapter on the X728's USB-C input,
+`DEMO` running (eight services, camera pipeline warm), jumper installed.** The pack *is* charging,
+and slowly:
+
+```
+21:53:03  50.39 %  3.774 V  on battery, -18.65 %/h
+21:53:33  50.39 %  3.824 V  plugged in  (+50 mV at once: the load came off the cell)
+22:02:33  50.39 %  3.844 V
+22:04:33  50.78 %  3.846 V  first SOC step upwards, 11 minutes in
+22:08:03  50.78 %  3.848 V  charge_rate +3.28 %/h
+```
+
+LEDs: one steady, one blinking, two dark — the board's own "charging at the 25–50 % level". So the
+charger works and the cells accept charge; what is missing is current. +3 %/h into a two-cell pack
+is on the order of 150 mA, against the 2.3–3.2 A the board advertises, and the terminal voltage
+rising 17 mV in a quarter of an hour agrees — real charging current lifts a cell at 3.8 V far more
+than that. Two readings of this are consistent with the numbers: the USB-C input is rated "≥ 3 A"
+and the Pi's own load comes out of the same 3.5 A before the charger sees anything; or the charger
+throttles when the adapter's 5 V sags under load, as most such controllers do. Both point the same
+way — **try a 5.1 V, ≥ 4 A supply on the DC 5.5 × 2.1 jack**, which is the input Geekworm rates for
+the full charging current. At the measured rate, 50 → 100 % takes about seventeen hours; a
+satellite that comes home flat is not ready for the next morning.
+
+The 2026-08-31 evening reading (SOC *falling* on mains) still does not fit this picture and is left
+recorded above as observed; one difference is that today's plug-in followed a real discharge, while
+yesterday's gauge may have been re-converging its estimate after a long idle.
+
+If the jumper is ever opened on purpose, GPIO16 would let EPS decide *when* to charge. Holding a
+partial charge on the desk is genuinely better for a Li-ion cell than sitting at 4.2 V for weeks,
+and a deliberate top-up before a `FLIGHT` outing is exactly the behaviour wanted.
 
 Tracked as V13 in [`ROADMAP.md`](../ROADMAP.md). **Do not interpret the gauge drift above until
 this is settled:** a cell that is being trickle-charged and one that is not are different problems.

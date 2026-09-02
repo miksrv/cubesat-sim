@@ -5,9 +5,9 @@ Two chips on one Gravity board, on separate I2C addresses:
 - **BNO055** (`0x28`) — 9-axis absolute orientation sensor: 3-axis accelerometer, gyroscope and magnetometer plus an onboard Cortex-M0 running Bosch's sensor fusion. It outputs a fused quaternion and Euler angles directly, so the host does not have to implement an AHRS filter.
 - **BMP280** (`0x76`) — barometric pressure and temperature.
 
-Intended consumer is **ADCS** orientation, replacing `src/common/imu_qmi8658_ak09918.py` (QMI8658 + AK09918 on the ~~[Sense HAT (C)](hardware-sense-hat-c.md)~~, which is out of the design). Note that the BMP280 duplicates the pressure measurement already provided by the [SEN0501](hardware-sen0501-environmental-sensor.md) — decide which one Payload should publish rather than shipping both.
+The consumer is **ADCS** orientation. It replaced `src/common/imu_qmi8658_ak09918.py` (QMI8658 + AK09918 on the ~~[Sense HAT (C)](hardware-sense-hat-c.md)~~, which is out of the design) — the chips share no register map, so the replacement was wholesale. Note that the BMP280 duplicates the pressure measurement already provided by the [SEN0501](hardware-sen0501-environmental-sensor.md); which one Payload should publish is still undecided, tracked as Q1.
 
-> **Status:** bench-verified on 2026-08-23. Both chips answer, fusion runs, and all vectors are self-consistent. No driver exists in `src/` yet; the bench script lives on the Pi at `~/test/bno055_bmp280_read.py`.
+> **Status:** bench-verified on 2026-08-23 — both chips answer, fusion runs, and all vectors are self-consistent. The driver is `src/cubesat/hal/rpi/bno055.py`, behind the `IMU` protocol, and it ran inside `ADCS` on the assembled satellite on 2026-09-01 in `DEMO`, at 2 Hz: orientation reached the dashboard's 3D widget live. That session is also where the bit-error rates below were counted, and where the mounting offset was found (`Roll (X)` 2.6°, `Pitch (Y)` −4.1° with the satellite level) — the offset is being made data rather than corrected mechanically, see `ROADMAP.md`. The bench script lives on the Pi at `~/test/bno055_bmp280_read.py`.
 
 > **This board imposes a system-wide constraint:** the I2C bus clock must be lowered to 10 kHz for the BNO055 to be readable at all. See [The clock-stretching problem](#the-clock-stretching-problem) — this is the single most important thing in this document.
 
@@ -194,14 +194,12 @@ Sanity checks worth repeating on any new board: `|a|` should be close to 9.8 m/s
 
 ## Open items
 
-- No driver in `src/` yet. Its home in the rewrite is `src/cubesat/hal/rpi/bno055.py`, behind the
-  `IMU` protocol. It replaces `src/common/imu_qmi8658_ak09918.py` wholesale — the chips share no register map — and is consumed by ADCS.
 - **The 10 kHz bus clock is now a project-wide requirement**, not a detail of this sensor. Any deployment or install script that writes `config.txt` must set it, and `docs/` for the other I2C peripherals assumes it.
 - Decide whether pressure comes from this BMP280 or from the SEN0501, and drop the duplicate.
 - Magnetometer calibration must be captured in the final configuration and location, then persisted — see [Magnetometer readings](#magnetometer-readings-depend-on-the-environment-not-just-the-sensor). A profile collected elsewhere encodes the wrong hard-iron offset.
 - The frame's actual magnetic contribution is still unmeasured. It needs a controlled comparison: same location, magnetometer calibrated in both cases, only the mounting changed.
-- Calibration persistence is unimplemented: the driver should read back the calibration profile once `CALIB_STAT` is 3 and restore it on start, otherwise every reboot begins uncalibrated and heading is unusable until the satellite is manually waved about.
-- Tests will need a fake I2C peripheral in `tests/fakes.py`, including a case that reproduces the bit-7 corruption so the driver's ID check is exercised.
+- Calibration persistence is **deliberately** unimplemented, tracked as V5: reading the profile back once `CALIB_STAT` is 3 and restoring it on start would spare the waving-about after every reboot, but the profile register block is not in the verified documentation, and writing unverified registers into the fusion engine on every boot is what produced the `SYS_ERR = 9` session recorded above. Until it is verified, `yaw` is withheld for a while after each restart — a gap rather than a confident constant.
+- ~~Tests will need a fake I2C peripheral~~ — done: `FakeBno055Bus` in `tests/unit/hal/test_bno055.py`, including the bit-7 corruption case, so the driver's validation and re-read path is exercised off the Pi.
 
 ## Further reading
 

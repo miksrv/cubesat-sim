@@ -1,6 +1,6 @@
 # X728 V2.5 UPS HAT
 
-Battery power management HAT used by the **EPS** subsystem (`src/eps/`). Provides LiPo/18650 fuel-gauge readings and AC-loss detection so the OBC state machine can react to a degrading power budget (`NOMINAL` → `LOW_POWER` → `SAFE`, see `src/obc/state_machine.py`).
+Battery power management HAT used by the **EPS** subsystem (`src/cubesat/eps/`). Provides LiPo/18650 fuel-gauge readings and AC-loss detection so the OBC state machine can react to a degrading power budget (`NOMINAL` → `LOW_POWER` → `SAFE` → `CRITICAL` — the thresholds live in `src/cubesat/obc/power_policy.py`, the legal moves in `mission_machine.py`).
 
 - **Product:** [Geekworm X728 V2.5](https://www.aliexpress.us/item/3256804825472151.html)
 - **Official docs:** [Geekworm Wiki — X728](https://wiki.geekworm.com/X728), [X728-script (current setup guide)](https://wiki.geekworm.com/X728-script), [firmware/scripts repo](https://github.com/geekworm-com/x728-script)
@@ -22,10 +22,10 @@ Battery power management HAT used by the **EPS** subsystem (`src/eps/`). Provide
 | Boot-indicator GPIO (BCM, official scripts) | GPIO12 (driven high once boot completes) |
 | Software-shutdown trigger GPIO (BCM, official scripts) | GPIO26 (V2.0–V2.5; GPIO13/16 on v1.2/v1.3) — pulled high to signal the HAT's MCU to cut 5V rail |
 | Charge-control jumper (V2.5 only) | GPIO16 — for advanced use, controls charging when the "CHG Ctrl" jumper is open |
-| AC power-loss detection (PLD) | Dedicated GPIO input; `0` = AC present, `1` = AC lost (this project reads it on **BCM GPIO6**, see `src/eps/power_monitor.py` — `PLD_PIN = 6`) |
+| AC power-loss detection (PLD) | Dedicated GPIO input; `0` = AC present, `1` = AC lost (this project reads it on **BCM GPIO6**, see `src/cubesat/hal/rpi/max17048.py` — `PLD_PIN = 6`, read by the same driver that reads the gauge, because both are this one HAT) |
 | Buzzer control (V2.1+) | GPIO20 — drives the onboard buzzer, not used by this project |
 
-> The GPIO5/12/26 pins above are Geekworm's own safe-shutdown daemon (`xPWR.sh`/`xSoft.sh`), which this project does **not** currently wire up — the EPS service only *reads* battery and AC status over MQTT; it does not drive a graceful auto-poweroff sequence itself. AC-loss detection is read on GPIO6, matching `EPSMonitor.get_external_power()`.
+> The GPIO5/12/26 pins above are Geekworm's own safe-shutdown daemon (`xPWR.sh`/`xSoft.sh`), which this project does **not** wire up: EPS only *reads* the pack and the mains pin and publishes them. Powering the host down belongs to `CRITICAL` and travels through HOSTD, which is the only privileged process here — see `docs/concept.md`.
 
 ### GPIO pins reserved by this HAT (stacking compatibility)
 
@@ -61,7 +61,7 @@ Exact pin usage depends on the board revision (v1.2/v1.3 vs. v2.0+) — check si
    ```bash
    i2cdetect -y 1   # expect 0x36 (and 0x68 if the RTC is populated)
    ```
-4. GPIO access requires the user to be in the `gpio` group (default on Raspberry Pi OS) or run as root — `RPi.GPIO` in this project sets up `PLD_PIN` (BCM 6) as an input in `EPSMonitor.__init__`.
+4. GPIO access requires the service account to be in the `gpio` group — the `cubesat@eps` unit grants it — or to run as root. `RPi.GPIO` (in practice the `python3-rpi-lgpio` shim) sets `PLD_PIN` (BCM 6) up as an input on the driver's first read, not at construction, so importing the module off a Pi costs nothing.
 
 ## Usage examples
 
@@ -76,7 +76,7 @@ i2cget -y 1 0x36 0x02 w   # VCELL
 i2cget -y 1 0x36 0x04 w   # SOC
 ```
 
-**Python — as implemented in this project (`src/eps/power_monitor.py`):**
+**Python — the shape of the driver in `src/cubesat/hal/rpi/max17048.py`:**
 ```python
 import smbus2
 import RPi.GPIO as GPIO
@@ -177,16 +177,25 @@ exactly one LSB — the same "about zero" the 2026-08-23 bench reading recorded.
 agree, and the voltage is the one to believe: a Li-ion cell shedding 15 %/hour in this part of the
 curve would drop several millivolts, and 3.905 → 3.906 is one LSB of noise upward.
 
-Most likely the gauge is still converging after power-on — the MAX17048's ModelGauge algorithm
-estimates from the open-circuit voltage and settles over time, and this project never issues a
+Most likely the gauge is still converging after power-on — the ModelGauge algorithm this family
+runs estimates from the open-circuit voltage and settles over time, and this project never issues a
 quick-start. The absolute numbers are not absurd (79.6 % at 4.044 V in August against 70 % at
 3.905 V now is a consistent pair), so this looks like drift rather than a broken scale factor.
 
-**It is not settled, and the constant must not be adjusted to make it look better** — see V12 in
-[`ROADMAP.md`](../ROADMAP.md). What would settle it is a multi-hour log of all three fields on
-mains, then the same on battery. Note also that nothing about this is currently dangerous: the
-power policy suppresses every descent while `external_power` is true and `charge_rate` is above
-−1.0 %/hour, so a false SOC is inert — until `CRATE` crosses that line.
+**It is not settled, and the constant must not be adjusted to make it look better.** The `CRATE`
+half of the puzzle turned out to be a misidentified part rather than a measurement — see the next
+section — so what remains of this reading is now V13's question in
+[`ROADMAP.md`](../ROADMAP.md): whether the pack was being charged at all. What would settle it is a
+multi-hour log of voltage, SOC and the fitted rate on mains, then the same on battery.
+
+**How the mechanics changed on 2026-09-01, and it is not in this reading's favour.** While
+`charge_rate` came off the register it was a constant `−0.208 %/h`, comfortably above
+`DRAINING_PERCENT_PER_HOUR` (−1.0), so `on_mains` was satisfied unconditionally and a false SOC was
+inert. EPS now *fits* the rate to the SOC history, so a drift like the one above computes as roughly
+−15 %/h, which is below the threshold: the satellite would read as "plugged in but draining", the
+suppression of the power-driven descents would lift, and a lying gauge could walk it down towards
+`CRITICAL`. That is the clause working exactly as designed — one failed charger must not disable the
+protection for ever — but it is why the drift is worth understanding rather than filing.
 
 ### The gauge is a MAX17040/41, not a MAX17048 (2026-09-01)
 
@@ -299,7 +308,7 @@ and a deliberate top-up before a `FLIGHT` outing is exactly the behaviour wanted
 Tracked as V13 in [`ROADMAP.md`](../ROADMAP.md). **Do not interpret the gauge drift above until
 this is settled:** a cell that is being trickle-charged and one that is not are different problems.
 
-Note that the I2C bus runs at 10 kHz project-wide (see the [I2C address map](../README.md#i2c-address-map)); this is well within the DS1307's and MAX17048's standard-mode range and needs no adjustment here.
+Note that the I2C bus runs at 10 kHz project-wide (see the [I2C address map](../README.md#i2c-address-map)); this is well within the DS1307's and the gauge's standard-mode range and needs no adjustment here.
 
 ## Further reading
 

@@ -1,9 +1,10 @@
 # Code Smells & Issues
 
-> **⚠️ Historical audit** of the pre-rewrite codebase. Most items are fixed — see
-> [`../ROADMAP.md`](../ROADMAP.md) for the status of each (B1–B6, C1–C5, R1–R4) before acting on
-> anything here. The code these findings describe is being replaced outright; treat this as a
-> record of what went wrong and why, not as a task list.
+> **⚠️ Historical audit** of the pre-rewrite codebase, and the code it describes no longer exists —
+> it was replaced outright by the rewrite. The item numbers (B1–B6, C1–C5, R1–R4) were tracked in
+> `ROADMAP.md` at the time and have been removed from it, since that file holds only what is
+> outstanding; git history has what it used to say. Treat this as a record of what went wrong and
+> why, not as a task list.
 
 This document catalogs issues found in the current codebase, ordered roughly by severity.
 

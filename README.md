@@ -3,7 +3,7 @@
 CubeSat Sim is a working flight software stack for a real, physical CubeSat — not just a simulation on paper. Eight independent Python services each model one satellite subsystem and talk to each other exclusively over MQTT, the same way modules communicate over a real spacecraft bus. Two state machines drive it: a **platform profile** chosen by the operator decides what the Raspberry Pi is allowed to be (desk host, live demo, standalone exhibit, autonomous field unit), and a **mission state** machine reacts on its own to battery telemetry and faults inside that envelope. A separate privileged service is the only thing in the project that may touch the host; everything else runs unprivileged.
 
 Every driver sits behind a hardware abstraction layer, so the whole stack runs on a laptop against
-mocked sensors — which is how it is developed, and how its 1101 tests reach 100 % line coverage
+mocked sensors — which is how it is developed, and how its 1400 tests reach 100 % line coverage
 without a Raspberry Pi in the room.
 
 ![CubeSat Sim](hardware/photos/cover.jpg)
@@ -18,22 +18,36 @@ If you're learning satellite software architecture, distributed systems, or embe
 
 **The hardware is finished.** Every component in the [Hardware](#hardware) table is on the assembled satellite and bench-validated — the full I2C bus was verified in a single scan with every module attached, and the LoRa link was confirmed in both directions over the air.
 
-**The software is written, and has never run on the satellite.** Seven of the eight services exist —
-everything but the dashboard — at 100 % line coverage with `ruff` and `mypy` clean in CI. Every one
-of them has been exercised against the mock HAL, and not one instruction has executed on the
-Raspberry Pi. Those are different kinds of confidence and this README does not blur them:
+**The software is written, and it has now run on the satellite — in two of the six profiles, for
+minutes.** All eight services exist, at 100 % line coverage with `ruff` and `mypy` clean in CI.
+Every one of them has been exercised against the mock HAL for months; what is new is that they have
+also been started on the Raspberry Pi:
+
+- **2026-08-31, `HOSTED`** — `HOSTD`, `OBC`, `EPS` and `COMMS`. Five I2C devices answered, the
+  Meshtastic node was reachable, a ground command round-tripped from a phone, and `SAFE` was
+  entered and cleared for real.
+- **2026-09-01, `DEMO`** — `ADCS`, `PAYLOAD`, `DHS` and `DASHBOARD` joined them. `DEPLOY` completed
+  in 1.4 s into `NOMINAL`, and the attitude widget and a photograph were watched live in a browser.
+- **`FLIGHT`, `EXPO`, `DIAG` and `MAINTENANCE` have never been applied.** So what is untried is now
+  a set of profiles rather than a set of services: the field radio-only case, the access point, a
+  GNSS fix taken while moving, and the separate `diag.db`.
+
+Running for minutes on a desk and being validated are different kinds of confidence, and this README
+does not blur them:
 
 | Mark | Meaning |
 |---|---|
 | ✅ | Bench-validated on the assembled satellite |
-| 🧪 | Written and covered by tests, never run on hardware |
-| 🆕 | Not written yet |
+| 🛰️ | Has run on the assembled satellite — the date and the profile are in the section that carries the mark |
 
-So: every driver in this document is 🧪. The register maps behind them come from the bench notes in
-`docs/hardware-*.md`, and where a constant had to come from a datasheet instead, the driver says so
-at the constant. [`ROADMAP.md`](ROADMAP.md) carries the list of checks only the bench can settle —
-the ones that would otherwise produce plausible wrong data rather than an error, which is the class
-of fault this whole codebase is arranged around.
+There is no third mark for "never run on hardware": no service and no driver is in that state any
+more. But every driver having been read from on the satellite is not the same as its numbers being
+trusted — the register maps come from the bench notes in `docs/hardware-*.md`, and where a constant
+had to come from a datasheet instead, the driver says so at the constant.
+[`ROADMAP.md`](ROADMAP.md) carries the list of checks only the bench can settle — the ones that
+would otherwise produce plausible wrong data rather than an error, which is the class of fault this
+whole codebase is arranged around — and the one open defect the hardware has found in the logic so
+far: `restart_service` latches `SAFE`.
 
 Read [docs/concept.md](docs/concept.md) for *why* the design looks like this; this README is the
 reference for *what* it is.
@@ -236,8 +250,8 @@ Each service is an independent Python process. No service calls another directly
                                               ▼
                                         ┌───────────┐
                                         │ DASHBOARD │──► browser
-                                        │ WS + REST │    (WebSocket)
-                                        └───────────┘
+                                        │   REST    │    (live data arrives
+                                        └───────────┘     from mosquitto:9001)
                           Raspberry Pi 4 · I2C bus 1 @ 10 kHz
 ```
 
@@ -250,14 +264,14 @@ The key property is that **no service knows whether the others exist**. `COMMS` 
 | # | Service | Unit | Runs as | Always on | Responsibility | Status |
 |---|---|---|---|---|---|---|
 | 0 | broker | `mosquitto` | own user | ✅ | The message bus. Every control path in the design runs through it | ✅ |
-| 1 | [HOSTD](#hostd) | `cubesat-hostd` | **root** | ✅ | Host executor: units, Wi-Fi mode, CPU governor, power-off, profile state file | 🧪 |
-| 2 | [OBC](#obc) | `cubesat@obc` | `cubesat` | ✅ | Both state machines, command parsing, subsystem health monitoring | 🧪 |
-| 3 | [EPS](#eps) | `cubesat@eps` | `cubesat` + `i2c`,`gpio` | ✅ | Battery and mains telemetry — the input that drives `LOW_POWER`/`SAFE`/`CRITICAL` | 🧪 |
-| 4 | [ADCS](#adcs) | `cubesat@adcs` | `cubesat` + `i2c` | by profile | Absolute orientation (BNO055) and position (TEL0157) | 🧪 |
-| 5 | [PAYLOAD](#payload) | `cubesat@payload` | `cubesat` + `i2c`,`video` | by profile | Environmental science (SEN0501) and the camera | 🧪 |
-| 6 | [DHS](#dhs) | `cubesat@dhs` | `cubesat` | by profile | The flight recorder: owns the SQLite database, writes rows, enforces retention | 🧪 |
-| 7 | [COMMS](#comms) | `cubesat@comms` | `cubesat` + `dialout` | all but `MAINTENANCE` | The only link outward: LoRa mesh, uplink re-publish | 🧪 |
-| 8 | [DASHBOARD](#dashboard) | `cubesat-dashboard` | `cubesat` | by profile | The static UI and read-only REST over the database. No WebSocket — browsers talk to the broker | 🧪 |
+| 1 | [HOSTD](#hostd) | `cubesat-hostd` | **root** | ✅ | Host executor: units, Wi-Fi mode, CPU governor, power-off, profile state file | 🛰️ |
+| 2 | [OBC](#obc) | `cubesat@obc` | `cubesat` | ✅ | Both state machines, command parsing, subsystem health monitoring | 🛰️ |
+| 3 | [EPS](#eps) | `cubesat@eps` | `cubesat` + `i2c`,`gpio` | ✅ | Battery and mains telemetry — the input that drives `LOW_POWER`/`SAFE`/`CRITICAL` | 🛰️ |
+| 4 | [ADCS](#adcs) | `cubesat@adcs` | `cubesat` + `i2c` | by profile | Absolute orientation (BNO055) and position (TEL0157) | 🛰️ |
+| 5 | [PAYLOAD](#payload) | `cubesat@payload` | `cubesat` + `i2c`,`video` | by profile | Environmental science (SEN0501) and the camera | 🛰️ |
+| 6 | [DHS](#dhs) | `cubesat@dhs` | `cubesat` | by profile | The flight recorder: owns the SQLite database, writes rows, enforces retention | 🛰️ |
+| 7 | [COMMS](#comms) | `cubesat@comms` | `cubesat` + `dialout` | all but `MAINTENANCE` | The only link outward: LoRa mesh, uplink re-publish | 🛰️ |
+| 8 | [DASHBOARD](#dashboard) | `cubesat-dashboard` | `cubesat` | by profile | The static UI and read-only REST over the database. No WebSocket — browsers talk to the broker | 🛰️ |
 | — | external units | e.g. `telegram-bot` | their own | by profile | Not this repository's code — only named in `config/profiles.yaml` | — |
 
 Startup order: `mosquitto` → `HOSTD` (applies the default profile, `HOSTED`) → `OBC` (picks the profile up from the retained `host/status`) → `EPS`. Nothing else runs until a profile asks for it. All units are `Restart=always`.
@@ -269,7 +283,7 @@ Two invariants are enforced in code, not by convention:
 
 ### HOSTD
 
-**Path:** `src/cubesat/hostd/` | **Client ID:** `hostd` | **Runs as root** | 🧪
+**Path:** `src/cubesat/hostd/` | **Client ID:** `hostd` | **Runs as root** | 🛰️ `HOSTED` 2026-08-31
 
 The hands. `HOSTD` has no decision logic at all: it consumes a fixed vocabulary of actions on `cubesat/host/command`, executes them, and reports what it actually achieved on `cubesat/host/status`. It is deliberately small enough to audit by reading it.
 
@@ -287,7 +301,7 @@ The allowlist has a second job beyond preventing that: it is the **single readab
 
 ### OBC
 
-**Path:** `src/cubesat/obc/` | **Client ID:** `obc` | 🧪
+**Path:** `src/cubesat/obc/` | **Client ID:** `obc` | 🛰️ `HOSTED` 2026-08-31
 
 The head. `OBC` owns both state machines, decides what the platform should look like, and publishes that intent — it never touches the host itself and runs unprivileged, which keeps every decision inside the test suite.
 
@@ -304,15 +318,15 @@ Because `HOSTD` holds the applied profile and `OBC` reads it from a retained mes
 
 ### EPS
 
-**Path:** `src/cubesat/eps/` | **Client ID:** `eps` | 🧪
+**Path:** `src/cubesat/eps/` | **Client ID:** `eps` | 🛰️ `HOSTED` 2026-08-31
 
-Reads battery state from the MAX17048 fuel gauge (I2C `0x36`) and mains presence from the X728 UPS Power Loss Detection pin over GPIO. Publishes `cubesat/eps/status` retained.
+Reads battery state from the X728's fuel gauge — a **MAX17040/41** (I2C `0x36`), identified on 2026-09-01; the driver file is still named `max17048.py` and reads only the registers both families share — and mains presence from the X728 UPS Power Loss Detection pin over GPIO. Publishes `cubesat/eps/status` retained.
 
 `EPS` runs in **every** profile, including `HOSTED` where there is no mission at all: it is the only source of the telemetry that drives `CRITICAL`, and a satellite that cannot see its own battery cannot protect its filesystem. Mains appearing on the PLD pin is also the "I am back at a desk" signal that can request a return to `HOSTED`.
 
 ### ADCS
 
-**Path:** `src/cubesat/adcs/` | **Client ID:** `adcs` | 🧪
+**Path:** `src/cubesat/adcs/` | **Client ID:** `adcs` | 🛰️ `DEMO` 2026-09-01
 
 Attitude and position — *where and how the satellite is*, which is why both live in one subsystem.
 
@@ -325,7 +339,7 @@ This service remains **sensing-only** — actuator control (reaction wheels, mag
 
 ### PAYLOAD
 
-**Path:** `src/cubesat/payload/` | **Client ID:** `payload` | 🧪
+**Path:** `src/cubesat/payload/` | **Client ID:** `payload` | 🛰️ `DEMO` 2026-09-01
 
 Two responsibilities, one owner of the camera:
 
@@ -350,7 +364,7 @@ directory guaranteed to accumulate held the photographs least likely to be wante
 
 ### DHS
 
-**Path:** `src/cubesat/dhs/` | **Client ID:** `dhs` | 🧪
+**Path:** `src/cubesat/dhs/` | **Client ID:** `dhs` | 🛰️ `DEMO` 2026-09-01
 
 The flight recorder — the Data Handling Subsystem (the *OBDH* / mass-memory role on a real spacecraft). It subscribes to every status topic, assembles a row from the cached values plus system health metrics, writes it to SQLite, and purges rows past the retention horizon.
 
@@ -418,7 +432,7 @@ trip".
 
 ### COMMS
 
-**Path:** `src/cubesat/comms/` | **Client ID:** `comms` | 🧪
+**Path:** `src/cubesat/comms/` | **Client ID:** `comms` | 🛰️ `HOSTED` 2026-08-31
 
 The only point of contact with the ground, in both directions — and, after the split above, *only* that. It no longer persists anything.
 
@@ -452,22 +466,21 @@ disappearance. If it fails, it is logged and stepped over: the recorder closing 
 matters more than the radio being heard, and a pack at 8 % is exactly where a transmit-current
 brownout is likeliest.
 
-**Radio replies** 🆕 — most of the agreed contract is written. What a person can type is in
-[The command vocabulary](#the-command-vocabulary) and only there; what COMMS does with it is this:
-a compact line is canonicalised into JSON *before* the relay, so every handler downstream sees one
-format; every accepted command is answered by a single out-of-schedule beacon carrying
-`re=<command>` about ten seconds later; and the five query verbs are answered immediately from
-COMMS' own caches rather than relayed, because the data is already here. Still designed and not yet
-written: `restart_service` (its spelling answers `err=unknown` until the handler exists) and the
-photo ack's frame fields. The contract, with the reasoning, is
-[`docs/concept.md` → The radio command contract](docs/concept.md#the-radio-command-contract),
-tracked in [`ROADMAP.md`](ROADMAP.md).
+**Radio replies.** The agreed contract is written, `restart` included since 2026-09-01. What a
+person can type is in [The command vocabulary](#the-command-vocabulary) and only there; what COMMS
+does with it is this: a compact line is canonicalised into JSON *before* the relay, so every handler
+downstream sees one format; every accepted command is answered by a single out-of-schedule beacon
+carrying `re=<command>` about ten seconds later; and the five query verbs are answered immediately
+from COMMS' own caches rather than relayed, because the data is already here. One field set is still
+outstanding: `photo`'s ack answers with the ordinary state fields rather than the frame number and
+the free megabytes the contract describes. The contract, with the reasoning, is
+[`docs/concept.md` → The radio command contract](docs/concept.md#the-radio-command-contract).
 
 Two rules hold it honest. **It is never truncated** — if the line will not fit, whole optional fields are dropped in a documented priority order, because the pre-rewrite driver silently cut the payload to 28 bytes and transmitted rubbish, which is the bug this work exists to remove. And **absent values are omitted rather than sent as zero**: a position that does not exist must not arrive as `lat=0 lon=0`, which is a real place in the Gulf of Guinea and a fault this project has already been bitten by once.
 
 ### DASHBOARD
 
-**Path:** `src/cubesat/dashboard/` | **Client ID:** `dashboard` | 🧪
+**Path:** `src/cubesat/dashboard/` | **Client ID:** `dashboard` | 🛰️ `DEMO` 2026-09-01
 
 The satellite carries **no UI code**. This service serves a static build and reads the recorder's database; the interface itself lives in [cubesat-groundstation](https://github.com/miksrv/cubesat-groundstation) and is deployed onto the Pi as a built artifact, so one dashboard codebase serves the satellite, a recorded mission replayed from a static file, and a future USB receiver alike.
 
@@ -512,9 +525,9 @@ Deploy the interface with `scripts/deploy-dashboard.sh` from a machine that has 
 | `hal/interfaces.py` | `typing.Protocol` definitions — `IMU`, `GNSS`, `Environment`, `FuelGauge`, `Camera`, `Radio`. Structural typing, so drivers and fakes inherit nothing and a test fake is any object with the right methods |
 | `hal/registry.py` | The factory: `CUBESAT_MOCK_HARDWARE` decides whether `rpi` or `mock` implementations are handed out |
 | `hal/i2c.py` | The shared bus and its advisory lock — see [Hardware Ownership](#hardware-ownership) |
-| `hal/rpi/`, `hal/mock/` | Real drivers (BNO055, TEL0157, SEN0501, MAX17048, PLD GPIO, camera, Meshtastic) and one fake per interface |
+| `hal/rpi/`, `hal/mock/` | Real drivers (BNO055, TEL0157, SEN0501, MAX17040/41 gauge, PLD GPIO, camera, Meshtastic) and one fake per interface |
 
-The HAL is no longer optional. It is what makes `HOSTD`, both state machines and the cadence logic testable without a Raspberry Pi, which is why it leads the rewrite instead of trailing it.
+The HAL is not optional. It is what makes `HOSTD`, both state machines and the cadence logic testable without a Raspberry Pi, which is why it was built first rather than last.
 
 ---
 
@@ -524,7 +537,7 @@ Each device has exactly one owning service. This matters more than it looks, bec
 
 | Device | Address / port | Owner | Cadence |
 |---|---|---|---|
-| MAX17048 fuel gauge | I2C `0x36` | EPS | 30 s |
+| MAX17040/41 fuel gauge | I2C `0x36` | EPS | 30 s |
 | X728 PLD pin | GPIO | EPS | 30 s |
 | BNO055 orientation | I2C `0x28` | ADCS | 2 Hz |
 | TEL0157 GNSS | I2C `0x20` | ADCS | 1 Hz, long transactions |
@@ -861,9 +874,10 @@ may not take a photo for hours. After `camera.idle_close_sec` (default 60 s) wit
 sensor is closed; the next capture re-opens it, which costs about a second. A series faster than
 that window keeps the camera warm; a slower one lets it cool between frames — and
 `photos.mission_interval_sec` (300 s) is deliberately slower, so **every frame of a mission is a cold
-capture**. Whether Picamera2's auto-exposure has converged by then is bench check V11 in
-`ROADMAP.md`, which that setting promotes from an occasional question to one covering a whole
-mission's photographs.
+capture**. Whether Picamera2's auto-exposure has converged by then was the question behind bench
+check V11 — settled on the satellite on 2026-09-01: a cold frame and a warm one came out
+indistinguishable (luma 94.2 against 94.6), and what a cold capture actually costs is latency, 0.97 s
+against 0.21 s. Recorded at the setting in `config/config.yaml`.
 
 ### `cubesat/payload/data`
 
@@ -1319,13 +1333,17 @@ This is the recovery path for `FLIGHT`, where Wi-Fi is down and there is no SSH.
 ```
 1. Browser opens http://cubesat.local, gets the static React build from DASHBOARD
 
-2. Browser opens /ws. DASHBOARD forwards every MQTT status message it receives
-   straight through the socket — no polling, no intermediate store.
+2. Browser connects to mosquitto's own WebSocket listener on 9001 and subscribes
+   to cubesat/# — every retained status is delivered on connect. DASHBOARD is not
+   in that path at all: there is no /ws and no bridge to keep in step.
 
-3. Charts request /api/history, which reads the SQLite file directly, read-only.
+3. Charts request /api/telemetry, which answers the current session: the open
+   mission from the recorder's database while one is being recorded, DASHBOARD's
+   in-memory ring otherwise. `source` says which answered.
 
-4. A button in the UI publishes to cubesat/command via /api/command —
-   the same path the CLI, the bot and the radio uplink all use.
+4. A button in the UI publishes to cubesat/command over that same broker
+   connection — the same path the CLI and a radio uplink use. There is no
+   /api/command; this service has no write path.
 ```
 
 ---
@@ -1376,7 +1394,9 @@ cubesat-sim/
 │       │   ├── health.py           #   who is still alive
 │       │   └── commands.py         #   parsing what the ground sent
 │       │
-│       ├── eps/                    # service.py — read the gauge and the mains pin
+│       ├── eps/                    # read the gauge and the mains pin
+│       │   ├── service.py
+│       │   └── charge_rate.py      #   %/h as a least-squares slope over SOC history
 │       ├── adcs/                   # service.py — orientation and position
 │       │
 │       ├── payload/
@@ -1394,13 +1414,19 @@ cubesat-sim/
 │       ├── comms/                  # the link, and nothing else
 │       │   ├── service.py
 │       │   ├── beacon.py           #   the 240-byte line: build, prioritise, never truncate
+│       │   ├── compact.py          #   the bare-verb uplink, canonicalised into JSON on entry
 │       │   ├── mesh.py             #   Meshtastic TX/RX
 │       │
-│       ├── dashboard/              # 🧪 static files + read-only REST (no WebSocket)
+│       ├── dashboard/              # static files + read-only REST (no WebSocket)
 │       │   ├── archive.py          #   the recorder's database, read-only, mode=ro
 │       │   ├── http.py             #   routing, the SPA fallback, the photo allowlist
+│       │   ├── live.py             #   the bounded ring of dhs_telemetry rows
 │       │   └── service.py          #   lifecycle; follows DHS onto diag.db
-│       └── cli/main.py             # 🆕 stub; the `cubesat` console script lands with it
+│       │
+│       └── cli/                    # the `cubesat` console script
+│           ├── main.py             #   argument parsing and dispatch
+│           ├── session.py          #   one short-lived broker connection, no state of its own
+│           └── commands/           #   profile, status, mission
 │
 ├── tests/
 │   ├── conftest.py                 # temp data dir, repo config, mock HAL — set before any import
@@ -1472,7 +1498,7 @@ The satellite targets Raspberry Pi. Every component below is on the assembled un
 | Component | Purpose | Interface / Library | Product link | Documentation |
 |---|---|---|---|---|
 | Raspberry Pi 4 Model B | Main compute — hosts and runs every service | — | [Raspberry Pi](https://www.raspberrypi.com/products/raspberry-pi-4-model-b/) | [Raspberry Pi Docs](https://www.raspberrypi.com/documentation/) |
-| [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md) | Battery power management: LiPo fuel gauge (MAX17048) + AC-loss detection (PLD pin) — used by EPS | I2C (`0x36`) + GPIO · `smbus2`, `RPi.GPIO` | [AliExpress](https://www.aliexpress.us/item/3256804825472151.html) | [Geekworm Wiki](https://wiki.geekworm.com/X728) |
+| [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md) | Battery power management: LiPo fuel gauge (MAX17040/41) + AC-loss detection (PLD pin) — used by EPS | I2C (`0x36`) + GPIO · `smbus2`, `RPi.GPIO` | [AliExpress](https://www.aliexpress.us/item/3256804825472151.html) | [Geekworm Wiki](https://wiki.geekworm.com/X728) |
 | ~~[Sense HAT (C)](docs/hardware-sense-hat-c.md)~~ | ~~Environmental/orientation sensor HAT: QMI8658 (accel + gyro) + AK09918 (magnetometer) drive ADCS orientation; LPS22HB (pressure) + SHTC3 (humidity) feed Payload science data~~ | ~~I2C · `smbus2`, `lgpio`~~ | ~~[AliExpress](https://www.aliexpress.us/item/3256811354242582.html)~~ | ~~[Waveshare Wiki](<https://www.waveshare.com/wiki/Sense_HAT_(C)>)~~ |
 | [Raspberry Pi Camera Module V2 (8MP, 1080p)](docs/hardware-camera-module-v2.md) | Photo capture — used by Payload | CSI · `picamera2` | [Amazon](https://a.co/d/02oyeWg8) | [Raspberry Pi Docs](https://www.raspberrypi.com/documentation/accessories/camera.html#camera-module-2) |
 | ~~[IoT Node(A) — 52Pi Docker Pi Series (GSM/GPS/LoRa)](docs/hardware-iot-node-a-52pi.md)~~ | ~~Onboard GSM/GPS/LoRa module (A9G): GPS/BDS position feeds ADCS, LoRa (via the SC16IS752 I2C↔UART bridge) is COMMS' radio ground link alongside its HTTP API~~ | ~~UART (GPS) + I2C (LoRa) · `pyserial`, `pynmea2`, `smbus2`~~ | ~~[AliExpress](https://www.aliexpress.us/item/2251832864586218.html)~~ | ~~[52Pi Wiki](https://wiki.52pi.com/index.php?title=EP-0105)~~ |
@@ -1483,7 +1509,7 @@ The satellite targets Raspberry Pi. Every component below is on the assembled un
 
 > Also requires a `mosquitto` MQTT broker running on the Pi (software, not hardware) — see [Prerequisites](#prerequisites).
 
-> **Non-Pi development:** in the target design every driver sits behind the [HAL](#common-infrastructure), and `CUBESAT_MOCK_HARDWARE=1` runs the whole stack on a laptop against fakes. The pre-rewrite code does not: it imports `smbus2`/`RPi.GPIO`/`picamera2` at module level and fails to import off a Pi, which is why the HAL leads the rewrite (`ROADMAP.md` H1–H7).
+> **Non-Pi development:** every driver sits behind the [HAL](#common-infrastructure), and `CUBESAT_MOCK_HARDWARE=1` runs the whole stack on a laptop against fakes — nothing imports `smbus2`, `RPi.GPIO` or `picamera2` unless a real driver is selected, so the suite needs no Pi and no bus.
 
 ### I2C Address Map
 
@@ -1513,7 +1539,7 @@ This is not tuning, it is a correctness requirement: at the default 100 kHz the 
 | `0x20` | [TEL0157](docs/hardware-tel0157-gnss.md) GNSS receiver (GPS + BeiDou + GLONASS) | ADCS | verified with a 3D fix, 23 satellites |
 | `0x22` | [Gravity SEN0501](docs/hardware-sen0501-environmental-sensor.md) environmental sensor (temperature, humidity, pressure, ambient light, UV) | PAYLOAD | verified: all five measurements read correctly |
 | `0x28` | [BNO055](docs/hardware-bno055-bmp280-imu.md) 9-axis absolute orientation sensor (on-chip fusion) | ADCS | verified: fusion running, all vectors self-consistent |
-| `0x36` | MAX17048 LiPo fuel gauge on the [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md) | EPS | permanently on the UPS HAT |
+| `0x36` | MAX17040/41 LiPo fuel gauge on the [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md) | EPS | permanently on the UPS HAT |
 | `0x68` | DS1307 real-time clock on the [X728 V2.5 UPS HAT](docs/hardware-x728-ups-hat.md#the-ds1307-at-0x68) | the kernel, via `/dev/rtc0` | **shows as `UU`, not `68`** — claimed by the `i2c-rtc,ds1307` overlay; do not access it from user space |
 | `0x76` | [BMP280](docs/hardware-bno055-bmp280-imu.md) pressure + temperature, on the same board as the BNO055 | undecided — duplicates the SEN0501 pressure reading | verified: temperature and pressure compensated correctly |
 
@@ -1588,9 +1614,16 @@ Photos of the physical build (full-resolution originals are not kept in the repo
 
 ## Setup and Running
 
-> **Note:** the `cubesat` CLI and the dashboard unit do not exist yet. Everything else here is
-> written and tested, and none of it has been installed on a Raspberry Pi — the first run of
-> `install.sh` on real hardware will be the first time any of this meets systemd.
+> **Note:** all of this has been installed on a Raspberry Pi — the project lives at
+> `/opt/cubesat-sim`, the units are in place, and the always-on tier comes up at boot. Two things
+> the first installs taught, both still true:
+>
+> - **`cubesat` is not on the operator's `PATH`.** The console script is installed into the
+>   project's virtualenv, so it is `/opt/cubesat-sim/venv/bin/cubesat` until a symlink or a shell
+>   profile line says otherwise.
+> - **The dashboard is built elsewhere.** There is no `node` on the satellite and no groundstation
+>   checkout: `scripts/deploy-dashboard.sh` builds on a development machine and rsyncs
+>   `client/dist/` into `/var/lib/cubesat/dashboard`.
 
 ### Prerequisites
 
@@ -1792,9 +1825,9 @@ are reached without waiting for a real battery to drain:
 | `CUBESAT_MOCK_FIX_DELAY_SEC` | How long the mock GNSS reports no fix (default 60) |
 | `CUBESAT_MOCK_LAT`, `CUBESAT_MOCK_LON` | Where the mock track starts walking from |
 
-The pre-rewrite code still reads `GPS_PORT`, `LORA_I2C_ADDRESS`, `COMMS_*_ENABLED` and
-`COMMS_LOOP_INTERVAL_SEC`; all four belong to hardware or a design that is no longer on the
-satellite, and they go away with the rewrite.
+`GPS_PORT`, `LORA_I2C_ADDRESS`, `COMMS_*_ENABLED` and `COMMS_LOOP_INTERVAL_SEC` were read by the
+pre-rewrite code and are gone: all four belonged to hardware or a design that is no longer on the
+satellite. Nothing reads them now, so leaving one in a `.env` has no effect.
 
 ---
 
@@ -1829,10 +1862,10 @@ journald on an SD card, unattended and on battery, is the wear scenario worth av
 | [docs/concept.md](docs/concept.md) | The operating concept: why there are two axes, what each profile is for, the control plane, known traps, and the phased implementation plan |
 | [docs/architecture.md](docs/architecture.md) | Detailed runtime architecture and subsystem internals — **pre-rewrite**, describes the five-service version |
 | [docs/hardware-*.md](docs) | One file per component in the [Hardware](#hardware) table: specs, Pi setup, bench-validation notes, gotchas |
-| [PLAN.md](PLAN.md) | Working document (in Russian): the LoRa migration from the 52Pi IoT Node(A) to Heltec V4 + Meshtastic. Stages 1–5 done, stage 6 is the code |
+| [PLAN.md](PLAN.md) | Working document (in Russian): the LoRa migration from the 52Pi IoT Node(A) to Heltec V4 + Meshtastic. Closed — all stages done, and the link has run on the satellite |
 | [docs/code_smells.md](docs/code_smells.md) | Historical audit of the pre-rewrite code |
-| [docs/refactoring_plan.md](docs/refactoring_plan.md) | Pre-rewrite refactoring plan; the HAL items (H1–H7) carry into the rewrite |
-| [ROADMAP.md](ROADMAP.md) | Feature tracker |
+| [docs/refactoring_plan.md](docs/refactoring_plan.md) | Pre-rewrite refactoring plan; historical — its HAL items (H1–H7) are what `src/cubesat/hal/` became |
+| [ROADMAP.md](ROADMAP.md) | What is **left**: the bench checks the code is waiting on, the decisions still open, and the work that can be written without the satellite. Finished work is deleted from it rather than ticked off |
 
 ---
 

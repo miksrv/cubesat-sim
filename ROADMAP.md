@@ -27,8 +27,10 @@ rationale per phase: [`docs/concept.md` → Implementation plan](docs/concept.md
 Everything except `P6` is done and gone from this table. `P7` was retired on 2026-09-01 (the I2C
 sweep and self-test it promised are what `DEPLOY` does on every ascent); `P2` closed the same day
 with the `cubesat` CLI; `P8` closed with the test sweep that removed the last places a test asserted
-a shipped configuration value instead of computing from it. The radio command contract is complete
-too — `restart_service` was its last line.
+a shipped configuration value instead of computing from it. The radio command contract is written
+down to its last command — `restart_service` was that one — with a single field set outstanding:
+`photo`'s ack answers with the ordinary state fields instead of the frame number and the free
+megabytes the contract describes.
 
 | Phase | Scope | Delivers | Status |
 |---|---|---|---|
@@ -45,12 +47,16 @@ The fix belongs in `OBC._restart_service`: mark the named service as expected to
 window in `health.py`, the same idea as `settling` but for one service.
 
 **Where the rewrite stands.** All eight services exist, at 100 % line coverage with `ruff` and
-`mypy` clean. Four of them — `HOSTD`, `OBC`, `EPS`, `COMMS` — have run against real hardware;
-`ADCS`, `PAYLOAD`, `DHS` and `DASHBOARD` have not, which `CLAUDE.md` states as the standing caveat
-it is. **Almost everything left is a bench check or a decision.** What can still be written without
-the satellite: the photographs missing from a mission export (which blocks the public demo), the
-archive dialog below, the chart line that should break on a gap, and an end-to-end test against the
-replay build.
+`mypy` clean, and all eight have now run on the satellite: `HOSTD`, `OBC`, `EPS` and `COMMS` in
+`HOSTED` on 2026-08-31, and `ADCS`, `PAYLOAD`, `DHS` and `DASHBOARD` in `DEMO` on 2026-09-01 —
+`DEPLOY` in 1.4 s, `NOMINAL`, the attitude widget and a photograph watched live. The standing caveat
+has therefore moved from services to **profiles**: `FLIGHT`, `EXPO`, `DIAG` and `MAINTENANCE` have
+never been applied, and with them the access point (V6), a moving GNSS fix (V2, V3) and `diag.db`
+are untried. **Almost everything left is a bench check or a decision.** What can still be written
+without the satellite: the `restart_service` fix above, the photographs missing from a mission
+export (which blocks the public demo), the archive dialog below, the `photo` ack's frame fields —
+the last line of the radio contract still unwritten — the chart line that should break on a gap, and
+an end-to-end test against the replay build.
 
 ### Mission archive as a real dialog — requested 2026-08-31
 
@@ -184,9 +190,11 @@ What to watch for, in order of how likely it is to bite:
   load explains (2026-09-01), but whether it started full is exactly what V13 leaves open.
 - **The beacon reset on arrival.** Switching to `DEMO` is what silences it; if it keeps beaconing at
   a desk, the reset in `_reconcile_downlink` did not happen.
-- **`cubesat` itself has never run on the Pi.** It is a console script from `pip install -e .`, so
-  the first thing to find out is whether the entry point is even on the operator's `PATH` after the
-  install.
+- **`cubesat` is not on the operator's `PATH`.** It ran on the Pi on 2026-09-01 — `cubesat status`
+  answers in about 2.5 s — but only as `/opt/cubesat-sim/venv/bin/cubesat`, because the console
+  script lives in the virtualenv the services use and nothing puts it on a login shell's path. On a
+  trip that is a long command typed by hand; worth a symlink or a profile line before relying on it
+  in a field.
 
 ### Bench checks the code is waiting on
 

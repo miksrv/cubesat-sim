@@ -49,10 +49,11 @@ different satellite state.
 | Demonstrating at a school, a library, the office | Full CubeSat stack, **its own access point**, dashboard on a tablet, no internet, usually on battery. |
 | Walking to work, or on a trip | Fully autonomous: sensors logged, GNSS track recorded, radios and Wi-Fi minimised, maximum battery life. |
 
-None of this is expressible in the current OBC state machine, and it should not be: those are
-host configurations, not satellite states. `src/obc/state_machine.py:70-82` already carries
-commented-out stubs of exactly this idea (`publish_control("telegram/stop")`, `wifi/off`,
-`adcs/reduce_frequency`) — this document is what those stubs were reaching for.
+None of this was expressible in the OBC state machine as it stood, and it should not have been:
+those are host configurations, not satellite states. The pre-rewrite `src/obc/state_machine.py`
+carried commented-out stubs of exactly this idea (`publish_control("telegram/stop")`, `wifi/off`,
+`adcs/reduce_frequency`) — this document is what those stubs were reaching for, and `HOSTD` plus
+`config/profiles.yaml` are what they became.
 
 ---
 
@@ -108,9 +109,9 @@ did not change.
 The fourth use case was described as "simulation mode". It is worth *not* calling it that: it
 is the most flight-like profile the unit has — autonomous, battery powered, no ground link
 except the radio. `FLIGHT` describes it honestly, and it keeps the word "simulation" free for
-what it should mean in this repo: running the stack on a laptop against mocked hardware
-(`ROADMAP.md` items H1–H7). Two different things called "simulation" in one project's docs is
-a guaranteed source of confusion later.
+what it should mean in this repo: running the stack on a laptop against mocked hardware — the HAL,
+`src/cubesat/hal/`. Two different things called "simulation" in one project's docs is a guaranteed
+source of confusion later.
 
 ---
 
@@ -295,13 +296,16 @@ Both entry points end at the same MQTT command, so there is exactly one code pat
 - **`set_profile` over MQTT** — which is how the Telegram bot, the dashboard, the ground
   station and the LoRa uplink all do it.
 
-A physical GPIO switch (`ROADMAP.md` O2) is deliberately *not* in the initial design. It stays
-noted as a future option, mainly as a recovery path — see [Known traps](#known-traps).
+A physical GPIO switch is deliberately *not* in the design — it was sketched in an earlier roadmap
+and is not tracked as work. It stays noted as a future option, mainly as a recovery path — see
+[Known traps](#known-traps).
 
 ### The radio command contract
 
-*Agreed 2026-08-24. The uplink half exists; the reply half is designed and not yet written —
-tracked in [`ROADMAP.md`](../ROADMAP.md) → "Agreed: the radio reply contract".*
+*Agreed 2026-08-24; written since, the compact spelling and the reply half included. One field set
+is still outstanding — `photo`'s ack, described below as carrying the frame number and the free
+megabytes, answers with the ordinary state fields instead — and it is tracked in
+[`ROADMAP.md`](../ROADMAP.md).*
 
 The uplink already works: a command over LoRa is the same JSON as over MQTT, relayed verbatim
 onto `cubesat/command` — 55 bytes of `{"command":"set_profile","params":{"profile":"HOSTED"}}`
@@ -623,13 +627,21 @@ The satellite carries **no UI code**. It exposes a transport; the interface itse
 [cubesat-groundstation](https://github.com/miksrv/cubesat-groundstation) and is deployed onto
 the Pi as a built artifact.
 
-On board, a new `cubesat-dashboard` service:
+On board, the `cubesat-dashboard` service:
 
-- subscribes to the MQTT status topics and pushes them to browsers over WebSocket (`/ws`)
-- serves history for charts out of `comms.db` over a small read-only REST surface
 - serves the static React build
-- accepts a dashboard-issued command by publishing it to `cubesat/command` — the same path any
-  other ground client uses
+- answers a small **read-only** REST surface: the current session for the charts, the mission
+  archive, one mission with its telemetry, attitude and radio traffic, and the mission photographs.
+  The database it reads follows DHS from the retained `dhs_status`, so a `DIAG` rehearsal is read
+  out of `diag.db` rather than out of last week's trip
+- and **pushes nothing.** There is deliberately no WebSocket: browsers subscribe to mosquitto's own
+  WebSocket listener and receive every retained message the moment they connect, so this project
+  contains no MQTT→WebSocket bridge to write, to test, or to keep in step with the topic list. The
+  original design here had a `/ws`; it was removed once it became clear the broker already does that
+  job better, and the browser fence moved into `config/mosquitto/acl.conf` with it
+- a command from the dashboard is published by the browser onto `cubesat/command` over that same
+  broker connection — the same path any other ground client uses, so this service needs no write
+  path at all
 
 Off board, the groundstation client is reworked into one interface over several data sources: this
 local service, a mission exported to a static file for a public demo with no backend at all, and
@@ -692,11 +704,15 @@ would be stamped from the epoch of the last boot.
   own power-saving config) — real power-off needs a switch on that 5 V line: a MOSFET driven
   from a spare pin on the IO Expansion HAT. Worth deciding before claiming a radio-off state.
 - **SD card wear in `FLIGHT`.** Continuous SQLite writes plus journald on a card, unattended,
-  on battery. Wants WAL mode, a relaxed sync policy, and `Storage=volatile` for journald in
-  that profile.
-- **Sensor cadence has nowhere to come from.** ADCS does not currently subscribe to
-  `cubesat/obc/status` at all, and its 0.5 s interval is hardcoded. Making `LOW_POWER` mean
-  anything requires every service to derive its interval from the current state.
+  on battery. The database half is done — `dhs/schema.py` opens WAL with `synchronous = NORMAL`,
+  which also lets DASHBOARD read the file while DHS writes it — and narrowing persistence to
+  `FLIGHT` and `DIAG` removed the demonstrations that were wearing the card for nothing. What is
+  still open is journald: `Storage=volatile` in that profile has not been set.
+- ~~**Sensor cadence has nowhere to come from.**~~ **Closed.** It was the trap that made
+  `LOW_POWER` meaningless: ADCS did not subscribe to `cubesat/obc/status` at all and its 0.5 s
+  interval was hardcoded. Every service now derives its interval from the retained state through
+  `common/cadence.py` and a `cadence_key` on the service class, so a state change is a cadence
+  change everywhere at once.
 - **`mosquitto` must never be in a profile's unit list.** Every control path in this design runs
   through the broker; stopping it strands the satellite in whatever profile it was mid-way
   through applying. The same holds for `NetworkManager`, one step further out: every network mode
@@ -785,24 +801,31 @@ Ordered so that each phase is independently useful and testable.
 
 | Phase | Scope | Delivers |
 |---|---|---|
-| **P0** | Finish `PLAN.md` stage 6: `lora.py` on top of `meshtastic`, compact beacon or chunking, config keys, tests | A radio link the radio-only profiles can be built on |
-| **P1** | **Skeleton.** `pyproject.toml` and the `src/cubesat/` package layout (no more `src.*` imports or `PYTHONPATH=.`); `common/service.py` base class, `states.py` enums, `cadence.py`; `hal/` with `typing.Protocol` interfaces, real drivers for the four Gravity modules, mocks behind `CUBESAT_MOCK_HARDWARE`, and the shared I2C lock; runtime data moved to `/var/lib/cubesat`; `tests/` mirroring the package | The whole stack runnable and testable on a laptop — the prerequisite for every phase below |
-| **P2** | `config/profiles.yaml`; `cubesat-hostd` (unit allowlist, `systemctl`, state file); `set_profile` in OBC; `cubesat/host/*` topics; `cubesat` CLI; profiles `HOSTED`, `MAINTENANCE`, `DEMO` without the AP | Switching between "desk" and "demo" without touching systemd by hand |
-| **P3** | `cubesat-dhs` split out of COMMS: `comms_log` → `telemetry` with position, `profile` and `mission_id` columns; the `missions` table, its lifecycle and orphan recovery at startup; writes gated on profile; retention | A recorder that keeps working when the radio is off, and history that is divided into missions |
-| **P4** | `STANDBY` and `CRITICAL` states; real `DEPLOY` self-test; every service derives its cadence from `obc/status`; `LOW_POWER` knobs; recovery hysteresis; graceful `poweroff` | The state machine finally does something measurable |
-| **P5** | AP mode in `hostd` (NetworkManager + `dnsmasq` + mDNS); `cubesat-dashboard` service (WS + read-only REST); groundstation client reworked for a local backend; profile `EXPO` | A satellite that can be shown to a room with no internet |
-| **P6** | Power saving; profile TTL; mains-as-signal; GNSS track verified end to end; profile `FLIGHT` | The autonomous logging profile |
+| **P0** ✅ | Finish `PLAN.md` stage 6: `lora.py` on top of `meshtastic`, compact beacon or chunking, config keys, tests | A radio link the radio-only profiles can be built on |
+| **P1** ✅ | **Skeleton.** `pyproject.toml` and the `src/cubesat/` package layout (no more `src.*` imports or `PYTHONPATH=.`); `common/service.py` base class, `states.py` enums, `cadence.py`; `hal/` with `typing.Protocol` interfaces, real drivers for the four Gravity modules, mocks behind `CUBESAT_MOCK_HARDWARE`, and the shared I2C lock; runtime data moved to `/var/lib/cubesat`; `tests/` mirroring the package | The whole stack runnable and testable on a laptop — the prerequisite for every phase below |
+| **P2** ✅ | `config/profiles.yaml`; `cubesat-hostd` (unit allowlist, `systemctl`, state file); `set_profile` in OBC; `cubesat/host/*` topics; `cubesat` CLI; profiles `HOSTED`, `MAINTENANCE`, `DEMO` without the AP | Switching between "desk" and "demo" without touching systemd by hand |
+| **P3** ✅ | `cubesat-dhs` split out of COMMS: `comms_log` → `telemetry` with position, `profile` and `mission_id` columns; the `missions` table, its lifecycle and orphan recovery at startup; writes gated on profile; retention | A recorder that keeps working when the radio is off, and history that is divided into missions |
+| **P4** ✅ | `STANDBY` and `CRITICAL` states; real `DEPLOY` self-test; every service derives its cadence from `obc/status`; `LOW_POWER` knobs; recovery hysteresis; graceful `poweroff` | The state machine finally does something measurable |
+| **P5** ✅ | AP mode in `hostd` (NetworkManager + `dnsmasq` + mDNS); `cubesat-dashboard` service — read-only REST and **no WebSocket**, which is where the phase as agreed changed: browsers subscribe to mosquitto's own listener instead, so there is no bridge to keep in step; groundstation client reworked for a local backend; profile `EXPO` | A satellite that can be shown to a room with no internet |
+| **P6** `[~]` | Power saving; profile TTL; mains-as-signal; GNSS track verified end to end; profile `FLIGHT` | The autonomous logging profile |
 | ~~**P7**~~ | ~~Profile `DIAG`: I2C sweep, full-rate polling, self-test report, separate persistence~~ **Retired 2026-09-01.** The sweep and the self-test report are what `DEPLOY` does on every ascent in every profile; the full-rate polling was `cadence_scale: 0.2`, i.e. ADCS at 10 Hz on a 10 kHz bus, and was removed rather than built on. `DIAG` keeps its separate database and becomes a rehearsal of `FLIGHT` — see the profile table | — |
 | **P8** ✅ | Docs and tests kept in line as each change lands rather than as a phase of its own. Closed 2026-09-01 with the sweep that removed the last places a test asserted a shipped configuration value instead of computing from it — cadences, the SAFE listen ratio, and the power thresholds now all derive from the constant they are about | Tests that do not break when a legitimate setting changes |
 
-`ROADMAP.md` items H1–H7 (the hardware abstraction layer) stop being a nice-to-have and become
-phase P1: `hostd`, both state machines and the cadence logic are the first parts of this system
-that can be fully tested on a laptop, and none of them can be tested at all without mocked
-sensors.
+`ROADMAP.md` items H1–H7 (the hardware abstraction layer) stopped being a nice-to-have and became
+phase P1, which is what `src/cubesat/hal/` is: `hostd`, both state machines and the cadence logic
+are the first parts of this system that can be fully tested on a laptop, and none of them can be
+tested at all without mocked sensors.
+
+**Every phase but `P6` is closed**, and `P6` is written — what is left of it is a walk with the
+satellite, which is the one thing no phase can deliver from a desk. `ROADMAP.md` carries that
+remainder, together with the bench checks and the decisions still open.
 
 ---
 
 ## Impact on what exists today
+
+*This table is the plan as it was agreed, kept as the record of it. All of it has since landed —
+read it as "what the rewrite changed", not as work outstanding.*
 
 | What | Change |
 |---|---|

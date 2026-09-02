@@ -4,23 +4,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Read This First
 
-**The hardware is finished and validated. Half the software has now run on it, in one profile,
-for minutes.** Those are different kinds of confidence, and conflating them is the main way to go
-wrong here:
+**The hardware is finished and validated. All of the software has now run on it, in two of the six
+profiles, for minutes.** Those are different kinds of confidence, and conflating them is the main
+way to go wrong here:
 
 - Every component in the README's Hardware table is on the assembled satellite, bench-tested, and
   documented in `docs/hardware-*.md`. Those documents are the authority for anything electrical.
 - All eight services exist, at 100 % line coverage with `ruff` and `mypy` clean.
-- **First run on the Pi: 2026-08-31.** `HOSTD`, `OBC`, `EPS` and `COMMS` — the `HOSTED` tier — have
-  now executed against real hardware: five I2C devices answered, the Meshtastic node was reachable,
-  a ground command round-tripped, and `SAFE` was entered and cleared for real. `ADCS`, `PAYLOAD`,
-  `DHS` and `DASHBOARD` still have **not** — no profile that starts them has been applied — so for
-  those four, everything below about the mock HAL still holds in full.
+- **First run on the Pi: 2026-08-31, in `HOSTED`.** `HOSTD`, `OBC`, `EPS` and `COMMS` executed
+  against real hardware: five I2C devices answered, the Meshtastic node was reachable, a ground
+  command round-tripped, and `SAFE` was entered and cleared for real.
+- **First `DEMO`: 2026-09-01, 21:03.** `ADCS`, `PAYLOAD`, `DHS` and `DASHBOARD` ran for the first
+  time — `DEPLOY` completed in 1.4 s into `NOMINAL`, the attitude widget and a photograph were
+  watched live. So every service and every driver has now been exercised on the satellite.
+- **`FLIGHT`, `EXPO`, `DIAG` and `MAINTENANCE` have never been applied**, so what is untried is now
+  a set of *profiles* rather than a set of services: the field radio-only case, the access point
+  (V6), a moving GNSS fix (V2, V3), and the separate `diag.db`.
 
-That first run cost three defects that no test could have caught, all in the deployment rather than
-the logic; each is now explained where it was fixed — `config/tmpfiles.d/cubesat.conf`,
-`systemd/cubesat@.service`, `config/mosquitto/`. Expect more of that shape from the four services
-still waiting: the mock HAL cannot fail the way a shared directory, a file lock or a gauge does.
+Neither run was free of surprises, and none of them were surprises a test could have had. `HOSTED`
+cost three defects in the deployment rather than the logic, each now explained where it was fixed —
+`config/tmpfiles.d/cubesat.conf`, `systemd/cubesat@.service`, `config/mosquitto/`. The second day
+on the Pi cost a misidentified fuel gauge (a MAX17040/41 answering `0xFFFF` from the registers a
+MAX17048 would have, which had made `charge_rate` a decoded constant for weeks), an undetectable
+class of BNO055 bit error that reaches the recorder (V14), and one open defect in the logic:
+**`restart_service` latches `SAFE`**, because the restarted service's goodbye reads to OBC as a lost
+subsystem. Expect more of
+that shape from the four profiles still waiting: the mock HAL cannot fail the way a shared
+directory, a file lock, a gauge or an access point does.
 
 The practical consequence: a passing test proves the logic, never the register map. Where a driver
 constant came from a datasheet rather than from our bench notes, the driver says so at the constant
@@ -68,11 +78,11 @@ host down. Do not merge these into one flat machine; that decision is argued out
 | HOSTD | `cubesat-hostd` | **root** | ✅ | Host executor: units, Wi-Fi mode, governor, poweroff, profile state file | **ran on hardware** 2026-08-31 |
 | OBC | `cubesat@obc` | `cubesat` | ✅ | Both state machines, command parsing, subsystem health | **ran on hardware** 2026-08-31 |
 | EPS | `cubesat@eps` | `cubesat` | ✅ | Battery + mains telemetry — drives `LOW_POWER`/`SAFE`/`CRITICAL` | **ran on hardware** 2026-08-31 |
-| ADCS | `cubesat@adcs` | `cubesat` | by profile | BNO055 orientation + TEL0157 position | written, never run on hardware |
-| PAYLOAD | `cubesat@payload` | `cubesat` | by profile | SEN0501 science + camera | written, never run on hardware |
-| DHS | `cubesat@dhs` | `cubesat` | by profile | The flight recorder: owns the SQLite database | written, never run on hardware |
+| ADCS | `cubesat@adcs` | `cubesat` | by profile | BNO055 orientation + TEL0157 position | **ran on hardware** 2026-09-01 |
+| PAYLOAD | `cubesat@payload` | `cubesat` | by profile | SEN0501 science + camera | **ran on hardware** 2026-09-01 |
+| DHS | `cubesat@dhs` | `cubesat` | by profile | The flight recorder: owns the SQLite database | **ran on hardware** 2026-09-01 |
 | COMMS | `cubesat@comms` | `cubesat` | all but `MAINTENANCE` | The link only: LoRa mesh, uplink re-publish | **ran on hardware** 2026-08-31 |
-| DASHBOARD | `cubesat-dashboard` | `cubesat` | by profile | Static UI + read-only REST. **No WebSocket** — browsers subscribe to mosquitto's own listener | written, never run on hardware |
+| DASHBOARD | `cubesat-dashboard` | `cubesat` | by profile | Static UI + read-only REST. **No WebSocket** — browsers subscribe to mosquitto's own listener | **ran on hardware** 2026-09-01 |
 
 Three structural decisions that are easy to accidentally undo:
 
@@ -104,8 +114,10 @@ while a mission is open and the state permits the camera, a frame is taken every
 `photos.mission_interval_sec` (300 s) and filed under the mission. With no mission open a photograph
 goes to `/run/cubesat/photo` — a tmpfs — is published on the retained `payload_photo`, and is
 deleted; nothing reaches the card. That retired `photos/unfiled/`, which retention was forbidden to
-clean and which therefore only grew. Note the consequence for V11: at 300 s against a 60 s
-`idle_close_sec`, **every** mission frame is a cold capture.
+clean and which therefore only grew. Note the consequence: at 300 s against a 60 s
+`idle_close_sec`, **every** mission frame is a cold capture — the worry behind bench check V11,
+measured on 2026-09-01 and settled there: a cold frame and a warm one came out indistinguishable
+(luma 94.2 against 94.6), and what a cold capture costs is latency, 0.97 s against 0.21 s.
 
 **A mission with no label is named after when it started** (`2026-09-01 07:12`). Supplying one is
 `--mission` on the CLI or `mission_label` on the wire; without it an unlabelled mission used to list
@@ -206,8 +218,10 @@ These are validated and non-negotiable:
   `hal/i2c.py`. Four processes share one 10 kHz bus where a single read costs tens of
   milliseconds; unsynchronised access will collide mid-transaction.
 - **Addresses:** `0x20` TEL0157 GNSS (ADCS), `0x22` SEN0501 environment (PAYLOAD), `0x28` BNO055
-  orientation (ADCS), `0x36` MAX17048 fuel gauge (EPS), `0x68` DS1307 RTC (**kernel-owned, shows
-  as `UU`, never touch from user space**), `0x76` BMP280 (undecided — duplicates SEN0501 pressure).
+  orientation (ADCS), `0x36` **MAX17040/41** fuel gauge (EPS — identified 2026-09-01; the driver
+  file is still named `max17048.py` and reads only the registers both families share), `0x68`
+  DS1307 RTC (**kernel-owned, shows as `UU`, never touch from user space**), `0x76` BMP280
+  (undecided — duplicates SEN0501 pressure).
 - **The BNO055 fuses on-chip.** It outputs quaternion/Euler directly, so there is no AHRS filter
   in this repo any more. Publish `calib_status` alongside — an uncalibrated magnetometer produces
   confident nonsense.
@@ -323,11 +337,13 @@ Dependencies and tool config live in `pyproject.toml`; the test extra adds `pyte
 only. Coverage is enforced at 95 % (`fail_under`). GitHub Actions runs the suite on
 every push to `main` and every PR, on Python 3.10–3.12.
 
-The pre-rewrite suite works differently — `tests/conftest.py` replaces `RPi.GPIO`, `lgpio`,
-`smbus2`, `picamera2`/`libcamera` in `sys.modules` before any `src.*` import, because there is no
-HAL to mock behind. That trick goes away with the HAL.
+`tests/conftest.py` sets the environment **before** anything from `cubesat` is imported, because
+`cubesat.common.config` resolves its paths at import time: a temporary data, run and log directory,
+the repository's own `config/`, and `CUBESAT_MOCK_HARDWARE=1`. The pre-rewrite trick of replacing
+`RPi.GPIO`, `lgpio`, `smbus2` and `picamera2` in `sys.modules` is gone — that is what the HAL
+removed the need for, and it should not come back.
 
-The HAL is the first phase of the rewrite precisely because `HOSTD`, both state machines and the
+The HAL was the first phase of the rewrite precisely because `HOSTD`, both state machines and the
 cadence logic cannot be tested at all without mocked sensors.
 
 ## Layout and Running
@@ -410,9 +426,10 @@ took and every one it refused.
 
 ## Related Projects
 
-[cubesat-groundstation](https://github.com/miksrv/cubesat-groundstation) — the ground segment
-(PHP/CodeIgniter 4 + React) that receives packets POSTed by `COMMS`. In the target design its
-React client is being reworked into **one interface over several data sources**: the satellite's
+[cubesat-groundstation](https://github.com/miksrv/cubesat-groundstation) — the ground segment. It
+used to be PHP/CodeIgniter 4 + React receiving packets POSTed by `COMMS`; **that HTTP downlink is
+gone from this repo** — `COMMS` names one channel, the radio, and posts to nothing. Its React
+client is being reworked into **one interface over several data sources**: the satellite's
 own `DASHBOARD` service, a mission exported to a static file for a public demo with no backend at
 all, and later a USB Meshtastic receiver. The PHP and MySQL half is removed. The satellite carries
 no UI code of its own — the build arrives as an artifact. The agreed boundary between the two

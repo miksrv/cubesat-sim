@@ -1,9 +1,9 @@
 # Refactoring Plan
 
 > **⚠️ Pre-rewrite document.** Written against the five-service codebase. The HAL design below
-> (`src/hal/` with interfaces, real drivers and mocks) carries forward and is now **phase P1** of
-> the rewrite — see [`../ROADMAP.md`](../ROADMAP.md) — because nothing else in the rewrite can be
-> tested without it. The rest is superseded by [`concept.md`](concept.md).
+> (interfaces, real drivers and mocks) is the one part that carried forward: it became phase P1 of
+> the rewrite and is now `src/cubesat/hal/`, because nothing else in the rewrite could be tested
+> without it. The rest is superseded by [`concept.md`](concept.md).
 >
 > Note that the concrete drivers named here (QMI8658, AK09918, LPS22HB, SHTC3, A9G) are all off the
 > satellite. The interfaces they were meant to sit behind are still the right idea; the

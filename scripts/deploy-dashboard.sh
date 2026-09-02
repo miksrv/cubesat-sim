@@ -19,8 +19,10 @@ GROUNDSTATION="${1:?usage: $0 <path-to-cubesat-groundstation> [user@host]}"
 TARGET="${2:-mik@cubesat}"
 
 # Must match CUBESAT_DASHBOARD_ROOT in src/cubesat/common/config.py, which
-# defaults to CUBESAT_DATA_DIR/dashboard. systemd creates it from the unit's
-# StateDirectory; this script only fills it.
+# defaults to CUBESAT_DATA_DIR/dashboard. systemd-tmpfiles creates it at boot
+# from config/tmpfiles.d/cubesat.conf — deliberately not from a unit's
+# StateDirectory, which would re-chown the tree to whichever unit restarted
+# last; this script only fills it.
 REMOTE_ROOT="/var/lib/cubesat/dashboard"
 
 CLIENT="${GROUNDSTATION%/}/client"

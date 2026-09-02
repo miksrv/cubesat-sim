@@ -2,7 +2,7 @@
 
 LoRa ground link for **COMMS**, replacing the LoRa half of the [52Pi IoT Node(A)](hardware-iot-node-a-52pi.md). The board runs **stock Meshtastic firmware** and is a self-contained radio: the Raspberry Pi talks to it over UART using Meshtastic's Serial module in `PROTO` mode, and Meshtastic handles framing, CRC, retries, acknowledgements and encryption on its own. The custom `length + payload + CRC-16-CCITT` framing used against the 52Pi bridge is therefore obsolete here.
 
-> **Status:** the radio link is bench-verified end to end (Pi → UART → Heltec → air → second Meshtastic node, and back). The driver is now `src/cubesat/hal/rpi/meshtastic_radio.py`, built on the `meshtastic` library — the old `smbus2`/SC16IS752 implementation is gone, and with it the hand-rolled framing and CRC that Meshtastic already provides. **None of it has run on the Pi yet.**
+> **Status:** the radio link is bench-verified end to end (Pi → UART → Heltec → air → second Meshtastic node, and back). The driver is `src/cubesat/hal/rpi/meshtastic_radio.py`, built on the `meshtastic` library — the old `smbus2`/SC16IS752 implementation is gone, and with it the hand-rolled framing and CRC that Meshtastic already provides. **It ran inside `COMMS` on the assembled satellite on 2026-08-31**, in `HOSTED`: the node was reachable, a beacon went out, and a ground command typed on a phone round-tripped onto `cubesat/command` and was answered. What has never been exercised is a packet relayed through a third node — everything heard so far arrived direct, which is why the hop arithmetic is still bench check V10.
 
 - **Product:** [Heltec WiFi LoRa 32 V4](https://heltec.org/project/wifi-lora-32-v4/)
 - **Official docs:** [Heltec Wiki — WiFi LoRa 32 V4](https://wiki.heltec.org/docs/devices/open-source-hardware/esp32-series/lora-32/wifi-lora-32-v4/)
@@ -226,7 +226,7 @@ Verify with `--info` by looking at the `bluetooth.enabled` field, **not** `Metad
 
 Note that `bluetooth.enabled` is the Heltec's own Bluetooth, while `dtoverlay=disable-bt` is the Raspberry Pi's. Different things; both are wanted here.
 
-**Python — send and receive, the shape `src/comms/lora.py` should take:**
+**Python — send and receive, the shape `src/cubesat/comms/mesh.py` takes:**
 
 ```python
 import time
@@ -267,11 +267,12 @@ Both of the items that used to be here are closed.
 - **The channel index is a configuration value.** `config.LORA_CHANNEL_INDEX` (env `LORA_CHANNEL_INDEX`), next to `LORA_PORT`. If the driver and the ground station disagree, messages transmit and receive perfectly and simply never meet — the hardest kind of radio fault to diagnose, and not one to leave to a constant buried in a driver.
 - **Packet size is settled: a compact beacon, not chunking.** The Serial module carries at most 240 bytes and a full telemetry packet runs to several hundred, so the radio sends a single readable `key=value` line — around 101 bytes typically, 122 in the worst plausible case — and the full record stays in DHS to be collected when the satellite is back on a network. One message is one complete observation, where a lost chunk would void a whole packet, and LoRa airtime is duty-cycle limited. It is **never truncated**: when space runs short, whole optional fields are dropped in priority order. The old driver's silent 28-byte truncation is what this replaced.
 
-What remains is bench work, not design — see the verification table in [`ROADMAP.md`](../ROADMAP.md): nothing in this driver has yet transmitted from the assembled satellite.
-- `src/comms/lora.py` (becoming `src/cubesat/comms/mesh.py`) still targets `smbus2`/SC16IS752 and needs rewriting on top of `meshtastic`. `src/common/config.py` and `config/config.yaml` still carry `LORA_I2C_ADDRESS` instead of `LORA_PORT` / `LORA_BAUDRATE`.
-- `tests/test_comms_lora.py` mocks `smbus`; it needs reworking (`tests/test_common_gps_a9g.py` is a good model for faking a serial peripheral).
-- `crc16_ccitt()` in `src/common/utils.py` loses its only consumer once the rewrite lands — decide whether to keep it.
-- A two-way ground link needs an SX1262 receiver attached to the ground station as well.
+The rewrite those items waited on has landed: the driver is `hal/rpi/meshtastic_radio.py`, the service is `src/cubesat/comms/`, `config.py` carries `LORA_PORT`/`LORA_BAUDRATE`/`LORA_CHANNEL_INDEX` rather than an I2C address, the tests fake a serial peripheral instead of `smbus`, and `crc16_ccitt()` went with the framing it existed for.
+
+What remains is bench work, not design — see the verification table in [`ROADMAP.md`](../ROADMAP.md):
+
+- **V10, the hop count.** `hops = hopStart − hopLimit` comes from the library's documentation, not from a bench run, and every direct packet reads 0 whichever interpretation is right. A packet relayed through a third node is the check; wrong arithmetic would put a plausible small integer in `radio_log.hops`.
+- A two-way ground link needs an SX1262 receiver attached to the ground station as well — a USB Meshtastic node, in the current plan for the ground segment.
 
 ## Further reading
 

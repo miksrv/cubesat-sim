@@ -190,9 +190,9 @@ photos:
   # Two things it costs, both worth knowing before lowering it. Each frame is a
   # few hundred kilobytes on the card, and the card is what wears out. And with
   # camera.idle_close_sec below this, every frame is a *cold* capture: the sensor
-  # is reopened for it, and whether Picamera2's auto-exposure has converged by
-  # then is bench check V11 — which this setting promotes from an occasional
-  # question to one that applies to a whole mission's photographs.
+  # is reopened for it. Whether Picamera2's auto-exposure has converged by then
+  # was bench check V11, and it was settled on 2026-09-01 — see the note at
+  # camera.idle_close_sec: it does, and a cold frame costs latency, not quality.
   mission_interval_sec: 300
 
 camera:

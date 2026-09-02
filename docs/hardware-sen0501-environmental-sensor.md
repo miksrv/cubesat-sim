@@ -1,8 +1,8 @@
 # Gravity SEN0501 — Multifunctional Environmental Sensor
 
-Five environmental measurements from a single I2C module: temperature, humidity, atmospheric pressure, ambient light and UV. Intended consumer is **Payload** science data, replacing the LPS22HB (pressure) and SHTC3 (humidity) sensors of the ~~[Sense HAT (C)](hardware-sense-hat-c.md)~~ which is out of the design.
+Five environmental measurements from a single I2C module: temperature, humidity, atmospheric pressure, ambient light and UV. The consumer is **PAYLOAD** science data; it replaced the LPS22HB (pressure) and SHTC3 (humidity) sensors of the ~~[Sense HAT (C)](hardware-sense-hat-c.md)~~, which is out of the design.
 
-> **Status:** bench-verified on 2026-08-23 — the module answers at `0x22` and all five measurements read plausible values. No driver exists in `src/` yet; the bench script lives on the Pi at `~/test/sen0501_read.py` (see [Usage examples](#usage-examples)).
+> **Status:** bench-verified on 2026-08-23 — the module answers at `0x22` and all five measurements read plausible values. The driver is `src/cubesat/hal/rpi/sen0501.py`, behind the `Environment` protocol, and it ran inside `PAYLOAD` on the assembled satellite on 2026-09-01 in `DEMO`. `uv_index` is still published as null, because the board revision is unconfirmed — one raw register, two formulas that disagree by a factor of forty (V7). The bench script lives on the Pi at `~/test/sen0501_read.py` (see [Usage examples](#usage-examples)).
 
 - **Product:** [DFRobot SEN0501](https://www.dfrobot.com/product-2528.html)
 - **Official docs:** [DFRobot Wiki — SEN0501](https://wiki.dfrobot.com/SKU_SEN0501_Gravity_Multifunctional_Environmental_Sensor)
@@ -140,10 +140,9 @@ SEN0501 found at 0x22 on bus 1 (ID 0x22)
 
 ## Open items
 
-- No driver in `src/` yet. Its home in the rewrite is `src/cubesat/hal/rpi/sen0501.py`, behind the `Environment` protocol, consumed by **PAYLOAD** for science data. (In the pre-rewrite layout it would have gone in `src/common/` alongside the other sensor drivers.)
 - Board revision (V1.0 vs V3.0) still unconfirmed, so the UV field cannot be published yet. Confirm in direct sunlight.
-- `requirements.txt` already carries `smbus2`, so no new dependency is needed. Tests will need a fake I2C peripheral in `tests/fakes.py`, the same approach used for the existing IMU.
-- Decide whether Payload publishes elevation at all, given the fixed-reference caveat above.
+- ~~A fake I2C peripheral for the tests~~ — done: `tests/unit/hal/test_sen0501.py` drives the driver off a fake bus, and `smbus2` is the only dependency it needs (the `rpi` extra in `pyproject.toml`).
+- ~~Decide whether Payload publishes elevation~~ — decided: it does not. This module's reading goes out as pressure, and altitude comes from the GNSS receiver, which measures it rather than inferring it from a hard-coded reference.
 
 ## Further reading
 

@@ -1,8 +1,10 @@
 # Raspberry Pi Camera Module V2 (8MP, 1080p)
 
-CSI camera used by the **PAYLOAD** subsystem (`src/cubesat/payload/camera.py`) for on-demand photo capture (`take_photo` command) and timelapse sequences.
+CSI camera used by the **PAYLOAD** subsystem (`src/cubesat/payload/camera.py`) for on-demand photo capture (the `take_photo` command) and for a mission's own photography — a frame every `photos.mission_interval_sec` while a mission is open. There is no timelapse command: `start_timelapse`/`stop_timelapse` were retired on 2026-09-01, because a ground-commanded series was a control for something a mission should simply do.
 
-Photos are **kept on disk**, filed under the mission that was recording when they were taken (`/var/lib/cubesat/photos/<mission_id>/`). An on-demand capture is additionally published base64-encoded over MQTT (`cubesat/payload/photo`) — that is how a Telegram bot or the dashboard receives it — while a timelapse frame publishes metadata only, because five hundred frames through the broker would crowd out the telemetry the satellite exists to collect. (The pre-rewrite build published the bytes and then deleted the file; nothing keeps the only copy in a message any more.)
+> **Status:** ran on the assembled satellite on 2026-09-01, in `DEMO` — captures on demand and as mission frames, watched live in the dashboard. Bench check V11 was settled in the same session: a cold capture (the sensor closed by `camera.idle_close_sec` between frames) and a warm one came out indistinguishable, luma 94.2 against 94.6; what a cold capture costs is latency, 0.97 s against 0.21 s. The camera still needs re-aiming — the first test frame was mostly two of the satellite's own frame struts.
+
+Photos are **kept on disk**, filed under the mission that was recording when they were taken (`/var/lib/cubesat/photos/<mission_id>/`). An on-demand capture is additionally published base64-encoded over MQTT (`cubesat/payload/photo`) — that is how the dashboard or a bot receives it — while a mission frame publishes metadata only, because a hundred frames through the broker would crowd out the telemetry the satellite exists to collect. (The pre-rewrite build published the bytes and then deleted the file; nothing keeps the only copy in a message any more.) With **no** mission open a photograph is written to `/run/cubesat/photo` — a tmpfs — published as pixels, and deleted: nothing unfiled reaches the card.
 
 - **Product:** [Raspberry Pi Camera Module 2](https://a.co/d/02oyeWg8)
 - **Official docs:** [Raspberry Pi Documentation — Camera](https://www.raspberrypi.com/documentation/accessories/camera.html#camera-module-2)
@@ -38,7 +40,7 @@ Photos are **kept on disk**, filed under the mission that was recording when the
    # or, inside the project venv:
    pip install picamera2
    ```
-5. This project's `PayloadCamera` (`src/payload/camera.py`) configures a still capture with a low-res preview stream and a 180° flip (`Transform(hflip=1, vflip=1)`) to correct for the camera's mounted orientation in the frame (see `hardware/models/frame/Cubesat_RaspbiCam_Frame.stl`).
+5. This project's driver (`src/cubesat/hal/rpi/camera.py`) configures a still capture with a low-res preview stream — Picamera2 needs somewhere to run its auto-exposure loops — and a 180° flip (`Transform(hflip=1, vflip=1)`) to correct for the camera's mounted orientation in the frame (see `hardware/models/frame/Cubesat_RaspbiCam_Frame.stl`). The still size is the `camera.resolution` setting, deliberately below the sensor's 3280 × 2464 maximum: full resolution is about 24 MB a frame off the bus and onto the card.
 
 ## Usage examples
 
@@ -53,7 +55,7 @@ rpicam-jpeg --output test.jpg
 rpicam-vid -t 10s -o test.h264
 ```
 
-**Python — as implemented in `src/payload/camera.py`:**
+**Python — as implemented in `src/cubesat/hal/rpi/camera.py`:**
 ```python
 from picamera2 import Picamera2
 from libcamera import Transform
@@ -79,7 +81,7 @@ picam2.close()
 ```bash
 mosquitto_pub -t cubesat/command -m '{"command": "take_photo", "request_id": "req_1", "params": {"overlay": false}}'
 ```
-(Only accepted while OBC state is `NOMINAL` — see `src/payload/main.py`.)
+(Accepted only while the mission state permits the camera — `NOMINAL` or `SCIENCE`, `CAMERA_ALLOWED_STATES` in `src/cubesat/common/states.py` — and only above the `photos.min_free_mb` floor. A refusal is published on the same topic with the reason, so nothing waits for a photo that will never come.)
 
 ## Further reading
 

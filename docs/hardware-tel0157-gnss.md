@@ -1,10 +1,12 @@
 # Gravity GNSS Receiver TEL0157 (GPS / BeiDou / GLONASS)
 
-Satellite positioning for **ADCS**, replacing `src/common/gps_a9g.py` (A9G, NMEA over the 52Pi ~~[IoT Node(A)](hardware-iot-node-a-52pi.md)~~ I2C↔UART bridge).
+Satellite positioning for **ADCS**. It replaced `src/common/gps_a9g.py` (A9G, NMEA over the 52Pi ~~[IoT Node(A)](hardware-iot-node-a-52pi.md)~~ I2C↔UART bridge).
 
 The module does the GNSS work itself — acquisition, tracking, NMEA parsing — and exposes the result as plain I2C registers. The host reads decimal degrees, satellite count, altitude, speed and course without touching NMEA at all, so `pynmea2` is no longer needed. Raw NMEA remains available on request, which is the only way to inspect satellites in view before a fix exists.
 
-> **Status:** bench-verified on 2026-08-23. Cold start indoors reached time-only; moved to a balcony it acquired a 3D fix with 23 satellites in the solution and HDOP 0.6. The driver is `src/cubesat/hal/rpi/tel0157.py`; the bench script lives on the Pi at `~/test/tel0157_gnss_read.py`. On 2026-08-31 the driver itself was exercised on the assembled satellite for the first time — bring-up write, then `read()` returning a 3D fix with 15 satellites at 37.676955, −121.876546, within metres of the August bench position — but **`ADCS` has still not run on the Pi**: no profile that starts it has been applied, so the driver has only ever been called by hand.
+> **Status:** bench-verified on 2026-08-23. Cold start indoors reached time-only; moved to a balcony it acquired a 3D fix with 23 satellites in the solution and HDOP 0.6. The driver is `src/cubesat/hal/rpi/tel0157.py`; the bench script lives on the Pi at `~/test/tel0157_gnss_read.py`. On 2026-08-31 the driver was exercised by hand on the assembled satellite — bring-up write, then `read()` returning a 3D fix with 15 satellites at 37.676955, −121.876546, within metres of the August bench position — and on 2026-09-01 it ran inside `ADCS` in `DEMO` for the first time.
+>
+> **What no session so far has produced is a fix taken while moving**, and two constants wait on exactly that: the knots → m/s factor (V2 — at rest the bench read 0.00 knots, and zero converts to zero whatever the factor is) and the altitude triplet's high byte (V3 — 116.59 m fits in one byte). Both would publish plausible wrong numbers rather than fail, which is why they are bench checks and not test cases.
 
 - **Product:** [DFRobot TEL0157](https://www.dfrobot.com/product-2651.html)
 - **Official docs:** [DFRobot Wiki — TEL0157](https://wiki.dfrobot.com/TEL0157)
@@ -145,11 +147,10 @@ What to read from it: in `GNGGA` the field after the longitude hemisphere is fix
 
 ## Open items
 
-- No driver in `src/` yet. Its home in the rewrite is `src/cubesat/hal/rpi/tel0157.py`, behind the
-  `GNSS` protocol. It replaces `src/common/gps_a9g.py` and is consumed by ADCS. Keep that module's contract: return the last known fix with `fix: false` rather than blocking the ADCS loop while there is no signal — the same behaviour is needed here, and the module's "tidy zeros" make it easy to get wrong.
-- `pynmea2` loses its only consumer once this lands; `pyserial` too, unless the Heltec link needs it. Decide whether to drop them from `requirements.txt`.
-- Altitude is now available from three sources: this module, the BMP280 and the SEN0501. Pick one per quantity.
-- Tests need a fake I2C peripheral in `tests/fakes.py`, including a no-fix case (all zeros) and a southern/western position to catch a sign regression.
+- ~~`pynmea2` and `pyserial`~~ — settled: `pynmea2` is gone from `pyproject.toml` (this module parses NMEA on board, so nothing needs it), `pyserial` stays in the `rpi` extra because the Meshtastic link does need it.
+- ~~Altitude from three sources~~ — settled: altitude comes from this module, which measures it. The SEN0501's reading goes out as pressure only; the BMP280 is still undecided as a *pressure* duplicate (Q1).
+- ~~Tests need a fake I2C peripheral~~ — done: `tests/unit/hal/test_tel0157.py`, including the no-fix case and a southern/western position against a sign regression.
+- The driver keeps the contract the A9G module had: return the last known fix with `fix: false` rather than blocking the ADCS loop while there is no signal. The old module's "tidy zeros" are what made that easy to get wrong — a position of `0, 0` is a real place in the Gulf of Guinea.
 
 ## Further reading
 

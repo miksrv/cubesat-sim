@@ -279,8 +279,10 @@ def test_status_with_no_obc_says_which_unit_to_look_at(session):
 
 
 def test_status_reports_the_charge_rate_when_the_gauge_gives_one(session, fake_client):
-    # It is the number V12 is about: a SOC that disagrees with its own charge
-    # rate is the fault, and an operator checks them side by side.
+    # A SOC that disagrees with its own charge rate is the fault this pairing
+    # exists to make visible, and an operator checks the two side by side. The
+    # value here is the one the old gauge driver reported forever (V12, closed
+    # 2026-09-01: it was 0xFFFF decoded, not a measurement).
     fake_client.deliver(TOPICS["obc_status"], {"status": "NOMINAL", "profile": "DEMO"})
     fake_client.deliver(
         TOPICS["eps_status"],

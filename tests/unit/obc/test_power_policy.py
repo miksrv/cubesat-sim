@@ -95,7 +95,7 @@ def test_a_pack_that_keeps_falling_on_mains_still_reaches_critical():
 
 
 def test_a_gauge_that_cannot_report_a_rate_is_believed_about_mains():
-    # Otherwise a gauge whose CRATE register will not read would power a
+    # Otherwise an EPS that has not yet seen enough history for a rate would power a
     # plugged-in satellite off — a second failure mode caused by the fix for the
     # first one.
     assert evaluate(on_mains(5.0, charge_rate=None), NOMINAL) is None

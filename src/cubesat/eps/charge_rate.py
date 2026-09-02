@@ -89,7 +89,7 @@ class ChargeRateEstimator:
         t_mean = sum(ts) / n
         y_mean = sum(ys) / n
         var = sum((t - t_mean) ** 2 for t in ts)
-        cov = sum((t - t_mean) * (y - y_mean) for t, y in zip(ts, ys))
+        cov = sum((t - t_mean) * (y - y_mean) for t, y in zip(ts, ys, strict=True))
         # var is positive here: span >= min_span > 0 guarantees two distinct times.
         per_second = cov / var
         return round(per_second * 3600.0, 2)

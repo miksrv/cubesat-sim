@@ -141,6 +141,20 @@ DASHBOARD_LIVE_ROWS: int = int(
     os.getenv("DASHBOARD_LIVE_ROWS", _dashboard.get("live_history_rows", 720))
 )
 
+_eps = _yaml.get("eps", {})
+
+#: The sliding window, in seconds, over which EPS fits the charge rate to the
+#: state-of-charge readings. There is no rate register on this gauge; see
+#: ``eps/charge_rate.py`` for why a fitted slope and not a difference.
+EPS_CHARGE_RATE_WINDOW_SEC: float = float(
+    os.getenv("EPS_CHARGE_RATE_WINDOW_SEC", _eps.get("charge_rate_window_sec", 600.0))
+)
+#: How much history the window must hold before a rate is published at all.
+#: Below this the rate is null and the power policy falls back to the mains pin.
+EPS_CHARGE_RATE_MIN_SPAN_SEC: float = float(
+    os.getenv("EPS_CHARGE_RATE_MIN_SPAN_SEC", _eps.get("charge_rate_min_span_sec", 300.0))
+)
+
 _dhs = _yaml.get("dhs", {})
 
 #: The floor on how often an attitude sample is recorded, in seconds. One

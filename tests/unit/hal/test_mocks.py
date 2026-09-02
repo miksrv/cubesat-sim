@@ -119,12 +119,15 @@ def test_unparseable_pin_is_ignored(monkeypatch):
     assert MockPowerMonitor().read().battery_percent == 100.0
 
 
-def test_charge_rate_matches_what_the_level_is_doing(monkeypatch):
+def test_the_mock_reports_no_rate_like_the_real_gauge(monkeypatch):
+    # The X728's gauge has no rate register and EPS fits the rate to the level's
+    # history. A mock that supplied one would exercise a path the hardware
+    # lacks and hide the estimator from every test that runs on the mock HAL.
     monitor = MockPowerMonitor()
     monitor._discharge_sec = 3600
-    assert monitor.read().charge_rate == -100.0
+    assert monitor.read().charge_rate is None
     monkeypatch.setenv("CUBESAT_MOCK_BATTERY", "40")
-    assert MockPowerMonitor().read().charge_rate == 0.0
+    assert MockPowerMonitor().read().charge_rate is None
 
 
 def test_mains_stops_the_discharge(monkeypatch):
@@ -134,7 +137,7 @@ def test_mains_stops_the_discharge(monkeypatch):
     reading = monitor.read()
     assert reading.external_power is True
     assert reading.battery_percent == 100.0
-    assert reading.charge_rate == 0.0
+    assert reading.charge_rate is None
 
 
 def test_discharge_never_goes_below_empty():

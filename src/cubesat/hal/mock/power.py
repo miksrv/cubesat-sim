@@ -47,16 +47,11 @@ class MockPowerMonitor:
             battery_percent=round(percent, 2),
             voltage=round(_EMPTY_VOLTS + (_FULL_VOLTS - _EMPTY_VOLTS) * percent / 100.0, 3),
             external_power=self._external,
-            charge_rate=self._rate(),
+            # None, like the real gauge: the X728's MAX17040/41 has no rate
+            # register, and EPS derives the rate from the level's history. A
+            # mock that reported one would exercise a path the hardware lacks.
+            charge_rate=None,
         )
-
-    def _rate(self) -> float:
-        """Percent per hour, consistent with whatever the level is doing."""
-        if self._external:
-            return 0.0
-        if self._pinned is not None:
-            return 0.0
-        return round(-100.0 * 3600.0 / self._discharge_sec, 2)
 
     def _level(self) -> float:
         if self._pinned is not None:

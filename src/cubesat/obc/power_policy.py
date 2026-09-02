@@ -26,8 +26,9 @@ SAFE_PERCENT = 20.0
 CRITICAL_PERCENT = 10.0
 #: Below this, a pack is going down even if the mains pin says it is plugged in —
 #: a faulty charger, a dead barrel jack, or a PLD pin that is simply lying. The
-#: threshold is not zero because a gauge reports small negative rates while a
-#: charge is settling, and treating that as a mains failure would throw away the
+#: threshold is not zero because the rate is fitted to a quantised reading and
+#: carries a few hundredths of noise, and a pack can dip slightly for minutes
+#: after a plug-in; treating either as a mains failure would throw away the
 #: protection it is meant to preserve.
 DRAINING_PERCENT_PER_HOUR = -1.0
 
@@ -57,8 +58,9 @@ class PowerReading:
 
     battery_percent: float
     external_power: bool
-    #: Signed percent per hour from the gauge: positive charging, negative
-    #: draining, None where the register could not be read.
+    #: Signed percent per hour, as EPS publishes it: positive charging, negative
+    #: draining, None while EPS has too little history to say (its first minutes,
+    #: and the minutes after the mains pin changed).
     charge_rate: float | None = None
 
     @property
@@ -68,11 +70,11 @@ class PowerReading:
         Not just the PLD pin. The pin alone would let one failure mode disable
         every protection below: a charger that has stopped charging still reads
         as external power, and a pack that keeps falling would then never reach
-        CRITICAL. The charge rate is the second opinion, and it is exactly what
-        that register is for.
+        CRITICAL. The charge rate is the second opinion — fitted by EPS to the
+        state-of-charge history, because this gauge measures no rate itself.
 
-        A missing rate falls back to trusting the pin: a gauge that cannot report
-        CRATE must not cause a plugged-in satellite to power itself off.
+        A missing rate falls back to trusting the pin: EPS that has not yet seen
+        enough history must not cause a plugged-in satellite to power itself off.
         """
         if not self.external_power:
             return False

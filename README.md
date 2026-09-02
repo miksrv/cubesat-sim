@@ -767,11 +767,14 @@ read mid-switch goodbyes as faults.
 }
 ```
 
-`charge_rate` is signed percent per hour from the gauge's `CRATE` register:
-positive charging, negative draining, `null` where the register could not be
-read. It is what lets the power policy tell "plugged in and charging" from
-"plugged in but the pack is still going down", without waiting for the
-state-of-charge reading to move.
+`charge_rate` is signed percent per hour: positive charging, negative draining. It is **computed by
+EPS**, a least-squares slope over the last `eps.charge_rate_window_sec` (600 s) of `battery_percent`
+readings — the X728's gauge is a MAX17040/41 and has no rate register of its own (the `−0.208` an
+earlier driver published was a decoded `0xFFFF`, see `docs/hardware-x728-ups-hat.md`). It is `null`
+until the window holds `eps.charge_rate_min_span_sec` (300 s) of history, and again for that long
+after `external_power` changes, because a slope measured on battery says nothing about the pack once
+it is plugged in. The power policy reads `null` as "trust the pin". What the rate is for is telling
+"plugged in and charging" from "plugged in but the pack is still going down".
 
 ### `cubesat/adcs/status`
 

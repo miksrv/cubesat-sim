@@ -220,11 +220,13 @@ What this changes:
 - **`SOC` on battery looks honest.** 63.4 → 61.7 % in five minutes with eight services and the camera
   pipeline running is what the pack size predicts; the still-unexplained drift is the one *on mains*,
   which is the question below.
-- **The power policy's mains check is half-dead.** `on_mains` treats a rate above `−1.0 %/h` as "not
-  draining", and a constant `−0.208` satisfies that unconditionally, so the clause meant to notice a
-  failed charger cannot fire. The driver should publish `charge_rate: null` for a `0xFFFF` read —
-  withhold rather than fabricate — after which the check degenerates honestly to the pin alone.
-  Tracked as V12 in [`ROADMAP.md`](../ROADMAP.md).
+- **The power policy's mains check was half-dead.** `on_mains` treats a rate above `−1.0 %/h` as
+  "not draining", and a constant `−0.208` satisfied that unconditionally, so the clause meant to
+  notice a failed charger could never fire. Fixed the same day: the driver no longer reads `0x16` and
+  reports no rate; **EPS computes `charge_rate` itself** as a least-squares slope over ten minutes
+  of `SOC` readings (`eps/charge_rate.py`), publishing `null` until it has five minutes of history
+  and again after the mains pin changes. With the rate a real measurement, the second half of the
+  check means something again.
 - The driver file is still named `max17048.py`; the register map it actually uses (`VCELL`, `SOC`,
   `VERSION`, `CONFIG`) is the one both families share, so it is correct as far as it reads.
 

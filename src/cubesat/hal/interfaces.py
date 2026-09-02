@@ -132,9 +132,10 @@ class Power:
     voltage: float
     external_power: bool
     #: Signed charge rate in percent per hour: positive charging, negative
-    #: draining, None where the gauge does not report it. Worth carrying because
-    #: it answers "is the battery actually recovering?" immediately, instead of
-    #: waiting for the state-of-charge reading to move.
+    #: draining. A driver fills this only if its gauge measures it; the X728's
+    #: MAX17040/41 does not, so the driver leaves it None and EPS derives it from
+    #: the state-of-charge history (``eps/charge_rate.py``). None on the wire
+    #: means "not known yet", which the power policy reads as "trust the pin".
     charge_rate: float | None = None
 
     def as_dict(self) -> dict[str, Any]:

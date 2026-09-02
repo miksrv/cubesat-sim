@@ -67,7 +67,8 @@ class FakeGpio:
 @pytest.fixture
 def monitor(monkeypatch):
     # Values measured on the assembled satellite, from the hardware document:
-    # 4.044 V at 79.61%, CRATE idle at -0.21 %/hour.
+    # 4.044 V at 79.61%. 0x16 answers 0xFFFF because the register is not there —
+    # this is a MAX17040/41 — and the driver must not read it.
     bus = FakeBus({0x02: 51760, 0x04: 20379, 0x08: 0x0002, 0x16: 0xFFFF})
     gpio = FakeGpio(level=0)
     monkeypatch.setitem(
@@ -118,21 +119,16 @@ def test_pld_pin_is_configured_as_an_input_once(monitor):
     assert gpio.configured == [(max17048.PLD_PIN, "in")]
 
 
-def test_charge_rate_is_signed(monitor):
+def test_the_gauge_has_no_rate_register_so_none_is_reported_and_never_read(monitor):
+    # 0x16 is the MAX17048's CRATE. On this MAX17040/41 the address answers
+    # 0xFFFF (verified 2026-09-01), which the old driver decoded into a
+    # confident −0.208 %/h that never changed. The rate is EPS's to derive now;
+    # the driver neither reads the address nor invents a number.
     device, bus, _ = monitor
-    assert device.read().charge_rate == pytest.approx(-0.208)
-    bus.words[0x16] = 0x000A
-    assert device.read().charge_rate == pytest.approx(2.08)
-    bus.words[0x16] = 0x0000
-    assert device.read().charge_rate == 0.0
-
-
-def test_an_unreadable_charge_rate_does_not_lose_the_battery_reading(monitor):
-    # CRATE is a nice-to-have; the power policy depends on the rest.
-    device, bus, _ = monitor
-    bus.fail_on.add(0x16)
     reading = device.read()
     assert reading.charge_rate is None
+    assert (ADDRESS, max17048.REG_CRATE_ABSENT) not in bus.reads
+    assert (ADDRESS, max17048.REG_CRATE_ABSENT + 1) not in bus.reads
     assert reading.battery_percent == 79.61
 
 

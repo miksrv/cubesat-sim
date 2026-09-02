@@ -49,15 +49,22 @@ def test_eps_publishes_battery_telemetry_and_heartbeats(service_factory, monkeyp
 
 def test_a_draining_battery_is_visible_in_the_telemetry(service_factory, monkeypatch):
     monkeypatch.setattr(config, "HEARTBEAT_INTERVAL_SEC", 1.0)
+    # The estimator's window, scaled to a run of a fraction of a second: the
+    # first messages carry no rate, the later ones a negative one fitted to
+    # the levels the mock actually published.
+    monkeypatch.setattr(config, "EPS_CHARGE_RATE_WINDOW_SEC", 0.2)
+    monkeypatch.setattr(config, "EPS_CHARGE_RATE_MIN_SPAN_SEC", 0.05)
     monitor = MockPowerMonitor()
     monitor._discharge_sec = 10.0
     service, client = service_factory(EpsService, monitor=monitor)
     client.connect_ok()
     monkeypatch.setattr(type(service), "interval", property(lambda _self: 0.02))
 
-    run_briefly(service, seconds=0.15)
+    run_briefly(service, seconds=0.3)
 
-    levels = [p["battery_percent"] for p in client.payloads(TOPICS["eps_status"])]
+    payloads = client.payloads(TOPICS["eps_status"])
+    levels = [p["battery_percent"] for p in payloads]
     assert len(levels) >= 2
     assert levels[-1] < levels[0], "the mock battery is not actually draining"
-    assert all(p["charge_rate"] < 0 for p in client.payloads(TOPICS["eps_status"]))
+    assert payloads[0]["charge_rate"] is None, "a rate from one reading is a guess"
+    assert payloads[-1]["charge_rate"] < 0, "the fitted rate does not show the drain"

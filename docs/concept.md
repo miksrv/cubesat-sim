@@ -168,9 +168,11 @@ otherwise power the host off, and the X728 would not restore it, because mains n
 Mains alone is not trusted either. A faulty charger or a stuck PLD pin would suppress the
 protection indefinitely, so "on mains" means `external_power` **and** a charge rate that is not
 still falling — a pack draining while the satellite believes it is plugged in still reaches
-`CRITICAL`. This is what the gauge's `CRATE` register is for, and it is the reason
-`charge_rate` is carried in the power telemetry at all rather than being computed later from a
-series of state-of-charge readings.
+`CRITICAL`. The rate was meant to come from the gauge's `CRATE` register; the X728's gauge turned
+out to be a MAX17040/41 with no such register (2026-09-01), so EPS derives it from the
+state-of-charge history over a ten-minute window and publishes `null` until it has one. `null`
+means "trust the pin" — the honest fallback, and the only one that lets a flat pack just plugged in
+climb out of `SAFE` rather than power itself off.
 
 Recovery also needs hysteresis, which today's handler lacks: `handlers.py` drops to
 `LOW_POWER` below 40 % and only ever leaves it when external power appears. Returning to

@@ -9,7 +9,7 @@ Battery power management HAT used by the **EPS** subsystem (`src/eps/`). Provide
 
 | | |
 |---|---|
-| Fuel gauge | **MAX17048** — confirmed on this unit, not the MAX17040: the `CRATE` register (`0x16`) responds, and it exists only on the MAX17048. `VERSION` (`0x08`) reads `0x0002` |
+| Fuel gauge | **MAX17040/41** (corrected 2026-09-01; the 2026-08-23 bench note called it a MAX17048 because `CRATE` "responded" — it responds `0xFFFF`, which is what an unimplemented register returns, see [The gauge is a MAX17040/41](#the-gauge-is-a-max1704041-not-a-max17048-2026-09-01)). `VERSION` (`0x08`) reads `0x0002`, `CONFIG` (`0x0C`) `0x9700` |
 | Fuel gauge interface | I2C, address `0x36` |
 | Battery voltage register | `0x02` (`VCELL`, word, MSB first) — `voltage_V = raw >> 4 * 0.00125` |
 | Battery SOC register | `0x04` (`SOC`, word, MSB first) — `percent = raw / 256.0` |
@@ -157,7 +157,9 @@ CRATE (0x16)          -> -0.21 %/hour   (idle; the sign indicates discharge)
 GPIO6 (PLD)           -> low = AC present
 ```
 
-4.044 V against 79.6 % is self-consistent for a Li-ion cell, and `CRATE` near zero matches a battery that is neither charging nor meaningfully loaded. `CRATE` is a cheap way to distinguish "on mains" from "running down" without waiting for `SOC` to move, and this project does not read it yet.
+4.044 V against 79.6 % is self-consistent for a Li-ion cell. The `CRATE` line, however, was misread:
+`-0.21 %/hour` is `0xFFFF` decoded as a signed word, and the register does not exist on this part —
+see the 2026-09-01 section below. There is no charge-rate register to read on this board.
 
 ### SOC drifts down while the voltage stands still (2026-08-31, unresolved)
 
@@ -185,6 +187,46 @@ quick-start. The absolute numbers are not absurd (79.6 % at 4.044 V in August ag
 mains, then the same on battery. Note also that nothing about this is currently dangerous: the
 power policy suppresses every descent while `external_power` is true and `charge_rate` is above
 −1.0 %/hour, so a false SOC is inert — until `CRATE` crosses that line.
+
+### The gauge is a MAX17040/41, not a MAX17048 (2026-09-01)
+
+Read on the assembled satellite under the bus lock (`~/test/venv`, `smbus2`, block reads of two
+bytes), three times eight seconds apart, on battery:
+
+```
+VCELL  (0x02) 0xBE70 -> 3.809 V
+SOC    (0x04) 0x3E19 -> 62.10 %
+MODE   (0x06) 0x0000
+VERSION(0x08) 0x0002
+HIBRT  (0x0A) 0xFFFF      <- MAX17048/49 only
+CONFIG (0x0C) 0x9700
+CRATE  (0x16) 0xFFFF      <- MAX17048/49 only
+STATUS (0x1A) 0xFFFF      <- MAX17048/49 only
+```
+
+Every register the MAX17040/41 shares with the MAX17048 reads a plausible value, and every register
+that exists *only* on the MAX17048/49 reads all ones — the bus-level signature of an address nobody
+answers. `CONFIG = 0x9700` is the factory `RCOMP` of `0x97` over an empty low byte, which is the
+MAX17040/41 layout (the MAX17043/44 and MAX17048 keep an alert threshold there and default to
+`0x971C`). Geekworm's X728 software page links the `MAX17040-MAX17041` datasheet as the gauge's
+documentation. The 2026-08-23 identification rested on "`CRATE` responds" — it responds with `0xFFFF`.
+
+What this changes:
+
+- **`charge_rate` has never been a measurement.** `-0.208 %/h` is `0xFFFF` as a signed 16-bit word,
+  `-1 LSB × 0.208`. It read that at rest, on mains, and now on battery while `SOC` was falling at
+  ≈ 22 %/hour under the full `DEMO` load. The "~70× disagreement" in the section above was a
+  comparison against a constant.
+- **`SOC` on battery looks honest.** 63.4 → 61.7 % in five minutes with eight services and the camera
+  pipeline running is what the pack size predicts; the still-unexplained drift is the one *on mains*,
+  which is the question below.
+- **The power policy's mains check is half-dead.** `on_mains` treats a rate above `−1.0 %/h` as "not
+  draining", and a constant `−0.208` satisfies that unconditionally, so the clause meant to notice a
+  failed charger cannot fire. The driver should publish `charge_rate: null` for a `0xFFFF` read —
+  withhold rather than fabricate — after which the check degenerates honestly to the pin alone.
+  Tracked as V12 in [`ROADMAP.md`](../ROADMAP.md).
+- The driver file is still named `max17048.py`; the register map it actually uses (`VCELL`, `SOC`,
+  `VERSION`, `CONFIG`) is the one both families share, so it is correct as far as it reads.
 
 ### Is it charging at all? (2026-08-31, open)
 
@@ -226,5 +268,5 @@ Note that the I2C bus runs at 10 kHz project-wide (see the [I2C address map](../
 - [Geekworm Wiki — X728](https://wiki.geekworm.com/X728)
 - [Geekworm Wiki — X728-script (setup/install steps, V2.5 GPIO16 charge-control note)](https://wiki.geekworm.com/X728-script)
 - [geekworm-com/x728-script on GitHub](https://github.com/geekworm-com/x728-script) — `xPWR.sh`, `xSoft.sh`, systemd unit
-- MAX17048 datasheet (Maxim Integrated) for the full fuel-gauge register map, including `CRATE` (`0x16`, 0.208 %/hour per LSB) and `STATUS` (`0x1A`), neither of which this project reads yet
+- MAX17040/MAX17041 datasheet (Maxim Integrated / Analog Devices) — the register map this board actually implements: `VCELL`, `SOC`, `MODE`, `VERSION`, `CONFIG`, `COMMAND`. The MAX17048 datasheet's `CRATE`, `HIBRT` and `STATUS` are not present on this part (verified 2026-09-01)
 - DS1307 datasheet (Maxim Integrated) for the RTC register map and the `CH` clock-halt bit

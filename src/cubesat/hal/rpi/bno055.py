@@ -65,8 +65,14 @@ blocks. A flipped high-byte bit 7 moves a value by half the 16-bit range —
 component — which is why ``read()`` validates every block against physical
 plausibility and re-reads on failure rather than publishing a confident
 impossibility. A flipped *low* byte bit 7 (an error of 8°, 0.13 g, 0.008 in a
-quaternion component) slips through undetected; it is bounded and rare, and no
-range check can catch it.
+quaternion component) slips through undetected; it is bounded, and no range
+check can catch it. It is not rare: on the assembled satellite at rest
+(2026-09-01, 2 Hz, 65 samples) about one published sample in twenty carried
+one — ``gyro_x`` reading exactly 8.0 °/s between two readings of 0.06, ``acc_x``
+stepping 0.07 → 0.20 g and back — and the same session's detectable high-byte
+flips ran at roughly one read in eleven. Those samples go into ``attitude`` as
+recorded, so a replay carries them. The only real fix on the table is the
+bit-banged software bus (``dtoverlay=i2c-gpio``); see the hardware doc.
 """
 
 from __future__ import annotations

@@ -33,7 +33,14 @@ echo "==> Copying to ${TARGET}:${REMOTE_ROOT}"
 # --delete so a rebuild does not leave the previous build's content-hashed
 # assets behind for ever; index.html is what points at the new hashes, and the
 # old files are unreachable the moment it is replaced.
-rsync -a --delete "${CLIENT}/dist/" "${TARGET}:${REMOTE_ROOT}/"
+#
+# --no-perms and --omit-dir-times, because the tree is not the operator's: the
+# directories are cubesat:cubesat with the setgid bit (tmpfiles.d), and the
+# operator writes into them only through the group. -a alone would try to stamp
+# dist/'s 755 onto the root (dropping the setgid bit that makes the next deploy
+# possible) and to touch directory mtimes it does not own, and rsync then exits
+# 23 with every file delivered — a failure that is not one (2026-09-01).
+rsync -rl --no-perms --omit-dir-times --delete "${CLIENT}/dist/" "${TARGET}:${REMOTE_ROOT}/"
 
 echo
 echo "Deployed. The service picks it up with no restart — it reads from disk per"

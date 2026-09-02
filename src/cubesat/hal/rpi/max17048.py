@@ -1,11 +1,19 @@
-"""X728 UPS HAT: MAX17048 fuel gauge over I2C, AC-loss detection over GPIO.
+"""X728 UPS HAT: MAX1704x fuel gauge over I2C, AC-loss detection over GPIO.
 
 Two devices, one driver, because they answer one question together: how much
 power is there and where is it coming from. Every register and pin here was
 verified on the assembled satellite — see ``docs/hardware-x728-ups-hat.md``.
 
-The gauge is a MAX17048 and not the MAX17040 it is often mistaken for: the
-``CRATE`` register answers, and that register exists only on the 17048.
+The gauge is a **MAX17040/41**, not the MAX17048 this file is named after. The
+2026-08-23 bench note took ``CRATE`` "answering" as proof of a 17048; on
+2026-09-01 the raw registers showed it answers ``0xFFFF`` — as do ``HIBRT`` and
+``STATUS``, the other two 17048-only registers — which is what an unimplemented
+address returns, while ``CONFIG`` reads the 17040/41 factory ``0x9700``. So
+the ``charge_rate`` this driver used to publish was ``0xFFFF × 0.208 = −0.208``,
+a constant, never a rate. It publishes ``None`` now, and EPS derives the rate
+from the state-of-charge history instead (``eps/charge_rate.py``). The
+registers read here (``VCELL``, ``SOC``, ``VERSION``) are the ones both
+families share.
 """
 
 from __future__ import annotations
@@ -22,23 +30,20 @@ ADDRESS = 0x36
 REG_VCELL = 0x02  # word, MSB first
 REG_SOC = 0x04  # word, MSB first
 REG_VERSION = 0x08  # reads 0x0002 on this unit
-REG_CRATE = 0x16  # signed word, 0.208 %/hour per LSB
+#: Not read. 0x16 is the MAX17048's CRATE; on this MAX17040/41 the address is
+#: unimplemented and answers 0xFFFF (verified 2026-09-01). Kept as a name so
+#: nobody re-adds the read believing the register was simply forgotten.
+REG_CRATE_ABSENT = 0x16
 
 #: 1.25 mV per LSB after the four unused low bits are shifted out.
 VOLTS_PER_LSB = 0.00125
 #: The state-of-charge register is in 1/256 of a percent.
 SOC_LSB_PER_PERCENT = 256.0
-#: CRATE, per the MAX17048 datasheet.
-CRATE_PERCENT_PER_HOUR_PER_LSB = 0.208
 
 #: AC power-loss detection, BCM numbering. Low means mains is present — the
 #: signal is inverted, which is worth stating twice because getting it backwards
 #: produces a satellite that shuts itself down while plugged in.
 PLD_PIN = 6
-
-
-def _signed16(raw: int) -> int:
-    return raw - 0x10000 if raw & 0x8000 else raw
 
 
 class PowerMonitorX728:
@@ -112,21 +117,10 @@ class PowerMonitorX728:
             battery_percent=round(min(100.0, max(0.0, percent)), 2),
             voltage=round(voltage, 3),
             external_power=self._external_power(),
-            charge_rate=self._charge_rate(),
+            # This gauge has no rate register; EPS computes the rate from the
+            # history of the reading above. See the module docstring.
+            charge_rate=None,
         )
-
-    def _charge_rate(self) -> float | None:
-        """Signed percent per hour, or None if the register cannot be read.
-
-        A missing charge rate is a nice-to-have gone missing, not a reason to
-        lose the battery telemetry that the whole power policy depends on.
-        """
-        try:
-            raw = self._word(REG_CRATE)
-        except I2CError as exc:
-            logger.debug("CRATE unreadable: %s", exc)
-            return None
-        return round(_signed16(raw) * CRATE_PERCENT_PER_HOUR_PER_LSB, 3)
 
     def close(self) -> None:
         if self._gpio is not None:

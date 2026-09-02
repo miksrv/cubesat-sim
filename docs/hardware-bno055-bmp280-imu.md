@@ -87,6 +87,16 @@ impossibility. A flipped *low* byte slips through: 8°, 0.13 g, or 0.008 in a qu
 which no range check can catch. Do not read the 10 kHz requirement as a fix — read it as the setting
 that makes the sensor usable with a validating driver behind it.
 
+**Measured on the assembled satellite in `DEMO`, 2026-09-01, ADCS at 2 Hz.** Detectable (high-byte)
+flips: 66 rejected reads in the first six minutes, ≈ one read in eleven, spread across heading,
+roll, quaternion norm, temperature (−100 °C) and |accel| (33.4 g) — all caught and re-read. The
+*undetectable* low-byte flips were then counted from the published stream instead: over 65 samples
+with the satellite at rest, `gyro_x` read exactly 8.0 °/s between neighbours of 0.06 once, and
+`acc_x` stepped from 0.07 g to 0.20 g and straight back twice — three samples in 65, ≈ 5 %, each an
+error of exactly +128 LSB. They pass validation because they are physically plausible, and DHS
+records them into `attitude` as measured. This is the first half of the outstanding comparison
+above; the `i2c-gpio` half has not been run.
+
 **Alternative fix, if 10 kHz is ever too slow:** a bit-banged software bus (`dtoverlay=i2c-gpio`)
 honours clock stretching correctly and leaves the hardware bus at full speed, at the cost of moving
 the sensor to different GPIO pins. It is also the candidate real fix for the residual flips above —

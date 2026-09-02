@@ -97,6 +97,23 @@ beacon:
   SAFE: 600
 
 # The flight recorder's own settings.
+eps:
+  # The charge rate is computed by EPS from the state-of-charge history: the
+  # X728's gauge is a MAX17040/41 and has no rate register (verified
+  # 2026-09-01, docs/hardware-x728-ups-hat.md). A least-squares slope over this
+  # many seconds of readings is published as charge_rate, in percent per hour.
+  # 600 s is long enough that the SOC register's 1/256 % steps average out
+  # against the policy's -1 %/h threshold, and short enough that a charger that
+  # stops charging is noticed within the time the pack would take to lose a
+  # percent or two.
+  charge_rate_window_sec: 600
+  # Until the window holds this much history the rate is published as null,
+  # which the power policy reads as "trust the mains pin". Also the time it
+  # takes to know the rate again after the pin changes, because the history is
+  # discarded then: a battery-time slope must not follow the satellite onto
+  # mains, or a flat pack just plugged in would look like one still draining.
+  charge_rate_min_span_sec: 300
+
 dhs:
   # The floor on how often one attitude sample is recorded. ADCS publishes
   # orientation at 2 Hz, and in DIAG — where cadence_scale is 0.2 against a
@@ -190,6 +207,11 @@ camera:
   # to the wait — and photos.mission_interval_sec is deliberately slower, so a
   # mission's frames are cold captures by design. 0 keeps the camera open
   # forever, as before.
+  # Bench-verified 2026-09-01 (ROADMAP V11, now settled): a cold capture and a
+  # warm one of the same indoor scene, 5 s apart, came out identical — luma
+  # mean 94.2 vs 94.6, same RGB means, same 5th/95th percentiles — with the
+  # cold frame published 0.97 s after the command and the warm one 0.21 s. So
+  # AE/AWB converge within the reopen, and no settle delay is needed here.
   idle_close_sec: 60.0
 
 science:

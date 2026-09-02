@@ -34,6 +34,16 @@ too — `restart_service` was its last line.
 |---|---|---|---|
 | **P6** | **Written; what is left is a walk.** The code landed piecemeal: `powersave` on entering `LOW_POWER` and in `FLIGHT`, the profile TTL armed by HOSTD and reported as `ttl_expires_at`, the radio duty-cycled by the beacon table, and the profile itself. What no test can settle is whether the GNSS track is right — V2 and V3 below are that walk. Mains-as-signal recovery is deliberately still open as Q2 | The autonomous logging profile | `[~]` |
 
+**Defect found on the hardware, 2026-09-01: `restart_service` latches `SAFE`.** `cubesat restart comms`
+relayed through HOSTD made the restarted service publish its goodbye, OBC read it as
+`subsystem(s) lost: comms`, latched `SAFE`, and held there until a manual `recover` — the retained
+`obc_status` kept `lost: [comms]` for some seconds after the service was back. `_check_health` only
+waives a goodbye while `profile_machine.settling`, i.e. during a profile switch; a restart OBC itself
+relayed opens no such window. That defeats the command's stated purpose (restart one service without
+taking the dashboard from a room) and, in `FLIGHT`, would stop the camera and duty-cycle the radio.
+The fix belongs in `OBC._restart_service`: mark the named service as expected to depart for a grace
+window in `health.py`, the same idea as `settling` but for one service.
+
 **Where the rewrite stands.** All eight services exist, at 100 % line coverage with `ruff` and
 `mypy` clean. Four of them — `HOSTD`, `OBC`, `EPS`, `COMMS` — have run against real hardware;
 `ADCS`, `PAYLOAD`, `DHS` and `DASHBOARD` have not, which `CLAUDE.md` states as the standing caveat
@@ -112,10 +122,8 @@ What to watch for, in order of how likely it is to bite:
 
 - **The GNSS track** — V2 and V3 below are exactly this walk, and both produce plausible wrong
   numbers rather than errors.
-- **Every photograph of the trip is a cold capture** (V11): 300 s between frames against a 60 s
-  `camera.idle_close_sec`.
-- **Battery** — V12 and V13. An hour each way should be comfortable, but the gauge's SOC is not
-  currently trustworthy and it is not established that the pack charges on mains at all.
+- **Battery** — V12 and V13. An hour each way should be comfortable: on battery the SOC falls at a
+  rate the load explains (2026-09-01), but whether it started full is exactly what V13 leaves open.
 - **The beacon reset on arrival.** Switching to `DEMO` is what silences it; if it keeps beaconing at
   a desk, the reset in `_reconcile_downlink` did not happen.
 - **`cubesat` itself has never run on the Pi.** It is a console script from `pip install -e .`, so
@@ -140,9 +148,9 @@ and the mosquitto ACL that must not sit in `conf.d/` in `config/mosquitto/`.
 | V6 | **NetworkManager client mode.** `nmcli connection down Hotspot` with a pinned `wlan0` | Written against the documentation, never run on the Pi. `EXPO` depends on it |
 | V7 | **SEN0501 board revision.** Read the silkscreen, or compare the pair of candidate values the driver logs against a known UV source | One raw register, two formulas: at raw 14 they give 0.00 and 84.35. `uv_index` stays null until this is settled |
 | V10 | **Meshtastic hop count.** `hops = hopStart − hopLimit` is read from the library's documentation, not from a bench run. The check: a packet relayed through a third node should arrive with `hops = 1`; everything heard so far has been direct | Every direct packet reads 0 whichever interpretation is right, so no traffic to date can falsify it. Wrong arithmetic would put a plausible small integer in `radio_log.hops` |
-| V11 | **Exposure of the first capture after an idle close.** The camera now gives the sensor back after `camera.idle_close_sec` of no captures (the ISP pipeline is SoC heat while open), so a cold `take_photo` re-opens and shoots within about a second. Whether Picamera2's AE/AWB have converged by then is read from nothing — the lores stream exists precisely to run those loops, but how long they need after `start()` is not in our docs. The check: one photo warm, one photo cold, same scene | A dark or colour-cast first frame is plausible wrong data, not an error; if the bench shows it, the fix is a short settle delay after a cold open, and its length is a measurement, not a guess |
-| V12 | **MAX17048 state of charge disagrees with its own charge rate — by ~70×.** First hardware run, on mains: `battery_percent` fell 72.4 → 70.3 in eight minutes (≈ −15 %/h) while `voltage` sat unmoved at 3.905–3.906 V and `CRATE` read −0.208 %/h — which is **exactly one LSB** (the register's resolution is 0.208 %/h), the same value the bench recorded at rest on 2026-08-23, so the gauge is saying "about zero", not measuring a discharge. A pack actually losing 15 %/h moves its terminal voltage, so it is the SOC register that is wrong, not the battery — but which way is not decidable from eight minutes. **Confirmed over 85 minutes the same evening: voltage went *up* 3.905 → 3.920 V while SOC went *down* 72.41 → 66.14 %.** The two move in opposite directions, which no discharging cell does, so the reading is not merely imprecise — it is describing something that is not happening. Whether the cell is also being charged is the separate question in V13. Candidates, in order: the gauge is still relaxing after power-on and has no quick-start; `SOC_LSB_PER_PERCENT` is wrong (it would have to be wrong in a way that still lands near a plausible 70 %, so this is the weakest); the pack really is discharging on mains because the X728 is not charging it. The check: leave the satellite on mains for several hours logging `voltage`, `battery_percent` and `charge_rate` together, then repeat on battery. **Do not touch the constant until the log says which** | Nothing errors: `on_mains` currently holds, because −0.208 is above `DRAINING_PERCENT_PER_HOUR` (−1.0), so every power-driven descent stays suppressed and the false SOC is inert. It stops being inert the moment `CRATE` crosses −1.0 — then the pin-plus-rate agreement that protects a plugged-in satellite breaks, and a SOC that reaches 10 % takes the host down for real |
+| V12 | **The gauge is a MAX17040/41, and `charge_rate` is a decoded `0xFFFF`.** Raw registers read under the bus lock on 2026-09-01: `VCELL`, `SOC`, `MODE`, `VERSION` (`0x0002`) and `CONFIG` (`0x9700`) all plausible, while `HIBRT` (`0x0A`), `CRATE` (`0x16`) and `STATUS` (`0x1A`) — the three registers that exist only on the MAX17048/49 — every one read `0xFFFF`, the value an unimplemented address returns. `0x9700` is the factory `RCOMP` with an empty low byte, which is the MAX17040/41 layout (the 17048 default is `0x971C`), and Geekworm's own X728 page links the `MAX17040-MAX17041` datasheet. So the `−0.208 %/h` seen at rest, on mains and now on battery under a real ~22 %/h discharge is `0xFFFF` as a signed word times the LSB — a constant, not a measurement — and the ~70× disagreement with `SOC` was a comparison against a constant. `SOC` itself looks honest on battery: 63.4 → 61.7 % in five minutes with the full DEMO load, which the pack size explains. **Still open:** the mains-day drift (SOC down while voltage rose, 2026-08-31), which is now V13's question alone. The code change this asks for is in `hal/rpi/max17048.py`: a `0xFFFF` `CRATE` must publish `charge_rate: null`, not a plausible number — withhold rather than fabricate. Rename the driver afterwards, or not; the register map it uses is the shared one | Nothing errors and the safety logic is quietly half-dead: `on_mains` treats a rate above −1.0 %/h as "charging or holding", and a constant −0.208 satisfies that for ever, so the second half of the mains check — the one meant to notice a failed charger — cannot trigger. With `null` it degenerates honestly to the pin alone, which is what it has in fact been all along |
 | V13 | **The X728 does not appear to be charging on mains, and it should be.** Observed 2026-08-31 with the satellite plugged in all evening: 3.92 V, SOC ~66 %, `CRATE` one LSB from zero, and the board's own charge LEDs agreeing with roughly that level. The datasheet figures in `docs/hardware-x728-ups-hat.md` say the recharge threshold is **4.1 V** and cutoff 4.24 V — at 3.92 V the board is well past the point where it should have resumed, so "it deliberately holds a partial charge" does not explain this reading. Two candidates, cheap to separate. First, the **`CHG Ctrl` jumper**: on the V2.5 board, opening it hands charge control to **GPIO16**, and nothing in this repo drives that pin (the only GPIO the code touches is `PLD_PIN = 6`, and it only reads it) — so if the jumper is open, charging is simply disabled by a floating input. Check the jumper physically first. Second, tired 18650s: capacity loss shows up as a cell that will not hold a charge, and the pack is unbranded. `vcgencmd get_throttled` reads `0x0`, so the 5 V supply is not sagging and can be ruled out. **If the jumper turns out to be the answer, it is an opportunity rather than a defect** — GPIO16 would let EPS decide when to charge, which is exactly the wanted behaviour: hold a partial charge on the desk, where a Li-ion cell ages fastest sitting full, and top the pack up deliberately before a `FLIGHT` outing. That would be a driver and a policy, not a jumper left closed | Nothing errors and nothing looks broken: the dashboard shows a plausible 66 %, the LEDs agree, and the satellite runs happily on mains. It is discovered at the worst possible moment — leaving for a trip with a pack that was never full — which is precisely the failure `FLIGHT` cannot afford. Note this is upstream of V12: while charging is in doubt, the gauge's drift cannot be interpreted either |
+| V14 | **BNO055 low-byte bit-7 flips reach the record.** Measured 2026-09-01 in `DEMO` at rest: about one published sample in twenty carries an undetectable +128 LSB step — `gyro_x` exactly 8.0 °/s between neighbours of 0.06, `acc_x` 0.07 → 0.20 g and back — while the detectable high-byte flips ran at one read in eleven, all caught. The plausibility check cannot see these by construction. The check the hardware doc has asked for since 2026-08-28: move the sensor to a bit-banged `i2c-gpio` bus, which honours clock stretching, and measure both rates again. Until then a median-of-three in the driver would hide the isolated ones at the cost of half a second of latency — a decision, not a fix | They are physically plausible values and DHS writes them into `attitude` as measured, so a replay shows an 8° twitch or a 0.13 g kick that never happened |
 
 ---
 
@@ -161,13 +169,8 @@ Tracked in [`docs/concept.md` → Open questions](docs/concept.md#open-questions
 
 ## Still to do on the satellite itself
 
-Not code — the box in the corner. Each of these is a leftover of the hardware that came off it.
+Not code — the box in the corner.
 
-- **`dtoverlay=sc16is752-i2c` should come out of `/boot/firmware/config.txt`.** It served the 52Pi
-  IoT Node(A)'s UART bridge, which is gone; it conflicts with nothing only because no `ttySC*`
-  devices are created any more.
-- **The old `cubesat-telemetry.service` unit should be removed** if it is still installed, along with
-  any `.env` still using `TELEMETRY_*` names — the service is `COMMS` now.
 - **Re-aim the camera.** The first test frame was mostly two of the satellite's own frame struts.
 
 ---

@@ -141,7 +141,16 @@ A new node name propagates on the next node-info broadcast, which defaults to ev
 
 **All CubeSat traffic — telemetry and ground commands — goes on channel 1, not on the public primary channel.** Two reasons: bench tests would otherwise clutter the shared `LongFast` chat that every node in range reads, and the ground-command path needs to not be world-writable.
 
-Be clear about what this does and does not hide. A secondary channel is a separate encryption key layered on the *same* radio configuration — same frequency, same `LONG_FAST` preset. Neighbouring nodes still see that packets are being transmitted, and the node's name and position are still broadcast on the primary channel as ordinary mesh housekeeping. What they cannot do is read the contents.
+Be clear about what this does and does not hide. A secondary channel is a separate encryption key layered on the *same* radio configuration — same frequency, same modem preset. Neighbouring nodes still see that packets are being transmitted, and ordinary mesh housekeeping still goes out on the primary channel in the clear — the primary is stock `LongFast` with the well-known default key `AQ==`, so "encrypted" there means nothing. What they cannot do is read the contents of channel 1.
+
+What that housekeeping actually contains, since it decides what a public map can show:
+
+- **`NodeInfo`** — node id, `CubeSat CTM-1`, `CSAT`, hardware model, role and the node's public key. Broadcast every `nodeInfoBroadcastSecs` (3 h) and on request. This is the packet a map or a node list is built from; there is no switch that turns it off, and without it the node is unidentifiable to its neighbours.
+- **Device telemetry** — battery, voltage, channel utilisation, uptime, roughly every half hour from the telemetry module.
+- **Routing and traceroute replies.**
+- **No position.** `Position` is a packet type of its own, and the V4 has no GNSS receiver, so the node has nothing to put in one. Nothing in this repository supplies it either: `COMMS` never calls `sendPosition`, and the TEL0157 fix travels inside the beacon *text* on channel 1, encrypted (`comms/beacon.py`). It would take `position.fixed_position` with hand-entered coordinates, or a client app feeding the node its own GPS — a phone does that, the Python library over serial does not.
+
+So a public map can place the node only as coarsely as the gateway that heard it, with the times it was heard. Not a track.
 
 ```bash
 meshtastic --port /dev/serial0 --ch-add CubeSat            # creates it with a random PSK

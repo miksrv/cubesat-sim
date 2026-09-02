@@ -158,6 +158,98 @@ the precedent: discrete events with their own timestamps, kept because a 30 s te
 stand for them. Until that decision is made, the four events above go into `observed.ts`; when the
 table exists, the widget reads it for history and keeps deriving live entries the same way.
 
+### Both nodes are on the wrong modem preset — found 2026-09-02
+
+The satellite's Heltec and the operator's personal node both run `LONG_FAST`, the factory default
+recorded in [`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md). The Bay Area
+mesh does not: the community migrated off LongFast to **Medium Range Fast**, and
+`https://meshview.bayme.sh/map` shows every node in the operator's own city on `MediumFast`.
+
+**A modem preset is the physical layer, not a preference.** It fixes bandwidth, spreading factor and
+coding rate, and Meshtastic states the requirement without softening it — devices in one mesh must
+have identical region *and* modem preset. Nodes on different presets do not hear each other badly;
+they do not demodulate each other at all. So the multi-hop coverage that is the whole reason
+`FLIGHT` uses LoRa is, today, coverage the satellite cannot reach: the routers that would relay it
+are on another waveform. The two nodes still talk to each other, because they match — which is
+exactly why nothing on the bench has ever hinted at this.
+
+The frequency slot moves with the preset, and that is the easy half to miss. With `lora.channel_num`
+at 0 the slot is derived from a hash of the **primary channel's name**, and that name changes with
+the preset (`LongFast` → `MediumFast`). Changing the preset and leaving the slot on automatic lands
+the pair on a private frequency, together and alone — which looks like success from the bench.
+
+What to set, on **both** nodes:
+
+```
+lora.modem_preset      = MEDIUM_FAST
+lora.channel_num       = 45     # the slot bayme.sh names explicitly
+lora.hop_limit         = 6      # their figure for a personal/chat node
+lora.config_ok_to_mqtt = true   # default false — see below, it is not optional here
+lora.region            = US     # unchanged
+```
+
+**`config_ok_to_mqtt` is what makes the node visible at all, and it defaults to `false`.** A foreign
+gateway checks the `OK_TO_MQTT` bit of the packet itself before publishing to a public broker
+(`DontMqttMeBro` in `MQTT::onSend`) and silently drops it when the bit is absent. Without the flag
+the satellite can be heard perfectly by the community mesh and still never appear on
+`meshview.bayme.sh` — which looks exactly like having no coverage, and would send the whole
+investigation the wrong way. It affects nothing else: not the link, not the beacon, not commands.
+
+What it costs is set out in [`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md)
+→ Why a secondary channel: the V4 has no GNSS and nothing here feeds it one, so no position is ever
+broadcast. A public map can place the node only as coarsely as the gateway that heard it. That is a
+neighbourhood and a timeline, not a track — cheap enough to leave on, and the flag can be cleared
+for a real trip without touching anything else.
+
+Channel 1 `CubeSat` and its PSK are **not** touched: the private channel is a key layered over the
+radio configuration, so the preset moves underneath it and nothing in `comms/` or
+`hal/rpi/meshtastic_radio.py` changes. Verify it anyway with `--info` after the change — a satellite
+on a channel the ground segment cannot read is a silent failure that looks like a dead radio.
+
+Order, because one of these two nodes is harder to recover than the other:
+
+1. **The personal node first.** It keeps a known-good reference while the satellite is still on the
+   old setting, and it is the thing that will show whether the community mesh is really there.
+2. **Then the Heltec** — and `/dev/serial0` must be free first, or `COMMS` holds the port and the
+   CLI cannot open the node. That is what `MAINTENANCE` is for: `cubesat profile maintenance`.
+3. **Read both nodes back with `--info` and compare them to each other, not to this list.** Preset,
+   `channel_num`, `hop_limit`, region, and channel 1 `CubeSat` with its PSK intact on both. The
+   second node has been configured by hand over several sessions and has never been audited against
+   the satellite; a setting that drifted there is indistinguishable from a satellite fault, because
+   the only thing the satellite's radio is ever tested against *is* that node.
+4. **Then watch `meshview.bayme.sh/nodelist` for `CSAT`.** Appearing there is the cheapest form of
+   the coverage measurement: it proves a foreign gateway received the satellite over the air, and
+   meshview reports the hop count that packet arrived with, which is **V10** settled without a
+   second node or any manual metadata reading. It says nothing about channel 1 — see below.
+
+**What this does not settle.** Everything above happens on the primary channel, and reaching the
+community mesh there is necessary rather than sufficient. A foreign node relays a packet it *cannot*
+decrypt only while its `rebroadcast_mode` is the default `ALL`; one set to `LOCAL_ONLY` relays its
+own channels and drops `CubeSat` without a trace. So the satellite can sit happily in the node list
+having proved nothing about the channel its telemetry and commands actually travel on. That second
+measurement needs a packet on **channel 1** arriving at the personal node from beyond direct range,
+with a hop consumed — the same reading as **V10** below, taken on the private channel rather than
+off meshview. Until it is made, the coverage assumption behind `FLIGHT` is untested.
+
+**And the internet bridge is not a way in.** A community MQTT gateway cannot uplink the private
+channel even in principle: the firmware gates the publish on that channel's own `uplink_enabled` and
+builds the topic out of the channel's *name*, neither of which a stranger's node has for `CubeSat`.
+bayme.sh separately tells its operators never to enable downlink, so there is no MQTT → RF path
+back. Internet reach, if it is ever wanted, means the operator's own gateway node and broker with
+`CubeSat` configured on both ends — strangers stay a pure RF relay and the PSK never leaves the two
+nodes. PKI direct messages are the one exception (they bypass `uplink_enabled` and publish under a
+`PKI` topic), and they are outbound-only for the same downlink reason.
+
+One privacy consequence to decide rather than drift into: bayme.sh asks operators to enable
+`Ok to MQTT` for map visibility, and the satellite's node info and position ride the primary
+channel regardless. In `FLIGHT` that is the operator's walking route on a public map. The contents
+of channel 1 stay closed either way.
+
+When the preset is changed and the hop count measured, both belong in
+`docs/hardware-heltec-lora32-v4.md` — the Radio settings table records `LONG_FAST` as a validated
+value, and the "receiving nodes must agree on region, preset and PSK" line needs the frequency slot
+added to it.
+
 ### The walk to work: what to check on the first real trip
 
 The use case `FLIGHT` exists for, written down as a sequence because every piece of it is now built
@@ -212,7 +304,7 @@ and the mosquitto ACL that must not sit in `conf.d/` in `config/mosquitto/`.
 | V5 | **BNO055 calibration save/restore.** Deliberately not implemented: the profile register block is not in the verified docs, and writing unverified registers into the fusion engine on every boot is what produced the `SYS_ERR = 9` session already recorded there | Without it the magnetometer must be re-calibrated after every reset, so `yaw` is withheld for a while after each restart |
 | V6 | **NetworkManager client mode.** `nmcli connection down Hotspot` with a pinned `wlan0` | Written against the documentation, never run on the Pi. `EXPO` depends on it |
 | V7 | **SEN0501 board revision.** Read the silkscreen, or compare the pair of candidate values the driver logs against a known UV source | One raw register, two formulas: at raw 14 they give 0.00 and 84.35. `uv_index` stays null until this is settled |
-| V10 | **Meshtastic hop count.** `hops = hopStart − hopLimit` is read from the library's documentation, not from a bench run. The check: a packet relayed through a third node should arrive with `hops = 1`; everything heard so far has been direct | Every direct packet reads 0 whichever interpretation is right, so no traffic to date can falsify it. Wrong arithmetic would put a plausible small integer in `radio_log.hops` |
+| V10 | **Meshtastic hop count.** `hops = hopStart − hopLimit` is read from the library's documentation, not from a bench run. The check: a packet relayed through a third node should arrive with `hops = 1`; everything heard so far has been direct | Every direct packet reads 0 whichever interpretation is right, so no traffic to date can falsify it. Wrong arithmetic would put a plausible small integer in `radio_log.hops`. Take the reading on **channel 1**: meshview reports a hop count too, but only for the primary channel, which leaves open the question the preset change above raises — whether foreign nodes relay the private `CubeSat` channel at all, which they do only while their `rebroadcast_mode` is the default `ALL` |
 | V13 | **The X728 charges on mains, but at ~+3 %/h — a fraction of its rated 2.3–3.2 A.** Measured 2026-09-01 with `charge_rate` a real quantity (see `docs/hardware-x728-ups-hat.md`): CanaKit 3.5 A on USB-C, LEDs one steady one blinking, SOC 50.39 → 50.78 % in fifteen minutes, voltage +17 mV. Next check: a 5.1 V ≥ 4 A supply on the DC jack, the input Geekworm rates for full charging current; if the rate does not change, the cells or the charger stage are the question. The original observation follows for the record. Observed 2026-08-31 with the satellite plugged in all evening: 3.92 V, SOC ~66 %, `CRATE` one LSB from zero, and the board's own charge LEDs agreeing with roughly that level. The datasheet figures in `docs/hardware-x728-ups-hat.md` say the recharge threshold is **4.1 V** and cutoff 4.24 V — at 3.92 V the board is well past the point where it should have resumed, so "it deliberately holds a partial charge" does not explain this reading. The **`CHG Ctrl` jumper was checked on 2026-09-01 and is installed**, which per Geekworm means automatic charging whenever the adapter is connected — so a floating GPIO16 is ruled out. Two candidates remain. First, the **supply**: the X728 charges only from its own DC jack and wants 2.3–3.2 A for the pack on top of the Pi's load; `PLD` proves the jack sees power, not enough of it. Second, tired 18650s: capacity loss shows up as a cell that will not hold a charge, and the pack is unbranded. `vcgencmd get_throttled` reads `0x0`, so the 5 V supply is not sagging and can be ruled out. **The decisive check is now cheap, because `charge_rate` is a real measurement:** plug in and watch `voltage` and `charge_rate` for ten minutes — a charger delivering current lifts the terminal voltage within seconds and turns the rate positive after the five-minute window. (Opening the jumper on purpose stays an opportunity: GPIO16 would let EPS hold a partial charge on the desk and top up before a `FLIGHT`. A driver and a policy, later) | Nothing errors and nothing looks broken: the dashboard shows a plausible 66 %, the LEDs agree, and the satellite runs happily on mains. It is discovered at the worst possible moment — leaving for a trip with a pack that was never full — which is precisely the failure `FLIGHT` cannot afford. While charging is in doubt, the 2026-08-31 mains-day drift (SOC down while voltage rose) cannot be interpreted either — that drift is now this item's question, since the "70× disagreement" it was filed under turned out to be a comparison against a constant (see `docs/hardware-x728-ups-hat.md`, 2026-09-01) |
 | V14 | **BNO055 low-byte bit-7 flips reach the record.** Measured 2026-09-01 in `DEMO` at rest: about one published sample in twenty carries an undetectable +128 LSB step — `gyro_x` exactly 8.0 °/s between neighbours of 0.06, `acc_x` 0.07 → 0.20 g and back — while the detectable high-byte flips ran at one read in eleven, all caught. The plausibility check cannot see these by construction. The check the hardware doc has asked for since 2026-08-28: move the sensor to a bit-banged `i2c-gpio` bus, which honours clock stretching, and measure both rates again. Until then a median-of-three in the driver would hide the isolated ones at the cost of half a second of latency — a decision, not a fix | They are physically plausible values and DHS writes them into `attitude` as measured, so a replay shows an 8° twitch or a 0.13 g kick that never happened |
 

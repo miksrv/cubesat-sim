@@ -146,6 +146,21 @@ DHS holds no hardware, so what ADCS puts on the bus costs the same whether it is
 discarded. Do not reach for that number hoping to unload the bus; the lever for that is the ADCS
 cadence.
 
+**Erasing a mission is DHS' job, and it deliberately disagrees with retention.** `delete_mission`
+on `cubesat/command` removes the four tables' rows *and* the `missions` row, then
+`photos/<mission_id>/`; retention keeps the row and stamps `purged_at`. That is not an
+inconsistency to tidy up — the horizon is the satellite deciding it can no longer afford a record,
+a person pressing delete is saying the trip should not be listed, and a delete leaving a ghost row
+would read as a button that does nothing. Three fences hold it: it is refused in `EXPO` (an open
+access point with an audience on it, and commands are still unauthenticated — a profile-dependent
+rule, so it cannot live in the broker's ACL), it is refused for the mission currently being
+recorded, and it has **no compact spelling**, so it is in neither the radio vocabulary nor the
+console's mirror of it and cannot be met by somebody exploring what the satellite understands. (It
+is still reachable as hand-composed JSON over the radio, because COMMS relays a well-formed command
+verbatim from any channel — that property is deliberate and worth more than a fence here.) Do not
+give it a compact spelling, and do not add an HTTP `DELETE` to the dashboard: `archive.py` opens the
+file `mode=ro` precisely so there can only ever be one writer.
+
 Do not conflate the three uses of the word: a *mission state* is `NOMINAL`/`SAFE`/… on the OBC
 axis; a *mission* is a recorded session; the field profile is called `FLIGHT`, not `MISSION`,
 precisely so those stay distinguishable.

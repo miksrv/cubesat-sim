@@ -5,9 +5,13 @@ alike, against the same horizon and inside the same transaction. Both belong to
 a mission and both are detail, so a rule that aged one out and kept the other
 would leave a mission that can be replayed but not charted, or the reverse —
 which is a state nobody would think to test and every consumer would have to
-handle. Mission rows are never deleted — a trip that happened stays listed even after its detail
-has aged out, which costs a few hundred bytes a year and keeps the history of
-the satellite honest.
+handle. **Retention never deletes a mission row** — a trip that happened stays
+listed even after its detail has aged out, which costs a few hundred bytes a year
+and keeps the history of the satellite honest. The one thing that does remove a
+row is an operator asking for it by name (``delete_mission``, in
+``dhs/service.py``); that is a person's decision about their own archive rather
+than the horizon's about the card, and ``missions.py`` says why the two
+deliberately differ.
 
 **Photos are the reason this module matters more than a row purge would.** The
 camera is the only unbounded writer on this satellite: a telemetry row is small
@@ -84,7 +88,7 @@ SECONDS_PER_DAY = 86_400.0
 #: ``df -m`` prints, so the two numbers in ``dhs_status`` compare directly.
 BYTES_PER_MB = 1024 * 1024
 
-#: Where PAYLOAD files a photo taken while no mission was open. Named here as
+
 @dataclass(frozen=True)
 class PurgeResult:
     """What one pass removed. Reported by the caller, asserted by the tests."""
@@ -166,7 +170,7 @@ def purge(
     files = 0
     reclaimed = 0
     for mission_id in purged:
-        removed, freed = _remove_photos(photos_root, mission_id, log)
+        removed, freed = remove_photos(photos_root, mission_id, log)
         files += removed
         reclaimed += freed
     return PurgeResult(
@@ -208,8 +212,19 @@ def _fully_aged_out(conn: sqlite3.Connection, cutoff: str) -> tuple[int, ...]:
     return tuple(int(row["id"]) for row in rows)
 
 
-def _remove_photos(root: Path, mission_id: int, log: logging.Logger) -> tuple[int, int]:
-    """Delete one mission's photo directory. Returns (files, bytes)."""
+def remove_photos(
+    root: Path, mission_id: int, log: logging.Logger, *, why: str = "retention"
+) -> tuple[int, int]:
+    """Delete one mission's photo directory. Returns (files, bytes).
+
+    Shared with the manual ``delete_mission`` path in ``dhs/service.py``, which
+    is the reason this is not private: the fence around a photo deletion — an
+    id that must be a run of digits, a directory that must exist, a failure that
+    is logged and stepped over — is the most destructive code in this project,
+    and a second copy of it written for the other caller is the copy that would
+    be missing a check. ``why`` only names the caller in the log, so that an
+    operator reading the journal can tell the horizon's work from their own.
+    """
     directory = photo_dir(root, mission_id)
     if directory is None or not directory.is_dir():
         return (0, 0)
@@ -220,7 +235,8 @@ def _remove_photos(root: Path, mission_id: int, log: logging.Logger) -> tuple[in
         log.exception("could not remove %s; its rows are gone but its photos are not", directory)
         return (0, 0)
     log.info(
-        "retention: mission %d purged, removed %s (%d file(s), %d bytes reclaimed)",
+        "%s: mission %d, removed %s (%d file(s), %d bytes reclaimed)",
+        why,
         mission_id,
         directory,
         files,

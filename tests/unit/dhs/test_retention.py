@@ -173,7 +173,7 @@ def test_a_purged_mission_takes_its_photo_directory_with_it(conn, photos, caplog
     assert (result.files, result.bytes_reclaimed) == (2, 200)
     # A deletion nobody can find afterwards in a log did not happen, as far as
     # an operator can ever tell.
-    assert f"mission {mission} purged" in caplog.text
+    assert f"retention: mission {mission}, removed" in caplog.text
     assert "2 file(s), 200 bytes reclaimed" in caplog.text
 
 

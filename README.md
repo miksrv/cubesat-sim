@@ -376,6 +376,16 @@ The flight recorder — the Data Handling Subsystem (the *OBDH* / mass-memory ro
 
 Whether a row may be written at all is decided by the **profile**; how often is decided by the **mission state**. (The pre-rewrite code gated writes on a ground-commanded `SCIENCE` state, which would mean `FLIGHT` recorded nothing unless someone remembered a command before leaving the house. The gate went first; the state itself followed on 2026-09-02, once it was clear nothing else had ever depended on it.)
 
+**DHS is also the only thing that may erase a mission.** `delete_mission` arrives on
+`cubesat/command` like every other ground command and is answered in `dhs_status.last_delete`. It is
+here rather than as an HTTP `DELETE` on the dashboard because this file has exactly one writer — the
+dashboard opens it `mode=ro` so a stray write fails at SQLite rather than in review, and a second
+writer would trade that property away for a button. The database it acts on is the one DHS has open,
+falling back to `comms.db`, which is deliberately the same rule DASHBOARD follows for which archive
+it serves: the listing an operator is looking at and the file the delete lands on cannot be two
+different files. Outside `FLIGHT` and `DIAG` the recorder holds no database at all, so the command
+opens one for itself and closes it again.
+
 **SQLite schema** — `/var/lib/cubesat/comms.db`, table `telemetry` (renamed from `comms_log`: `COMMS` no longer owns it); `/var/lib/cubesat/diag.db` under `DIAG`:
 
 | Column group | Fields |
@@ -499,7 +509,7 @@ The satellite carries **no UI code**. This service serves a static build and rea
 | `/api/missions/<id>/export` | The same body as a download — one endpoint backs both "keep a copy of this walk" and "produce the file the public demo replays". It carries no photographs; the two endpoints below are where those live |
 | `/api/missions/<id>/photos`, `/api/photos/<id>/<name>` | The mission's photographs |
 
-**There is no `/api/command`.** A command from the dashboard goes onto `cubesat/command` over the browser's own broker connection — the same topic a laptop, the CLI and an uplink relayed off the radio all use. Nothing downstream knows it came from a browser, and this service needs no write path at all.
+**There is no `/api/command`, and there is no `DELETE`.** A command from the dashboard goes onto `cubesat/command` over the browser's own broker connection — the same topic a laptop, the CLI and an uplink relayed off the radio all use. Nothing downstream knows it came from a browser, and this service needs no write path at all. That includes erasing a mission: the archive dialog publishes `delete_mission` and DHS, which owns the file, performs it — see [DHS](#dhs).
 
 **It publishes no status of its own.** Every other service has one because `OBC`'s `DEPLOY` wants evidence that a device answered; this one owns no device. It sends a heartbeat like everything else, and adding a status topic would mean adding a subsystem that can fail a bring-up — for a service whose absence a profile is entitled to intend.
 
@@ -622,7 +632,12 @@ operator can hold in their head.
 
 The `missions` row itself **survives**, stamped with `purged_at`: a trip that happened stays listed
 after its detail has aged out, and `rows` keeps its honest historical meaning — what that mission
-actually recorded. Without the stamp a dashboard joining the two tables would find a mission
+actually recorded. **Deleting a mission on purpose is the one thing that does remove the row**, and
+that difference is deliberate: the horizon is the satellite deciding it can no longer afford a
+record, while `delete_mission` is a person saying this trip should not be listed. A delete that left
+a `purged_at` ghost behind would look, to whoever pressed it, exactly like a button that does
+nothing. Everything else is identical — the same four tables in one transaction, then the same
+fenced removal of `photos/<mission_id>/`. Without the stamp a dashboard joining the two tables would find a mission
 claiming 1440 rows and holding none, which is a plausible wrong number of exactly the kind this
 telemetry refuses everywhere else.
 
@@ -1096,6 +1111,7 @@ Retained. Recording:
   "retention_days": 30,
   "attitude": {"written": 2283, "buffered": 0, "min_interval_sec": 1.0},
   "radio": {"written": 57, "buffered": 0},
+  "last_delete": null,
   "photos": {"free_mb": 21493.7, "min_free_mb": 512}
 }
 ```
@@ -1118,6 +1134,7 @@ active, and again whenever a mission closes or a database is refused:
   "retention_days": 30,
   "attitude": {"written": 0, "buffered": 0, "min_interval_sec": 1.0},
   "radio": {"written": 0, "buffered": 0},
+  "last_delete": null,
   "photos": {"free_mb": 21493.7, "min_free_mb": 512}
 }
 ```
@@ -1130,6 +1147,27 @@ on this topic would read as an empty recorder rather than as a recorder that cou
 published promptly on any mission change. `recording: false` is what OBC's `CRITICAL` path waits for
 before asking HOSTD to power the host off, with a bounded grace — a late publish there costs the
 flush it was waiting for.
+
+**`last_delete` is how a `delete_mission` is answered**, and it is the only response channel on this
+topic. Null until one has been asked for; afterwards, what the last one did:
+
+```json
+{
+  "at": 1741863612.4,
+  "request_id": "req_042",
+  "mission_id": 41,
+  "ok": true,
+  "error": null,
+  "rows": 318, "attitude": 2283, "radio": 57,
+  "photos": 12, "bytes_reclaimed": 5242880
+}
+```
+
+A refusal carries `ok: false` and the reason in `error` — the profile is `EXPO`, the mission is the
+one currently being recorded, there is no such mission, or the database would not open. It rides on
+the status rather than on a topic of its own because a delete changes exactly what this message
+already reports. The status is retained, so a page opening later sees the last result: a client acts
+on one whose `request_id` matches a command it sent, and a stale result matches nothing.
 
 `photos.unfiled_bytes` was reported here until 2026-09-01 and is deliberately not replaced: a
 photograph taken with no mission open never reaches the card now, so there is no longer a pile of
@@ -1157,6 +1195,7 @@ not here, it does not exist.
 | What is being recorded | `mission` | — | `get_mission` | COMMS |
 | The whole telemetry bundle | `telemetry` — **console only**, not over the radio: the answer is far past 240 bytes | — | `get_telemetry` | COMMS |
 | Restart one service | `restart adcs` | `cubesat restart adcs` | `restart_service` `{service}` | OBC relays it; HOSTD executes it against the allowlist |
+| Erase one recorded mission | — | — | `delete_mission` `{mission_id}` | DHS |
 
 Three read-only commands exist in the shell alone. They publish nothing: they read the retained
 statuses the broker already holds, or the recorder's database.
@@ -1198,6 +1237,19 @@ the restart, and `health.expect_restart` waives that one goodbye for one loss wi
 (`heartbeat.interval_sec × heartbeat.miss_threshold`, 30 s). A service that does not come back
 inside it is declared lost exactly as it would have been: the protection is postponed, not switched
 off. A restart nobody announced — `systemctl restart` by hand — is still a fault, deliberately.
+
+**`delete_mission` is deliberately the one command with no compact spelling.** Every other command is
+either recoverable — a profile can be re-applied, a beacon re-enabled — or harmless to repeat; this
+one erases a recorded flight, and commands are still unauthenticated. Having no short line means it
+is not in the radio vocabulary and not in the Mission Console's, whose table mirrors it, so it cannot
+be reached by somebody exploring what the satellite understands. It is **not** unreachable over the
+air: COMMS relays a well-formed JSON command verbatim whatever channel it arrived on, and that
+property is worth more than a fence here would be — an operator who composes that JSON by hand is
+being deliberate, which is exactly the bar this verb needs.
+
+The fence that does refuse it is the profile: `EXPO`, where the satellite is its own open access
+point with an audience on it. That lives in DHS rather than in the broker's ACL, because `acl.conf`
+cannot see which profile is applied. DHS also refuses to delete the mission it is recording.
 
 **There is no `poweroff` in this vocabulary, and that is deliberate.** `CRITICAL` is the only thing
 permitted to power the host down, and it decides that from the battery rather than from a button —

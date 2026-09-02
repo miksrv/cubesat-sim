@@ -167,11 +167,11 @@ RADIO_COLUMNS: tuple[str, ...] = (
 _MISSIONS_DDL = """
 CREATE TABLE missions (
     -- AUTOINCREMENT, not a bare rowid alias: a mission id becomes a photo
-    -- directory name, and SQLite reuses the highest rowid after a delete. DHS
-    -- never deletes a mission row, but an operator with sqlite3 might, and the
-    -- consequence of reuse would be one trip's photographs appearing inside
-    -- another's gallery. One extra table is a cheap way not to have to think
-    -- about that again.
+    -- directory name, and SQLite reuses the highest rowid after a delete. Rows
+    -- are deleted here — retention never does it, but `delete_mission` does,
+    -- and so does an operator with sqlite3 — and the consequence of reuse would
+    -- be one trip's photographs appearing inside another's gallery. One extra
+    -- table is a cheap way not to have to think about that again.
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     label        TEXT,
     profile      TEXT NOT NULL,

@@ -16,6 +16,16 @@ those, at the timestamp of each mission's own last telemetry row, with
 moment the satellite is known to have been recording, and it is exactly what the
 ``synchronous = NORMAL`` trade in ``schema.py`` is designed to leave behind.
 
+**Deleting one is a different act from ageing one out**, and this module holds
+both halves of that difference. ``retention.py`` drops a mission's detail and
+keeps its row, stamped ``purged_at``, because a trip that happened stays part of
+the satellite's history whether or not its rows are still worth the card.
+``delete`` below removes the row as well. That is not an inconsistency: retention
+is the satellite deciding it can no longer afford a record, and an operator
+pressing *delete* is a person saying this trip should not be listed. A delete
+that left a ``purged_at`` ghost behind would look, to whoever pressed it, exactly
+like a button that does nothing.
+
 **A mission with no rows at all is closed at its own ``started_at``.** The other
 two candidates are worse. ``now`` would invent a duration out of however long the
 satellite happened to be switched off — a mission opened at 09:00, killed at
@@ -52,6 +62,23 @@ class Mission:
     profile: str
     started_at: str
     label: str | None = None
+
+
+@dataclass(frozen=True)
+class Deletion:
+    """What removing one mission took with it. Counted for the log and the ack.
+
+    The three detail counts are kept apart for the same reason the retention
+    pass keeps them apart: at 1 Hz a mission holds thousands of attitude samples
+    against a few dozen telemetry rows, and one total would be a number about
+    attitude wearing a telemetry label.
+    """
+
+    mission_id: int
+    label: str | None
+    rows: int
+    attitude: int
+    radio: int
 
 
 @dataclass(frozen=True)
@@ -174,6 +201,63 @@ class MissionStore:
             self.close(mission_id, EndReason.INTERRUPTED, ended_at=ended_at)
             recovered.append(mission_id)
         return recovered
+
+    def delete(self, mission_id: int) -> Deletion | None:
+        """Remove one mission and everything in the database that references it.
+
+        Returns what went, or ``None`` when there is no such mission — which the
+        caller reports as a refusal rather than as a success that deleted
+        nothing. Photographs are not this module's to remove; the caller does
+        that after the transaction commits, through the same fenced helper
+        retention uses.
+
+        **One transaction over four tables**, in reference order: the detail
+        first and the mission row last. Half a delete is the state every reader
+        here is written to be confused by — a telemetry row whose ``mission_id``
+        names nothing would survive every query in ``archive.py`` and appear in
+        no listing, which is the plausible-wrong-data this project spends its
+        effort avoiding.
+
+        The row goes rather than being stamped ``purged_at``; see the module
+        docstring for why a manual delete deliberately parts company with
+        retention there.
+        """
+        row = self._conn.execute(
+            "SELECT label FROM missions WHERE id = ?", (mission_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        with transaction(self._conn) as conn:
+            rows = conn.execute(
+                "DELETE FROM telemetry WHERE mission_id = ?", (mission_id,)
+            ).rowcount
+            attitude = conn.execute(
+                "DELETE FROM attitude WHERE mission_id = ?", (mission_id,)
+            ).rowcount
+            radio = conn.execute(
+                "DELETE FROM radio_log WHERE mission_id = ?", (mission_id,)
+            ).rowcount
+            conn.execute("DELETE FROM missions WHERE id = ?", (mission_id,))
+        deletion = Deletion(
+            mission_id=mission_id,
+            label=row["label"],
+            rows=rows,
+            attitude=attitude,
+            radio=radio,
+        )
+        # At INFO with everything it took, for the same reason retention logs
+        # its own deletions that way: a deletion an operator cannot find
+        # afterwards in the log did not happen, as far as they can ever tell.
+        self._log.info(
+            "mission %d (%s) deleted: %d telemetry row(s), %d attitude sample(s), "
+            "%d radio event(s)",
+            mission_id,
+            deletion.label,
+            rows,
+            attitude,
+            radio,
+        )
+        return deletion
 
     # ── derived values ──────────────────────────────────────────────────────
 

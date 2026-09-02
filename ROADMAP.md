@@ -44,9 +44,9 @@ has therefore moved from services to **profiles**: `FLIGHT`, `EXPO`, `DIAG` and 
 never been applied, and with them the access point (V6), a moving GNSS fix (V2, V3) and `diag.db`
 are untried. **Almost everything left is a bench check or a decision.** What can still be written
 without the satellite: the photographs missing from a mission export (which blocks the public demo),
-the archive dialog below, the `photo` ack's frame fields — the last line of the radio contract still
-unwritten — the chart line that should break on a gap, and an end-to-end test against the replay
-build. The one defect the hardware found in the logic, `restart_service` latching `SAFE`, is fixed:
+the export and import verbs the archive dialog still lacks, the `photo` ack's frame fields — the last
+line of the radio contract still unwritten — the chart line that should break on a gap, and an
+end-to-end test against the replay build. The one defect the hardware found in the logic, `restart_service` latching `SAFE`, is fixed:
 `health.expect_restart` waives the departure OBC itself asked for, for one loss grace.
 
 ### The dashboard still offers `science start` / `science stop` — 2026-09-02
@@ -66,48 +66,39 @@ worth removing, along with any `SCIENCE` case in the state colouring and in `obs
 mission recorded before this date can still hold `SCIENCE` in `telemetry.obc_state` — a replay
 must not fall over on a state the enum no longer has.
 
-### Mission archive as a real dialog — requested 2026-08-31
+### Mission archive: what the dialog still does not do — 2026-09-02
 
-`MISSION ARCHIVE` today opens an inline list inside `MissionTimelineBar` (`phase === 'picking'`)
-whose only action is "replay this one". Wanted: a large modal that lists the missions and lets an
-operator pick one, delete it, export it, or import one. Export already exists —
-`GET /api/missions/<id>/export` returns `{mission, telemetry, attitude, radio}` as
-`mission-<id>.json` — so the work is the dialog plus the three verbs around it. Each of the
-others runs into something structural, which is why this is a note and not a ticket yet.
+The dialog itself is **done**: `MISSION ARCHIVE` opens a modal listing every recorded session, and
+each row replays or deletes. Deletion travels as `delete_mission` on `cubesat/command` and is
+performed by DHS, which owns the file — the row goes with its detail and its photographs, refused in
+`EXPO` and refused for the mission being recorded. Two verbs the original note wanted are still not
+there, and both are still blocked on something structural rather than on effort.
 
-**Delete is not the dashboard's to do.** The service is read-only by construction: `http.py` is
-"static files, read-only JSON, and nothing else", and `archive.py` opens the file with `mode=ro`
-— deliberately a mode rather than a promise, so it *cannot* write even by mistake. DHS owns the
-database. So deletion should travel as a ground command on `cubesat/command`, executed by DHS,
-exactly like every other thing the ground asks of the satellite; adding an HTTP `DELETE` to the
-dashboard would hand a second writer to a file with one owner.
+**Export is in the dialog only as far as the endpoint goes.** `GET /api/missions/<id>/export`
+returns `{mission, telemetry, attitude, radio}` as `mission-<id>.json`, and that body **carries no
+photographs** — the frames live under `photos/<mission_id>/` and are listed separately. So a dialog
+that offers "export" and hands back a file with an empty camera panel will surprise someone, and the
+backend-less demo build replays a trip the same way. Closing that means either embedding the frames
+(a mission's worth of JPEGs inside one JSON) or exporting a container, and that is the decision
+nobody has made yet.
 
-**Delete reopens D4.** Command authentication was deferred on the argument that the worst a
-visitor on an open `EXPO` access point can do is `set_profile HOSTED`, which disconnects them
-too. Erasing a recorded flight is not in that class. Note also where the gate can live: not in
-the broker ACL, which cannot see which profile is active, so a profile-dependent restriction has
-to be enforced by DHS or OBC.
+**Import should probably not touch the satellite at all.** Writing a foreign mission into `comms.db`
+invents history the satellite never recorded and collides with its own mission ids. The cheaper and
+truer answer already exists in the client: the `replay` source, built for the backend-less public
+demo, already renders a recorded mission through the same widgets as the live view. Import then
+means "open this exported file as a replay source" — no write path, no ownership question, no id
+collision, and it works in a browser that is not talking to a satellite at all. If import into the
+archive is genuinely wanted later, it is a DHS command like delete, not an upload endpoint.
 
-**Delete has to agree with retention.** `retention.py` deliberately never deletes a mission row —
-"a trip that happened stays listed even after its detail is gone" — it drops the detail and stamps
-`purged_at`, so the archive can tell a purged mission from an empty one. Manual deletion either
-follows that same semantics (detail goes, the row and its `purged_at` stay) or breaks it on
-purpose, and that is a decision to make rather than to discover. Whatever it does, it also has to
-remove `photos/<mission_id>/`.
-
-**Import needs the most thought, and probably should not touch the satellite at all.** Writing a
-foreign mission into `comms.db` invents history the satellite never recorded and collides with
-its own mission ids. The cheaper and truer answer already exists in the client: the `replay`
-source, built for the backend-less public demo, already renders a recorded mission through the
-same widgets as the live view. Import then means "open this exported file as a replay source" —
-no write path, no ownership question, no id collision, and it works in a browser that is not
-talking to a satellite at all. If import into the archive is genuinely wanted later, it is a DHS
-command like delete, not an upload endpoint.
-
-**One gap to close either way:** the export carries no photographs. The body is
-`{mission, telemetry, attitude, radio}`, while frames live under `photos/<mission_id>/` and are
-listed separately — so an archive dialog that exports a mission and gets no pictures back will
-surprise someone, and the backend-less demo build replays a trip with an empty camera panel.
+**A photo directory is named after a mission id, and there are two id spaces.** `comms.db` and
+`diag.db` each number their missions from 1, while photographs are filed in one
+`photos/<mission_id>/` for both — so `DIAG` mission 3 and `FLIGHT` mission 3 share a directory.
+Retention has always had this (it removes the directory of any mission it ages out, in whichever
+database it is running against), but a person deleting a `DIAG` bench run from the dialog can now
+reach a `FLIGHT` trip's photographs in one click, which is a much easier way to meet it. The fix is
+to file frames under the database as well as the mission — `photos/<db>/<mission_id>/` — which is a
+migration of what is on the card, PAYLOAD's `path_for`, retention's fence and the dashboard's two
+photo routes. **Until then, do not delete a `DIAG` mission whose id also exists in `comms.db`.**
 
 ### ADCS mounting offset — requested 2026-09-01, to be done on the running satellite
 

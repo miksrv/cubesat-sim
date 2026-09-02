@@ -42,6 +42,13 @@ host off, with a bounded grace — so the close happens on the thread that
 received the state change and the status goes out with it, rather than waiting
 for the next tick. A late publish there costs the flush it was waiting for.
 
+**DHS is the only thing that may erase a mission**, and ``delete_mission`` on
+``cubesat/command`` is how the ground asks. It is here rather than as an HTTP
+``DELETE`` on the dashboard because the database has exactly one writer: the
+dashboard opens it ``mode=ro`` so that a stray write fails at SQLite rather than
+in review, and adding a second writer to a file with one owner would give that
+property away for a button. The fences are in ``_delete_mission``.
+
 **The first ``dhs_status`` goes out as soon as the connection is up.** DHS is
 one of the services OBC's ``DEPLOY`` waits on, and the bring-up window is
 shorter than a nominal cadence, so the status is published in ``on_start`` and
@@ -76,13 +83,36 @@ from cubesat.common.states import (
 from cubesat.common.topics import TOPICS
 from cubesat.dhs import recorder as recorder_module
 from cubesat.dhs import retention, schema
-from cubesat.dhs.missions import Mission, MissionStore
+from cubesat.dhs.missions import Deletion, Mission, MissionStore
 
 #: How often the retention pass runs. Hourly, not per tick: the horizon is
 #: measured in days, so anything faster is a scan of the largest table in the
 #: file to delete nothing. A pass also runs once when a database is opened,
 #: because a session may well be shorter than an hour.
 PURGE_INTERVAL_SEC = 3600.0
+
+DELETE_MISSION = "delete_mission"
+
+#: The commands DHS answers for. Everything else on ``cubesat/command`` belongs
+#: to OBC, PAYLOAD or COMMS and is ignored in silence, exactly as PAYLOAD ignores
+#: theirs: an unrecognised command on a shared topic is somebody else's, not an
+#: error.
+HANDLED = frozenset({DELETE_MISSION})
+
+#: The one profile where ``delete_mission`` is refused.
+#:
+#: Command authentication is still deferred (D4), and the argument that deferred
+#: it was that the worst an uninvited visitor can do is ``set_profile HOSTED``,
+#: which disconnects them too. Erasing somebody's recorded flight is not in that
+#: class, and ``EXPO`` is the profile where the satellite is its own open access
+#: point with an audience on it. Everywhere else there is an operator at the
+#: keyboard.
+#:
+#: The fence has to be here rather than in the broker's ACL, and that is the
+#: whole reason it is expressed as a profile: ``acl.conf`` cannot see which
+#: profile is applied, so a profile-dependent restriction is not something it can
+#: express at all.
+DELETE_FORBIDDEN_IN = frozenset({Profile.EXPO})
 
 
 class DhsService(Service):
@@ -99,7 +129,16 @@ class DhsService(Service):
     #: ``comms_radio`` is the radio session log: COMMS observes the traffic and
     #: publishes one event per transaction, DHS records it — the same division
     #: of labour as every sensor, because COMMS persists nothing.
-    subscriptions = ("eps_status", "adcs_status", "payload_data", "host_status", "comms_radio")
+    #: ``command`` is here for one verb, ``delete_mission``: DHS owns the
+    #: database, so DHS is the only service that may remove a mission from it.
+    subscriptions = (
+        "command",
+        "eps_status",
+        "adcs_status",
+        "payload_data",
+        "host_status",
+        "comms_radio",
+    )
 
     def __init__(self) -> None:
         super().__init__()
@@ -124,6 +163,10 @@ class DhsService(Service):
         self._mission_rows = 0
         self._last_write: float | None = None
         self._next_purge = 0.0
+
+        #: The outcome of the last ``delete_mission``, reported in dhs_status so
+        #: whoever asked learns whether it happened. See ``_report_delete``.
+        self._last_delete: dict[str, Any] | None = None
 
         #: What the profile permits, from obc_status. NONE until it says.
         self._persistence = Persistence.NONE
@@ -180,7 +223,9 @@ class DhsService(Service):
 
     def on_message(self, topic: str, data: dict[str, Any]) -> None:
         with self._lock:
-            if topic == TOPICS["obc_status"]:
+            if topic == TOPICS["command"]:
+                self._on_command(data)
+            elif topic == TOPICS["obc_status"]:
                 # The base class has already absorbed the mission state and the
                 # profile from this message by the time it reaches here.
                 self._on_obc_status(data)
@@ -232,6 +277,175 @@ class DhsService(Service):
             self._mission.profile,
         )
         self._close_mission(EndReason.PROFILE_CHANGE)
+
+    # ── deleting a mission ──────────────────────────────────────────────────
+
+    def _on_command(self, data: dict[str, Any]) -> None:
+        """Pick DHS' one verb off the shared command topic.
+
+        Anything else on ``cubesat/command`` belongs to OBC, PAYLOAD or COMMS
+        and is dropped without a word — the same silence PAYLOAD keeps about
+        ``set_profile``. A warning per foreign command would make every profile
+        change look like a fault in the recorder.
+        """
+        name = data.get("command")
+        if not isinstance(name, str) or name not in HANDLED:
+            return
+        request_id = data.get("request_id")
+        request_id = request_id if isinstance(request_id, str) else None
+        params = data.get("params")
+        params = params if isinstance(params, dict) else {}
+        self.log.info("command %s (request_id=%s)", name, request_id)
+        self._delete_mission(request_id, params)
+
+    def _delete_mission(self, request_id: str | None, params: dict[str, Any]) -> None:
+        """Erase one mission: its rows, its track, its traffic and its photographs.
+
+        Deliberately unlike the retention pass, which keeps the mission row and
+        stamps ``purged_at``. This is a person saying a trip should not be
+        listed, and a delete that left a ghost row behind would read as a button
+        that does nothing; ``missions.py`` argues that difference out.
+
+        Four things can refuse it, and each answers on ``dhs_status`` rather than
+        failing silently — whoever pressed the button is waiting:
+
+        * **``EXPO``.** The public access point, where deletion is not an
+          uninvited visitor's to perform. See ``DELETE_FORBIDDEN_IN``.
+        * **The open mission.** Deleting the session currently being recorded
+          would leave the recorder writing rows against a mission row that is no
+          longer there, and the operator can simply end it first.
+        * **A missing database.** Nothing has been recorded on this satellite
+          yet, and opening the file to say so would create the empty database
+          the answer is about.
+        * **A mission that is not there.** Reported as a refusal rather than as
+          a success that deleted nothing, because those are different facts and
+          only one of them means the archive is now as the operator wanted it.
+
+        **Which database** is the one DHS has open, and the mission database when
+        it has none. That is deliberately the same rule DASHBOARD follows for
+        which archive it serves (``dhs_status.database``, falling back to
+        ``comms.db``), so the listing an operator is looking at and the file this
+        deletes from cannot be two different files.
+        """
+        raw = params.get("mission_id")
+        mission_id = raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+        if mission_id is None:
+            self._report_delete(request_id, None, error="delete_mission needs a mission_id")
+            return
+        profile = self.profile
+        if profile is not None and profile in DELETE_FORBIDDEN_IN:
+            self._report_delete(
+                request_id,
+                mission_id,
+                error=f"deleting a mission is not permitted in {profile.value}",
+            )
+            return
+        if self._mission is not None and self._mission.id == mission_id:
+            self._report_delete(
+                request_id,
+                mission_id,
+                error=f"mission {mission_id} is being recorded; end it first",
+            )
+            return
+
+        target = self._db_path if self._db_path is not None else config.DB_PATH
+        if self._store is not None and self._db_path == target:
+            self._erase(self._store, target, mission_id, request_id)
+            return
+        if not target.exists():
+            self._report_delete(
+                request_id,
+                mission_id,
+                error=f"there is no {target.name}; nothing has been recorded",
+            )
+            return
+        # Opened for this one command and closed again: outside FLIGHT and DIAG
+        # the recorder holds no database at all, and it should not start holding
+        # one because somebody tidied their archive.
+        try:
+            conn = schema.connect(target, self.log)
+        except (schema.SchemaError, sqlite3.Error, OSError):
+            self.log.exception("cannot open %s to delete mission %d", target, mission_id)
+            self._report_delete(request_id, mission_id, error=f"cannot open {target.name}")
+            return
+        try:
+            self._erase(MissionStore(conn, self.log), target, mission_id, request_id)
+        finally:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                self.log.exception("closing %s after a delete failed", target)
+
+    def _erase(
+        self, store: MissionStore, path: Path, mission_id: int, request_id: str | None
+    ) -> None:
+        """The delete itself: rows in one transaction, then the photographs.
+
+        That order, and the accepted cost with it, are retention's: the database
+        must never be readable in a state that lies about what it holds, so the
+        rows commit first. A process that dies between the two leaves a
+        directory of photographs belonging to a mission nothing references —
+        never retried, and never confused for anything else, because the id it
+        is named after can never be issued again (``AUTOINCREMENT``, see the
+        missions DDL).
+        """
+        try:
+            deletion = store.delete(mission_id)
+        except (sqlite3.Error, OSError):
+            self.log.exception("could not delete mission %d from %s", mission_id, path)
+            self._report_delete(
+                request_id, mission_id, error=f"mission {mission_id} could not be deleted"
+            )
+            return
+        if deletion is None:
+            self._report_delete(
+                request_id, mission_id, error=f"no mission {mission_id} in {path.name}"
+            )
+            return
+        files, reclaimed = retention.remove_photos(
+            config.PHOTOS_DIR, mission_id, self.log, why=DELETE_MISSION
+        )
+        self._report_delete(
+            request_id, mission_id, deletion=deletion, files=files, reclaimed=reclaimed
+        )
+
+    def _report_delete(
+        self,
+        request_id: str | None,
+        mission_id: int | None,
+        *,
+        deletion: Deletion | None = None,
+        error: str | None = None,
+        files: int = 0,
+        reclaimed: int = 0,
+    ) -> None:
+        """Answer the ground on ``dhs_status``, and republish it now.
+
+        On the status rather than on a topic of its own because DHS already has
+        one retained message that says what the recorder holds, and a delete
+        changes exactly that. The status is retained, so a browser that connects
+        later will see this result — which is why it carries the ``request_id``
+        of the command that caused it: a client acts on a result matching a
+        request it sent, and a stale one matches nothing.
+
+        A refusal is a warning in the log, not an exception. Nothing about a
+        rejected delete should cost the recording currently in progress.
+        """
+        if error is not None:
+            self.log.warning("delete_mission refused: %s", error)
+        self._last_delete = {
+            "at": time.time(),
+            "request_id": request_id,
+            "mission_id": mission_id,
+            "ok": error is None,
+            "error": error,
+            "rows": deletion.rows if deletion is not None else 0,
+            "attitude": deletion.attitude if deletion is not None else 0,
+            "radio": deletion.radio if deletion is not None else 0,
+            "photos": files,
+            "bytes_reclaimed": reclaimed,
+        }
+        self._publish_status()
 
     # ── the mission ─────────────────────────────────────────────────────────
 
@@ -570,6 +784,10 @@ class DhsService(Service):
                 "written": self._recorder.radio_written if self._recorder else 0,
                 "buffered": len(self._radio),
             },
+            # The outcome of the last delete_mission, or null before there has
+            # been one. Retained with the rest of the status, and matched by the
+            # ground on `request_id` — see `_report_delete`.
+            last_delete=self._last_delete,
             photos={
                 # `unfiled_bytes` was reported here until 2026-09-01, when the
                 # directory it measured stopped existing: a photograph taken

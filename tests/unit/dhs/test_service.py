@@ -118,6 +118,9 @@ def test_dhs_subscribes_to_every_source_it_assembles_a_row_from(dhs):
         TOPICS["payload_data"],
         TOPICS["host_status"],
         TOPICS["comms_radio"],
+        # Not a source of row data: DHS owns the database, so it is the one
+        # service that can act on delete_mission.
+        TOPICS["command"],
     }
 
 
@@ -878,3 +881,243 @@ def test_an_event_with_no_direction_is_noise_and_is_not_buffered(dhs):
     obc(client)
     client.deliver(TOPICS["comms_radio"], {"timestamp": 1000.0, "text": "?"})
     assert len(service._radio) == 0
+
+
+# ── deleting a mission ──────────────────────────────────────────────────────
+
+
+def delete(client, mission_id=1, request_id="req_del"):
+    """The one command DHS answers for, exactly as a browser publishes it."""
+    payload = {"command": "delete_mission", "request_id": request_id}
+    if mission_id is not None:
+        payload["params"] = {"mission_id": mission_id}
+    client.deliver(TOPICS["command"], payload)
+
+
+def recorded_mission(dhs, label="walk to work"):
+    """One mission with a row in it, closed and on the card."""
+    service, client = dhs
+    obc(client, label=label)
+    mission_id = status(client)["mission"]["id"]
+    service.tick()
+    obc(client, state=MissionState.STANDBY)
+    return mission_id
+
+
+def photos_of(mission_id):
+    directory = config.PHOTOS_DIR / str(mission_id)
+    directory.mkdir(parents=True)
+    (directory / "photo_20260901_071200.jpg").write_bytes(b"x" * 100)
+    return directory
+
+
+def last_delete(client):
+    return status(client)["last_delete"]
+
+
+def test_deleting_a_mission_removes_its_rows_and_its_photographs(dhs):
+    service, client = dhs
+    mission_id = recorded_mission(dhs)
+    directory = photos_of(mission_id)
+
+    delete(client, mission_id)
+
+    assert missions_in(config.DB_PATH) == []
+    assert rows_in(config.DB_PATH) == 0
+    assert not directory.exists()
+
+
+def test_the_status_says_what_the_delete_took_and_which_request_asked(dhs):
+    # The ground matches on request_id: dhs_status is retained, so a client
+    # that connects later must be able to tell this answer from its own.
+    service, client = dhs
+    mission_id = recorded_mission(dhs)
+    photos_of(mission_id)
+
+    delete(client, mission_id, request_id="req_042")
+
+    result = last_delete(client)
+    assert result["ok"] is True
+    assert result["error"] is None
+    assert (result["mission_id"], result["request_id"]) == (mission_id, "req_042")
+    assert (result["rows"], result["photos"], result["bytes_reclaimed"]) == (1, 1, 100)
+
+
+def test_a_delete_is_refused_in_expo(dhs):
+    # The open access point. D4 left commands unauthenticated on the argument
+    # that a visitor can do no lasting harm; erasing a recorded flight is not
+    # in that class, and the broker's ACL cannot see which profile is applied.
+    service, client = dhs
+    mission_id = recorded_mission(dhs)
+    obc(client, state=MissionState.NOMINAL, profile=Profile.EXPO, persistence=Persistence.NONE)
+
+    delete(client, mission_id)
+
+    assert [row["id"] for row in missions_in(config.DB_PATH)] == [mission_id]
+    result = last_delete(client)
+    assert result["ok"] is False
+    assert "EXPO" in result["error"]
+
+
+def test_the_mission_being_recorded_cannot_be_deleted_under_the_recorder(dhs):
+    service, client = dhs
+    obc(client)
+    mission_id = status(client)["mission"]["id"]
+
+    delete(client, mission_id)
+
+    assert [row["id"] for row in missions_in(config.DB_PATH)] == [mission_id]
+    assert "being recorded" in last_delete(client)["error"]
+    # And the recorder carried on with it.
+    service.tick()
+    assert rows_in(config.DB_PATH) == 1
+
+
+def test_a_mission_that_is_not_there_is_a_refusal_not_a_silent_success(dhs):
+    service, client = dhs
+    recorded_mission(dhs)
+
+    delete(client, 404)
+
+    result = last_delete(client)
+    assert result["ok"] is False
+    assert "no mission 404" in result["error"]
+
+
+def test_a_delete_without_a_mission_id_is_refused(dhs):
+    service, client = dhs
+    recorded_mission(dhs)
+
+    delete(client, mission_id=None)
+
+    assert last_delete(client)["ok"] is False
+    assert missions_in(config.DB_PATH) != []
+
+
+def test_a_delete_with_no_database_at_all_does_not_create_one(dhs):
+    # HOSTED on a satellite that has never recorded. Opening the file to say
+    # "no such mission" would create the empty database the answer is about.
+    service, client = dhs
+
+    delete(client, 1)
+
+    assert not config.DB_PATH.exists()
+    assert last_delete(client)["ok"] is False
+
+
+def test_a_delete_outside_a_recording_profile_opens_the_database_and_lets_it_go(dhs):
+    # DEMO records nothing, so DHS holds no database — but an operator tidying
+    # the archive from the dashboard is exactly the case this exists for.
+    service, client = dhs
+    mission_id = recorded_mission(dhs)
+    service.on_stop()
+    service, client = dhs
+    obc(client, state=MissionState.NOMINAL, profile=Profile.DEMO, persistence=Persistence.NONE)
+    assert service._db_path is None
+
+    delete(client, mission_id)
+
+    assert missions_in(config.DB_PATH) == []
+    assert last_delete(client)["ok"] is True
+    # And the recorder did not quietly acquire a database it has no business
+    # holding in a profile that records nothing.
+    assert service._db_path is None
+    assert status(client)["recording"] is False
+
+
+def test_a_delete_acts_on_the_database_the_recorder_is_writing(dhs):
+    # The same rule DASHBOARD follows for which archive it serves, so the
+    # listing an operator is looking at and the file this deletes from cannot
+    # be two different files.
+    service, client = dhs
+    obc(client, profile=Profile.DIAG, persistence=Persistence.DIAG_DB)
+    mission_id = status(client)["mission"]["id"]
+    service.tick()
+    obc(client, state=MissionState.STANDBY, profile=Profile.DIAG,
+        persistence=Persistence.DIAG_DB)
+
+    delete(client, mission_id)
+
+    assert missions_in(config.DIAG_DB_PATH) == []
+    assert last_delete(client)["ok"] is True
+
+
+def test_a_command_that_is_not_ours_leaves_no_trace(dhs):
+    # set_profile, take_photo and the rest share this topic. Ignored in
+    # silence: a warning per foreign command would make every profile change
+    # look like a fault in the recorder.
+    service, client = dhs
+    obc(client)
+    client.deliver(TOPICS["command"], {"command": "take_photo", "request_id": "req_1"})
+
+    assert last_delete(client) is None
+
+
+def test_there_is_no_delete_result_before_anything_has_been_deleted(dhs):
+    service, client = dhs
+    service.on_start()
+    assert last_delete(client) is None
+
+
+def test_a_database_that_will_not_open_for_a_delete_is_answered_not_survived_in_silence(
+    dhs, monkeypatch
+):
+    service, client = dhs
+    mission_id = recorded_mission(dhs)
+    service.on_stop()
+    service, client = dhs
+    obc(client, state=MissionState.NOMINAL, profile=Profile.DEMO, persistence=Persistence.NONE)
+
+    def refuse(path, log):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(schema, "connect", refuse)
+    delete(client, mission_id)
+
+    result = last_delete(client)
+    assert result["ok"] is False
+    assert "cannot open" in result["error"]
+
+
+def test_a_delete_that_fails_mid_statement_is_reported_rather_than_raised(dhs, monkeypatch):
+    # Survivable like every other database failure here: a recorder that exits
+    # on a bad delete takes the rest of the trip's track with it.
+    service, client = dhs
+    mission_id = recorded_mission(dhs)
+
+    def refuse(_mission_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(service._store, "delete", refuse)
+    delete(client, mission_id)
+
+    assert "could not be deleted" in last_delete(client)["error"]
+    assert [row["id"] for row in missions_in(config.DB_PATH)] == [mission_id]
+
+
+def test_a_transient_connection_that_will_not_close_still_answers_the_delete(dhs, monkeypatch):
+    service, client = dhs
+    mission_id = recorded_mission(dhs)
+    service.on_stop()
+    service, client = dhs
+    obc(client, state=MissionState.NOMINAL, profile=Profile.DEMO, persistence=Persistence.NONE)
+
+    real_connect = schema.connect
+
+    class CloseFails:
+        """Everything a real connection does, except let go of the card."""
+
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def close(self):
+            raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(schema, "connect", lambda path, log: CloseFails(real_connect(path, log)))
+    delete(client, mission_id)
+
+    assert last_delete(client)["ok"] is True
+    assert missions_in(config.DB_PATH) == []

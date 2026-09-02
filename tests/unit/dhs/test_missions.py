@@ -220,6 +220,79 @@ def test_recovery_on_a_database_with_nothing_to_recover_does_nothing(store, conn
     assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
 
 
+# ── deleting ────────────────────────────────────────────────────────────────
+
+
+def add_attitude(conn, mission_id, t):
+    conn.execute("INSERT INTO attitude (mission_id, t) VALUES (?, ?)", (mission_id, t))
+
+
+def add_radio(conn, mission_id, t):
+    conn.execute(
+        "INSERT INTO radio_log (mission_id, t, direction, kind) VALUES (?, ?, 'tx', 'beacon')",
+        (mission_id, t),
+    )
+
+
+def test_deleting_a_mission_takes_its_row_and_all_of_its_detail(store, conn):
+    # Unlike the retention pass, which keeps the row and stamps purged_at. A
+    # person pressing delete means the trip should stop being listed, and a
+    # ghost row would read as a button that did nothing.
+    mission = store.open("FLIGHT", "walk to work")
+    add_row(conn, mission.id, "2026-09-01T07:12:00Z")
+    add_row(conn, mission.id, "2026-09-01T07:12:30Z")
+    add_attitude(conn, mission.id, 1_756_000_000.0)
+    add_radio(conn, mission.id, 1_756_000_001.0)
+
+    deletion = store.delete(mission.id)
+
+    assert (deletion.rows, deletion.attitude, deletion.radio) == (2, 1, 1)
+    assert deletion.label == "walk to work"
+    assert mission_row(conn, mission.id) is None
+    assert conn.execute("SELECT COUNT(*) FROM telemetry").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM attitude").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM radio_log").fetchone()[0] == 0
+
+
+def test_deleting_one_mission_leaves_another_untouched(store, conn):
+    kept = store.open("FLIGHT")
+    doomed = store.open("FLIGHT")
+    add_row(conn, kept.id, "2026-09-01T07:12:00Z")
+    add_row(conn, doomed.id, "2026-09-01T09:00:00Z")
+    add_attitude(conn, kept.id, 1_756_000_000.0)
+
+    store.delete(doomed.id)
+
+    assert mission_row(conn, kept.id) is not None
+    assert conn.execute("SELECT COUNT(*) FROM telemetry").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM attitude").fetchone()[0] == 1
+
+
+def test_deleting_a_mission_that_is_not_there_reports_nothing_rather_than_success(store):
+    # A refusal, not a delete of zero rows: "there was no such mission" and
+    # "the archive is now as you wanted it" are different facts.
+    assert store.delete(404) is None
+
+
+def test_a_deleted_id_is_never_issued_again(store, conn):
+    # AUTOINCREMENT, and the reason is the photo directory: a reused id would
+    # put one trip's photographs inside another's gallery.
+    first = store.open("FLIGHT")
+    store.delete(first.id)
+    assert store.open("FLIGHT").id != first.id
+
+
+def test_a_deletion_says_in_the_log_what_it_took(store, conn, caplog):
+    mission = store.open("FLIGHT", "bench run")
+    add_row(conn, mission.id, "2026-09-01T07:12:00Z")
+
+    with caplog.at_level(logging.INFO):
+        store.delete(mission.id)
+
+    assert f"mission {mission.id} (bench run) deleted" in caplog.text
+    assert "1 telemetry row(s)" in caplog.text
+
+
 # ── the track ───────────────────────────────────────────────────────────────
 
 

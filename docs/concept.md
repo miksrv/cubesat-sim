@@ -365,10 +365,20 @@ single exception, on both counts.
 
 **`restart_service` is the one new capability.** It closes a real gap: `SAFE` in `FLIGHT`
 because a subsystem hung is unrecoverable over the radio today — re-applying the profile does
-not restart a unit that is still active. OBC validates the name against the known services and
-passes it to HOSTD, whose allowlist and denied set (`obc`, `hostd`, `mosquitto`, `NetworkManager`)
-already bound
-what a radio command can reach.
+not restart a unit that is still active. OBC relays the name without checking it and HOSTD
+refuses what it does not recognise: which services exist and which units may be touched are one
+answer each, on the privileged side, and a second copy in OBC would be a second thing to keep in
+step. HOSTD's allowlist and denied set (`obc`, `hostd`, `mosquitto`, `NetworkManager`) already
+bound what a radio command can reach.
+
+What OBC does contribute is the one thing only it knows: that the departure about to arrive was
+asked for. The restarted service says goodbye on its way out, and the health monitor is built to
+act on a goodbye immediately — so the first version of this command latched `SAFE` until a ground
+`recover`, which is exactly the outcome it exists to prevent (found on the hardware, 2026-09-01).
+OBC now declares the departure before relaying the restart, and the monitor waives that one
+goodbye for one loss window. It is a waiver, not an exemption: a service that fails to come back
+inside the window is declared lost on the ordinary schedule, and a restart nobody announced stays
+a fault.
 
 **There is deliberately no `poweroff`.** `CRITICAL` is the only owner of host power, and a kill
 switch on the radio channel points at a satellite its sender by definition cannot reach.

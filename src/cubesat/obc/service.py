@@ -206,11 +206,21 @@ class ObcService(Service):
         What OBC does add is the privilege boundary itself. `cubesat/host/command`
         is root's inbox and the browser ACL denies it, so a ground client cannot
         ask HOSTD directly; it asks here, on the topic every other command uses.
+
+        And it adds the one thing only OBC knows: that the departure about to
+        arrive was asked for. The restarted service says goodbye on its way out,
+        `_check_health` read that as a lost subsystem and latched `SAFE` until a
+        ground `recover` — which defeated the command's whole purpose, restarting
+        one service without taking the dashboard from a room (found on the
+        hardware, 2026-09-01). `health.expect_restart` waives that one goodbye for
+        one loss grace. It is armed **before** the relay because the goodbye can
+        arrive ahead of anything HOSTD says back, which is the race itself.
         """
         request = commands.restart_request(command)
         if request is None:
             self.log.error("restart_service without a service name: %r", command.params)
             return
+        self.health.expect_restart(request.service)
         self.log.info(
             "relaying restart of %s to HOSTD (request_id=%s)", request.service, command.request_id
         )

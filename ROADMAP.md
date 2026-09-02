@@ -36,16 +36,6 @@ megabytes the contract describes.
 |---|---|---|---|
 | **P6** | **Written; what is left is a walk.** The code landed piecemeal: `powersave` on entering `LOW_POWER` and in `FLIGHT`, the profile TTL armed by HOSTD and reported as `ttl_expires_at`, the radio duty-cycled by the beacon table, and the profile itself. What no test can settle is whether the GNSS track is right — V2 and V3 below are that walk. Mains-as-signal recovery is deliberately still open as Q2 | The autonomous logging profile | `[~]` |
 
-**Defect found on the hardware, 2026-09-01: `restart_service` latches `SAFE`.** `cubesat restart comms`
-relayed through HOSTD made the restarted service publish its goodbye, OBC read it as
-`subsystem(s) lost: comms`, latched `SAFE`, and held there until a manual `recover` — the retained
-`obc_status` kept `lost: [comms]` for some seconds after the service was back. `_check_health` only
-waives a goodbye while `profile_machine.settling`, i.e. during a profile switch; a restart OBC itself
-relayed opens no such window. That defeats the command's stated purpose (restart one service without
-taking the dashboard from a room) and, in `FLIGHT`, would stop the camera and duty-cycle the radio.
-The fix belongs in `OBC._restart_service`: mark the named service as expected to depart for a grace
-window in `health.py`, the same idea as `settling` but for one service.
-
 **Where the rewrite stands.** All eight services exist, at 100 % line coverage with `ruff` and
 `mypy` clean, and all eight have now run on the satellite: `HOSTD`, `OBC`, `EPS` and `COMMS` in
 `HOSTED` on 2026-08-31, and `ADCS`, `PAYLOAD`, `DHS` and `DASHBOARD` in `DEMO` on 2026-09-01 —
@@ -53,10 +43,11 @@ window in `health.py`, the same idea as `settling` but for one service.
 has therefore moved from services to **profiles**: `FLIGHT`, `EXPO`, `DIAG` and `MAINTENANCE` have
 never been applied, and with them the access point (V6), a moving GNSS fix (V2, V3) and `diag.db`
 are untried. **Almost everything left is a bench check or a decision.** What can still be written
-without the satellite: the `restart_service` fix above, the photographs missing from a mission
-export (which blocks the public demo), the archive dialog below, the `photo` ack's frame fields —
-the last line of the radio contract still unwritten — the chart line that should break on a gap, and
-an end-to-end test against the replay build.
+without the satellite: the photographs missing from a mission export (which blocks the public demo),
+the archive dialog below, the `photo` ack's frame fields — the last line of the radio contract still
+unwritten — the chart line that should break on a gap, and an end-to-end test against the replay
+build. The one defect the hardware found in the logic, `restart_service` latching `SAFE`, is fixed:
+`health.expect_restart` waives the departure OBC itself asked for, for one loss grace.
 
 ### Mission archive as a real dialog — requested 2026-08-31
 

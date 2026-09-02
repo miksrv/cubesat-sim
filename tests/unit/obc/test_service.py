@@ -351,6 +351,61 @@ def test_a_restart_with_no_service_named_is_not_relayed(obc, caplog):
     assert "without a service name" in caplog.text
 
 
+def test_a_restart_does_not_drop_the_satellite_into_safe(obc):
+    # The defect this exists to close, found on the hardware 2026-09-01:
+    # `cubesat restart comms` made the restarted service publish its goodbye,
+    # OBC read it as a lost subsystem and latched SAFE until a ground `recover`
+    # — which is exactly what the command was built to avoid.
+    service, client, clock = obc
+    bring_up(service, client)
+
+    command(client, "restart_service", params={"service": "comms"})
+    beat(client, "comms", alive=False)
+    service.tick()
+    assert service.mission.state is MissionState.NOMINAL
+    # And nothing on the wire says otherwise: the retained status kept
+    # `lost: [comms]` for seconds on the hardware, which a dashboard believed.
+    assert status(client)["subsystems"]["lost"] == []
+
+    clock.advance(2.0)
+    beat(client, "comms", *MISSION_SERVICES, "eps")
+    service.tick()
+    assert service.mission.state is MissionState.NOMINAL
+
+
+def test_a_restart_that_never_comes_back_still_latches_safe(obc):
+    # The waiver postpones the protection, it does not switch it off: a service
+    # that does not return inside the loss window is a fault like any other.
+    service, client, clock = obc
+    bring_up(service, client)
+
+    command(client, "restart_service", params={"service": "comms"})
+    beat(client, "comms", alive=False)
+    for _ in range(4):
+        clock.advance(10.0)
+        beat(client, "eps", "adcs", "payload", "dhs")
+    service.tick()
+
+    assert service.mission.state is MissionState.SAFE
+    assert status(client)["subsystems"]["lost"] == ["comms"]
+    # Latched: the battery is fine and cannot clear a subsystem fault.
+    battery(client, 80.0, external_power=True)
+    assert service.mission.state is MissionState.SAFE
+
+
+def test_only_the_named_service_is_forgiven_its_departure(obc):
+    # A restart is not an amnesty. Another subsystem dying while one is being
+    # restarted is still a fault.
+    service, client, _ = obc
+    bring_up(service, client)
+
+    command(client, "restart_service", params={"service": "comms"})
+    beat(client, "adcs", alive=False)
+    service.tick()
+
+    assert service.mission.state is MissionState.SAFE
+
+
 def test_a_restart_of_a_name_obc_does_not_recognise_is_still_relayed(obc):
     # Not OBC's judgement to make: a second copy of the service list here is a
     # second thing to keep in step, and HOSTD refuses it in one place with the

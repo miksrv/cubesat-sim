@@ -95,6 +95,103 @@ def test_a_restarted_service_is_healthy_again(monitor, clock):
     assert monitor.lost() == ()
 
 
+def test_a_departure_obc_asked_for_is_not_a_loss(monitor, clock):
+    # `cubesat restart comms` reaches the service as a SIGTERM, and it says
+    # goodbye on the way out. Reading that as a fault latched SAFE on the
+    # hardware (2026-09-01) and defeated the command's whole purpose.
+    monitor.watch(["comms"])
+    monitor.expect_restart("comms")
+    beat(monitor, "comms", alive=False)
+    assert monitor.lost() == ()
+
+    clock.advance(2.0)
+    beat(monitor, "comms")
+    assert monitor.lost() == ()
+
+
+def test_a_service_that_never_comes_back_is_lost_on_the_usual_schedule(monitor, clock):
+    # The waiver postpones the protection; it must not switch it off. Nothing in
+    # `lost()` knows about restarts — the silence clock restarted with the
+    # request, so the service goes stale exactly one grace later.
+    monitor.watch(["comms"])
+    monitor.expect_restart("comms")
+    beat(monitor, "comms", alive=False)
+
+    keep_alive(monitor, clock, monitor.grace - 10.0, "eps")
+    assert monitor.lost() == ()
+    clock.advance(11.0)
+    beat(monitor, "eps")
+    assert monitor.lost() == ("comms",)
+
+
+def test_the_waiver_covers_one_restart_and_not_the_next_departure(monitor):
+    # The service came back, so the waiver is spent. A goodbye after that is an
+    # ordinary fault again — otherwise one restart would buy a silent death.
+    monitor.watch(["dhs"])
+    monitor.expect_restart("dhs")
+    beat(monitor, "dhs", alive=False)
+    beat(monitor, "dhs")
+
+    beat(monitor, "dhs", alive=False)
+    assert monitor.lost() == ("dhs",)
+
+
+def test_a_goodbye_after_the_window_closes_is_a_fault_again(monitor, clock):
+    # A restart slower than a service is allowed to be silent is not a restart.
+    # Silence alone would have caught this one too; what the expiry buys is that
+    # the waiver is not left lying around to forgive some later death.
+    monitor.watch(["adcs"])
+    monitor.expect_restart("adcs")
+    keep_alive(monitor, clock, monitor.grace + 10.0, "eps")
+    beat(monitor, "adcs", alive=False)
+    assert monitor.lost() == ("adcs",)
+
+    beat(monitor, "adcs")
+    beat(monitor, "adcs", alive=False)
+    assert monitor.lost() == ("adcs",)
+
+
+def test_restarting_a_service_the_profile_does_not_run_waives_nothing(monitor):
+    # HOSTED watches EPS alone. There is no departure to forgive, and the
+    # expectation must not be recorded for something nobody is watching.
+    monitor.watch(())
+    monitor.expect_restart("adcs")
+    monitor.watch(["adcs"])
+    beat(monitor, "adcs", alive=False)
+    assert monitor.lost() == ("adcs",)
+
+
+def test_an_expectation_is_forgotten_when_the_profile_stops_asking_for_it(monitor):
+    monitor.watch(["comms"])
+    monitor.expect_restart("comms")
+    monitor.watch(())
+    monitor.watch(["comms"])
+    beat(monitor, "comms", alive=False)
+    assert monitor.lost() == ("comms",)
+
+
+def test_a_second_request_extends_the_window(monitor, clock):
+    # Two restarts in a row: the second one starts its own window rather than
+    # inheriting what is left of the first.
+    monitor.watch(["payload"])
+    monitor.expect_restart("payload")
+    keep_alive(monitor, clock, monitor.grace - 10.0, "eps")
+    monitor.expect_restart("payload")
+    keep_alive(monitor, clock, monitor.grace - 10.0, "eps")
+    beat(monitor, "payload", alive=False)
+    assert monitor.lost() == ()
+
+
+def test_a_pending_departure_is_cleared_by_the_request(monitor):
+    # The goodbye can arrive before OBC gets to arm anything — a race it cannot
+    # win on ordering alone, so arming also forgives a departure already noted.
+    monitor.watch(["comms"])
+    beat(monitor, "comms", alive=False)
+    assert monitor.lost() == ("comms",)
+    monitor.expect_restart("comms")
+    assert monitor.lost() == ()
+
+
 def test_a_departure_is_logged_once_however_many_wills_arrive(monitor, caplog):
     monitor.watch(["adcs"])
     with caplog.at_level("WARNING"):

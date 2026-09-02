@@ -46,8 +46,9 @@ trusted — the register maps come from the bench notes in `docs/hardware-*.md`,
 had to come from a datasheet instead, the driver says so at the constant.
 [`ROADMAP.md`](ROADMAP.md) carries the list of checks only the bench can settle — the ones that
 would otherwise produce plausible wrong data rather than an error, which is the class of fault this
-whole codebase is arranged around — and the one open defect the hardware has found in the logic so
-far: `restart_service` latches `SAFE`.
+whole codebase is arranged around. The hardware has found exactly one defect in the logic so far
+(`restart_service` latched `SAFE`, 2026-09-01, fixed); everything else it found was in the
+deployment, which is the shape of surprise a mock HAL cannot produce.
 
 Read [docs/concept.md](docs/concept.md) for *why* the design looks like this; this README is the
 reference for *what* it is.
@@ -1186,6 +1187,15 @@ client able to name a unit would be reaching past this vocabulary into systemd, 
 refused. `cubesat@obc`, `cubesat-hostd`, `mosquitto` and `NetworkManager` are outside reach whatever
 is asked, and re-applying a profile is still the way to restart *everything* a profile names: this
 exists so that restarting one service does not take the dashboard away from a room full of people.
+
+**A restart OBC asked for is not a lost subsystem.** The restarted service says goodbye on its way
+out (`alive: false`), and OBC's health monitor is built to act on that immediately — so the first
+version of this command latched `SAFE` until a ground `recover`, which is precisely what it was
+built to avoid (found on the hardware, 2026-09-01). OBC now declares the departure before relaying
+the restart, and `health.expect_restart` waives that one goodbye for one loss window
+(`heartbeat.interval_sec × heartbeat.miss_threshold`, 30 s). A service that does not come back
+inside it is declared lost exactly as it would have been: the protection is postponed, not switched
+off. A restart nobody announced — `systemctl restart` by hand — is still a fault, deliberately.
 
 **There is no `poweroff` in this vocabulary, and that is deliberate.** `CRITICAL` is the only thing
 permitted to power the host down, and it decides that from the battery rather than from a button —

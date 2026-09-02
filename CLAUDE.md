@@ -26,11 +26,11 @@ cost three defects in the deployment rather than the logic, each now explained w
 `config/tmpfiles.d/cubesat.conf`, `systemd/cubesat@.service`, `config/mosquitto/`. The second day
 on the Pi cost a misidentified fuel gauge (a MAX17040/41 answering `0xFFFF` from the registers a
 MAX17048 would have, which had made `charge_rate` a decoded constant for weeks), an undetectable
-class of BNO055 bit error that reaches the recorder (V14), and one open defect in the logic:
-**`restart_service` latches `SAFE`**, because the restarted service's goodbye reads to OBC as a lost
-subsystem. Expect more of
-that shape from the four profiles still waiting: the mock HAL cannot fail the way a shared
-directory, a file lock, a gauge or an access point does.
+class of BNO055 bit error that reaches the recorder (V14), and one real defect in the logic —
+**`restart_service` latched `SAFE`**, because the restarted service's goodbye read to OBC as a lost
+subsystem; fixed with `health.expect_restart`, which waives the one departure OBC itself asked for.
+Expect more of that shape from the four profiles still waiting: the mock HAL cannot fail the way a
+shared directory, a file lock, a gauge or an access point does.
 
 The practical consequence: a passing test proves the logic, never the register map. Where a driver
 constant came from a datasheet rather than from our bench notes, the driver says so at the constant
@@ -163,6 +163,15 @@ stays up — deliberately, so OBC reacts to missing telemetry rather than to a v
 bring-up evidence is a subsystem's *status* message, which exists only because a device was read.
 Heartbeat-only evidence would pass a `DEPLOY` with a cable knocked loose, which is the case
 `DEPLOY` exists for.
+
+**A departure OBC asked for is not a fault, and it is bounded.** Two things make a subsystem's
+goodbye legitimate: a profile switch (`profile_machine.settling`, 30 s) and a relayed
+`restart_service` (`health.expect_restart`, one loss grace). Both existed because the alternative
+was met on the hardware — a healthy satellite latched into `SAFE` mid-switch on 2026-08-28, and a
+`restart comms` doing the same on 2026-09-01. Both are **windows**, not flags: a switch HOSTD never
+completes, or a service that never comes back, gets the health monitor its say back on schedule.
+Never widen either into "ignore goodbyes from this service" — an unannounced departure is exactly
+what `SAFE` is for.
 
 **On mains there is no power emergency.** All three power-driven descents are suppressed while
 external power is present *and* the charge rate is not still falling. Without the first half, a

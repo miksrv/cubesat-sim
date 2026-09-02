@@ -20,7 +20,10 @@ heartbeat:
 #
 # This table is what makes LOW_POWER mean something: without it, "power saving"
 # is a label on a state that changes no behaviour. A profile can scale all of it
-# at once via power.cadence_scale (DIAG polls everything faster).
+# at once via power.cadence_scale — the lever exists, and as of 2026-09-01 no
+# profile pulls it: every one of them is 1.0. DIAG used to carry 0.2, and it went
+# when DIAG became a rehearsal of FLIGHT, because a rehearsal at five times the
+# real rate rehearses something else.
 #
 # A value of 0 means "do not act in this state at all" — used for the radio in
 # SAFE, where the satellite goes quiet rather than slow.
@@ -110,9 +113,11 @@ eps:
 
 dhs:
   # The floor on how often one attitude sample is recorded. ADCS publishes
-  # orientation at 2 Hz, and in DIAG — where cadence_scale is 0.2 against a
-  # 0.5 s interval — at 10; without a ceiling here a bench session would write
-  # ten rows a second to the card for as long as it ran.
+  # orientation at 2 Hz in every active profile — no profile scales that any
+  # more, DIAG included (its cadence_scale went back to 1.0 on 2026-09-01, and
+  # the 10 Hz it used to ask for on a bus clamped to 10 kHz went with it). So
+  # 2 Hz is the rate this floor is measured against; without it a mission would
+  # write two rows a second to the card for as long as it ran.
   #
   # This costs SD-card writes and nothing else. DHS holds no hardware and reads
   # no bus, so what ADCS puts on the wire costs exactly the same whether it is

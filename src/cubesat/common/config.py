@@ -78,10 +78,18 @@ BEACON_INTERVALS: dict[str, float] = {
 }
 
 # ── Paths ───────────────────────────────────────────────────────────────────
-# Runtime data lives outside the checkout. systemd creates these directories
-# from the units' StateDirectory/RuntimeDirectory/LogsDirectory, so nothing here
-# ever calls mkdir on a system path. Point CUBESAT_DATA_DIR at ./data for
-# development on a laptop.
+# Runtime data lives outside the checkout. config/tmpfiles.d/cubesat.conf creates
+# these directories, so nothing here ever calls mkdir on a system path.
+#
+# systemd-tmpfiles rather than the units' StateDirectory/RuntimeDirectory/
+# LogsDirectory, and that is deliberate: those re-apply the *starting* unit's own
+# User= to the whole tree on every start, and two users share these three paths —
+# cubesat-hostd is root, every other service is `cubesat`. Ownership then followed
+# whichever unit restarted last, and a HOSTD restart handed all three directories
+# to root:root (found on the first hardware run, 2026-08-31). The units name the
+# paths in ReadWritePaths= instead, which is what re-opens them under
+# ProtectSystem=strict. Point CUBESAT_DATA_DIR at ./data for development on a
+# laptop.
 DATA_DIR = Path(os.getenv("CUBESAT_DATA_DIR", "/var/lib/cubesat"))
 RUN_DIR = Path(os.getenv("CUBESAT_RUN_DIR", "/run/cubesat"))
 LOG_DIR = Path(os.getenv("CUBESAT_LOG_DIR", "/var/log/cubesat"))

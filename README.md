@@ -672,14 +672,26 @@ given an invented id — see [PAYLOAD](#payload). They group the way the
 charts do. `DIAG` sessions are missions too, in `/var/lib/cubesat/diag.db` with the same schema, so one dashboard renders
 a bench run and a trip with no special case.
 
+**A mission id names a directory only together with its database.** The two databases number their
+missions independently, both from 1, so `DIAG` mission 3 and a `FLIGHT` trip 3 are different
+missions with the same id — and one `photos/<mission_id>/` for both meant they shared a directory,
+where deleting the bench run took the trip's photographs with it. `diag.db` therefore files under
+`/var/lib/cubesat/photos-diag/<mission_id>/`: a **sibling** root, not a level of nesting above every
+id, so the directory name stays a plain run of digits — the allowlist retention fences its deletions
+with — and nothing already on the card moves. `dhs_status.database` is what selects it, and PAYLOAD
+takes it from the same message as the id, never separately: a mission id whose database is missing
+reads as no mission at all, exactly as a non-integer id does. The mapping is
+`common/config.py` → `photos_root_for`, and the dashboard's two photo routes follow the archive it
+is serving through the same function.
+
 ### Retention: photos follow their mission
 
 Telemetry rows age out after `retention.days` (30 by default), and `attitude` samples with them —
 same horizon, same transaction. Both are a mission's detail and both belong to it; a rule that aged
 one out and kept the other would leave a mission that can be replayed but not charted, which is a
 state nobody would think to test and every consumer would have to handle. **Photos go with the
-mission they belong to** — when a mission's last row passes the horizon, its `photos/<mission_id>/` directory
-goes too. "Photos live exactly as long as the detail of the mission they belong to" is a rule an
+mission they belong to** — when a mission's last row passes the horizon, its photo directory
+goes too, in the root belonging to the database being purged. "Photos live exactly as long as the detail of the mission they belong to" is a rule an
 operator can hold in their head.
 
 The `missions` row itself **survives**, stamped with `purged_at`: a trip that happened stays listed
@@ -689,7 +701,7 @@ that difference is deliberate: the horizon is the satellite deciding it can no l
 record, while `delete_mission` is a person saying this trip should not be listed. A delete that left
 a `purged_at` ghost behind would look, to whoever pressed it, exactly like a button that does
 nothing. Everything else is identical — the same four tables in one transaction, then the same
-fenced removal of `photos/<mission_id>/`. Without the stamp a dashboard joining the two tables would find a mission
+fenced removal of that mission's photo directory. Without the stamp a dashboard joining the two tables would find a mission
 claiming 1440 rows and holding none, which is a plausible wrong number of exactly the kind this
 telemetry refuses everywhere else.
 
@@ -700,8 +712,9 @@ enforces a free-space floor (`photos.min_free_mb`) — **the floor and this hori
 headroom seen from two sides**, and setting them independently lets the card fill anyway.
 
 Deleting photographs is the most destructive thing this codebase does, so it is fenced: only
-directories named for a mission being purged in the same pass, never a sweep of `photos/`, and
-never a name that is not a run of digits. `photos/unfiled/` used to be the case in point — retention
+directories named for a mission being purged in the same pass, never a sweep of a photo root, and
+never a name that is not a run of digits — which is why the second database got a root of its own
+rather than a suffix on the id or a level above it. `photos/unfiled/` used to be the case in point — retention
 was forbidden to clean it, so it only ever grew — and it no longer exists; the fence stays as an
 allowlist for whatever a future PAYLOAD might invent without telling retention. Every deletion is
 logged with the mission, the file count and the bytes reclaimed. `retention.purge_photos: false` turns it off, with the consequence
@@ -910,6 +923,10 @@ which is the case `DEPLOY` exists for.
   "photo_dir": "/var/lib/cubesat/photos/42"
 }
 ```
+
+`photo_dir` is the directory the *open* mission files under, so it names the root that belongs to
+DHS' current database — `photos-diag/42` during a `DIAG` session. With no mission open it is the
+scratch directory on the tmpfs.
 
 Published on connect and on any change worth reporting: a device appearing or going silent, a
 mission's photography starting or ending, a capture refused for want of space, a new `mission_id`
@@ -1232,8 +1249,12 @@ active, and again whenever a mission closes or a database is refused:
 null when the table could not be counted. Unknown is reported as unknown rather than as zero, which
 on this topic would read as an empty recorder rather than as a recorder that could not look.
 
-`mission.id` is what PAYLOAD files photographs under, which is why this message is retained and
-published promptly on any mission change. `recording: false` is what OBC's `CRITICAL` path waits for
+`mission.id` **and `database` together** are what PAYLOAD files photographs under, which is why this
+message is retained and published promptly on any mission change. Not the id alone: both databases
+issue mission ids from 1, so the pair is what names a directory (see
+[Mission Sessions](#mission-sessions)). PAYLOAD takes them from this one message so they cannot
+get out of step, and treats a mission arriving without a database as no mission — the same
+withholding a non-integer id gets. `recording: false` is what OBC's `CRITICAL` path waits for
 before asking HOSTD to power the host off, with a bounded grace — a late publish there costs the
 flush it was waiting for.
 
@@ -1622,7 +1643,7 @@ Runtime data lives **outside the checkout**, created by systemd rather than by h
 
 | Path | Contents | Created by |
 |---|---|---|
-| `/var/lib/cubesat/` | `comms.db`, `diag.db`, `photos/<mission_id>/`, `last-profile`, the deployed dashboard build | `config/tmpfiles.d/cubesat.conf` |
+| `/var/lib/cubesat/` | `comms.db`, `diag.db`, `photos/<mission_id>/` and `photos-diag/<mission_id>/` (one root per database — both number their missions from 1), `last-profile`, the deployed dashboard build | `config/tmpfiles.d/cubesat.conf` |
 | `/run/cubesat/` | `i2c.lock`, `hostd.sock` | `config/tmpfiles.d/cubesat.conf` |
 | `/var/log/cubesat/` | `<service>.log`, rotating | `config/tmpfiles.d/cubesat.conf` |
 

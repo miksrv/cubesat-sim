@@ -468,6 +468,26 @@ def test_the_same_database_twice_is_not_reopened(dashboard, recorded, caplog):
     assert caplog.text.count("serving that") <= 1
 
 
+def test_the_photographs_move_with_the_database(dashboard, roots):
+    # W3: both databases number their missions from 1, so a DIAG bench run and
+    # a FLIGHT trip can both be mission 42. Serving diag.db's rows beside
+    # photos/42 would put a trip's frames under a bench run.
+    _, client, port = dashboard
+    diag = roots["photos"].parent / "photos-diag"
+    (diag / "42").mkdir(parents=True)
+    (diag / "42" / "frame_0001.jpg").write_bytes(b"\xff\xd8diag")
+
+    client.deliver(
+        TOPICS["dhs_status"],
+        {"recording": True, "database": str(roots["db"].parent / "diag.db")},
+    )
+
+    listed = get_json(port, "/api/missions/42/photos")
+    assert [photo["name"] for photo in listed["photos"]] == ["frame_0001.jpg"]
+    _, _, body = get(port, "/api/photos/42/frame_0001.jpg")
+    assert body == b"\xff\xd8diag"
+
+
 # ── survivability ───────────────────────────────────────────────────────────
 
 

@@ -403,7 +403,7 @@ class DhsService(Service):
             )
             return
         files, reclaimed = retention.remove_photos(
-            config.PHOTOS_DIR, mission_id, self.log, why=DELETE_MISSION
+            config.photos_root_for(path), mission_id, self.log, why=DELETE_MISSION
         )
         self._report_delete(
             request_id, mission_id, deletion=deletion, files=files, reclaimed=reclaimed
@@ -729,14 +729,18 @@ class DhsService(Service):
         self._purge()
 
     def _purge(self) -> None:
-        if self._conn is None:
+        if self._conn is None or self._db_path is None:
             return
         self._next_purge = time.monotonic() + PURGE_INTERVAL_SEC
         retention.purge(
             self._conn,
             self.log,
             days=config.DHS_RETENTION_DAYS,
-            photos_root=config.PHOTOS_DIR,
+            # The root belongs to the database being purged, not to the service:
+            # both databases number their missions from 1, so comms.db's horizon
+            # naming photos/ and diag.db's naming photos-diag/ is what keeps a
+            # DIAG bench run from ageing out a trip's photographs.
+            photos_root=config.photos_root_for(self._db_path),
             purge_photos=config.DHS_PURGE_PHOTOS,
         )
 

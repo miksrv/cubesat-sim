@@ -20,7 +20,13 @@ somebody had to choose, whose only real use was the one now automatic.
 
 **Photos are filed per mission**, under ``<data>/photos/<mission_id>/``, so a
 gallery groups the way the charts do. PAYLOAD does not own missions — DHS does —
-so the id arrives on ``dhs_status`` and is passed in here.
+so the id arrives on ``dhs_status`` and is passed in here. The *root* arrives
+with it, from the same message: the two databases number their missions
+independently, so an id alone does not name a directory (see
+``config.photos_root_for``). Id and root travel together as one pair through
+``CaptureContext`` for the same reason every other field there does — a series
+spans minutes, and a frame filed under this mission's id in the previous
+mission's root would be filed under a trip it was not part of.
 
 **With no mission open, a photo is never written to the card.** It goes to
 ``PHOTO_SCRATCH_DIR`` — a directory on ``/run``, which is a tmpfs, so the file
@@ -163,6 +169,11 @@ class CaptureContext:
     """
 
     mission_id: int | None = None
+    #: Which of the photo roots this mission's frames are filed under, from the
+    #: same ``dhs_status`` the id came from. None means the caller names none
+    #: and the controller's own root applies — which is every case where there
+    #: is no mission, and the photograph is going to the scratch tmpfs anyway.
+    photos_root: Path | None = None
     state: MissionState | None = None
     #: The last known GNSS sub-object from ``adcs_status``, or None.
     position: dict[str, Any] | None = None
@@ -249,6 +260,10 @@ class CameraController:
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._camera = camera
+        #: The mission database's photo root: where a frame goes when its caller
+        #: names no other, and the directory whose filesystem the free-space
+        #: floor is measured on. Both roots are under the data directory, so
+        #: which one is measured makes no difference to the answer.
         self._root = photos_dir if photos_dir is not None else config.PHOTOS_DIR
         #: Where a photo goes when no mission is open. On the satellite this is
         #: under /run, which is a tmpfs: the frame never touches the card.
@@ -325,23 +340,32 @@ class CameraController:
 
     # ── filing ──────────────────────────────────────────────────────────────
 
-    def path_for(self, mission_id: int | None) -> Path:
+    def path_for(self, mission_id: int | None, photos_root: Path | None = None) -> Path:
         """Where this photo goes. Creates nothing — see below.
 
         With a mission, this is the one place the id becomes a string: the
         directory name is the filesystem's representation of it, while everywhere
         else — the wire, the sidecar, the logs — carries the integer DHS
-        reported. HOSTD's photo-directory rule ("a run of digits") is matched by
-        exactly this rendering.
+        reported. Retention's photo-directory rule ("a run of digits") is matched
+        by exactly this rendering, and it stays matched because ``photos_root``
+        selects a *sibling* root rather than adding a level above the id.
+
+        ``photos_root`` is which database's root — a mission id alone does not
+        name a directory, because both databases issue ids from 1. It is
+        ``config.photos_root_for`` applied to what DHS reported, and a caller
+        that names none gets the mission database's root, which is where every
+        photograph filed before there was a second database already is.
 
         With no mission, it is the scratch directory on the tmpfs, and the
         photograph is never written to the card at all. See the module docstring:
         that is the ``DEMO``/``EXPO`` case, where the pixels go to whoever asked
         and no history is kept.
         """
-        return self._scratch if mission_id is None else self._root / str(mission_id)
+        if mission_id is None:
+            return self._scratch
+        return (photos_root if photos_root is not None else self._root) / str(mission_id)
 
-    def directory_for(self, mission_id: int | None) -> Path:
+    def directory_for(self, mission_id: int | None, photos_root: Path | None = None) -> Path:
         """The same directory, brought into existence.
 
         Separate from ``path_for`` because publishing a status must not create
@@ -354,7 +378,7 @@ class CameraController:
         that has to be made here: its name does not exist until DHS opens the
         mission, so no unit file and no tmpfiles entry can name it in advance.
         """
-        directory = self.path_for(mission_id)
+        directory = self.path_for(mission_id, photos_root)
         directory.mkdir(parents=True, exist_ok=True)
         return directory
 
@@ -409,7 +433,7 @@ class CameraController:
         with self._capture_lock:
             self._refuse_if_full()
             taken_at = self._clock()
-            directory = self.directory_for(context.mission_id)
+            directory = self.directory_for(context.mission_id, context.photos_root)
             path = directory / self._filename(taken_at, kind, sequence)
             sidecar = self._sidecar(context, taken_at, path) if context.overlay else None
             try:

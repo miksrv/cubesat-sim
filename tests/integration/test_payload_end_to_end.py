@@ -149,7 +149,9 @@ def test_a_ground_photo_request_travels_from_the_broker_to_the_disk_and_back(
     service, client, _ = build(service_factory, monkeypatch, tmp_path)
     client.connect_ok()
     client.deliver(TOPICS["obc_status"], {"status": "NOMINAL", "profile": "DEMO"})
-    client.deliver(TOPICS["dhs_status"], {"mission": {"id": 42}})
+    client.deliver(
+        TOPICS["dhs_status"], {"mission": {"id": 42}, "database": str(config.DB_PATH)}
+    )
     client.deliver(
         TOPICS["command"],
         {"command": "take_photo", "request_id": "req_001", "params": {"overlay": True}},
@@ -183,7 +185,9 @@ def test_an_open_mission_photographs_itself_and_stops_with_the_service(
 
     thread = threading.Thread(target=service.run, daemon=True)
     thread.start()
-    client.deliver(TOPICS["dhs_status"], {"mission": {"id": 7}})
+    client.deliver(
+        TOPICS["dhs_status"], {"mission": {"id": 7}, "database": str(config.DB_PATH)}
+    )
     deadline = time.monotonic() + 3.0
     frames: list[dict] = []
     while time.monotonic() < deadline and len(frames) < 3:

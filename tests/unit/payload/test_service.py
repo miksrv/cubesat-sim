@@ -68,13 +68,25 @@ def wait_until(predicate, timeout=3.0):
     return False
 
 
-def open_mission(client, mission_id=42):
-    """DHS reporting an open mission — what starts a mission's photography."""
-    client.deliver(TOPICS["dhs_status"], {"mission": {"id": mission_id}})
+def open_mission(client, mission_id=42, database=None):
+    """DHS reporting an open mission — what starts a mission's photography.
+
+    The database travels with the id because it does on the wire: both
+    databases number their missions from 1, so the pair is what names a
+    directory. Defaults to the mission database, which is where a FLIGHT trip
+    goes.
+    """
+    client.deliver(
+        TOPICS["dhs_status"],
+        {
+            "mission": {"id": mission_id},
+            "database": str(database if database is not None else config.DB_PATH),
+        },
+    )
 
 
 def close_mission(client):
-    client.deliver(TOPICS["dhs_status"], {"mission": None})
+    client.deliver(TOPICS["dhs_status"], {"mission": None, "database": str(config.DB_PATH)})
 
 
 def photo_messages(client, kind=None):
@@ -201,7 +213,7 @@ def test_a_deploy_the_service_survived_republishes_the_status(payload):
 
 def test_the_status_carries_the_mission_the_photos_are_being_filed_under(payload, tmp_path):
     service, client, _, _ = payload
-    client.deliver(TOPICS["dhs_status"], {"mission": {"id": 42}})
+    open_mission(client)
     status = client.last(TOPICS["payload_status"])
     assert status["mission_id"] == 42
     assert status["photo_dir"] == str(tmp_path / "photos" / "42")
@@ -213,8 +225,11 @@ def test_a_mission_id_that_is_not_an_integer_reads_as_no_mission(payload, tmp_pa
     # the photo goes to the scratch directory — not coerced into a name.
     service, client, _, _ = payload
     for wrong in ("42", True, 4.2):
-        client.deliver(TOPICS["dhs_status"], {"mission": {"id": 7}})
-        client.deliver(TOPICS["dhs_status"], {"mission": {"id": wrong}})
+        open_mission(client, 7)
+        client.deliver(
+            TOPICS["dhs_status"],
+            {"mission": {"id": wrong}, "database": str(config.DB_PATH)},
+        )
         status = client.last(TOPICS["payload_status"])
         assert status["mission_id"] is None
 
@@ -304,9 +319,48 @@ def test_a_photo_request_answers_with_the_image(payload):
 def test_a_photo_is_filed_under_the_mission_dhs_reported(payload, tmp_path):
     service, client, _, _ = payload
     nominal(client)
-    client.deliver(TOPICS["dhs_status"], {"mission": {"id": 42}})
+    open_mission(client)
     client.deliver(TOPICS["command"], {"command": "take_photo", "request_id": "r1"})
     assert photo_messages(client)[-1]["path"].startswith(str(tmp_path / "photos" / "42"))
+
+
+def test_a_diag_mission_files_beside_the_trips_not_among_them(payload, tmp_path):
+    # W3: comms.db and diag.db both number their missions from 1, so DIAG
+    # mission 42 and a FLIGHT trip 42 are different missions with the same id.
+    # The database DHS reports is what tells them apart, and it arrives on the
+    # same message as the id.
+    service, client, _, _ = payload
+    nominal(client)
+    open_mission(client, 42, database=config.DIAG_DB_PATH)
+    client.deliver(TOPICS["command"], {"command": "take_photo", "request_id": "r1"})
+    path = photo_messages(client)[-1]["path"]
+    assert path.startswith(str(tmp_path / "photos-diag" / "42"))
+    assert not path.startswith(str(tmp_path / "photos" / "42"))
+
+
+def test_the_root_moves_with_the_database_mid_series(payload, tmp_path):
+    # The pair is taken together, never separately: a satellite that went from
+    # a DIAG rehearsal to a FLIGHT trip must not keep filing into photos-diag/.
+    service, client, _, _ = payload
+    nominal(client)
+    open_mission(client, 3, database=config.DIAG_DB_PATH)
+    assert client.last(TOPICS["payload_status"])["photo_dir"] == str(
+        tmp_path / "photos-diag" / "3"
+    )
+    open_mission(client, 3, database=config.DB_PATH)
+    assert client.last(TOPICS["payload_status"])["photo_dir"] == str(tmp_path / "photos" / "3")
+
+
+def test_a_mission_with_no_database_reads_as_no_mission(payload, caplog):
+    # The id's own treatment, for the same reason: an id without the database
+    # it belongs to does not name a directory, and the two candidates are two
+    # different trips. Withhold rather than guess.
+    service, client, _, _ = payload
+    open_mission(client, 7)
+    with caplog.at_level("WARNING"):
+        client.deliver(TOPICS["dhs_status"], {"mission": {"id": 42}})
+    assert client.last(TOPICS["payload_status"])["mission_id"] is None
+    assert "without a database" in caplog.text
 
 
 def test_a_photo_with_no_mission_open_is_delivered_and_then_deleted(payload, tmp_path):
@@ -364,9 +418,9 @@ def test_a_repeated_dhs_status_does_not_republish_the_payload_status(payload):
     # DHS publishes on its own cadence and the status is retained; only a change
     # of mission is worth saying again.
     service, client, _, _ = payload
-    client.deliver(TOPICS["dhs_status"], {"mission": {"id": 42}})
+    open_mission(client)
     before = len(client.payloads(TOPICS["payload_status"]))
-    client.deliver(TOPICS["dhs_status"], {"mission": {"id": 42}})
+    open_mission(client)
     assert len(client.payloads(TOPICS["payload_status"])) == before
 
 

@@ -89,6 +89,8 @@ class DashboardService(Service):
         super().__init__()
         self._port = port if port is not None else config.DASHBOARD_PORT
         self._static_root = static_root if static_root is not None else config.DASHBOARD_ROOT
+        #: The mission database's photo root. Every other database's root is
+        #: derived from this one, so a redirected root redirects both.
         self._photos_root = photos_root if photos_root is not None else config.PHOTOS_DIR
         #: The mission database, until DHS says it is writing another.
         self._default_db = db_path if db_path is not None else config.DB_PATH
@@ -169,11 +171,16 @@ class DashboardService(Service):
         with self._lock:
             if target == self._archive.path:
                 return
-            self.log.info("recorder is writing %s; serving that", target)
+            # The photographs move with the database they belong to: both
+            # number their missions from 1, so serving diag.db's mission 3 out
+            # of photos/ would show a FLIGHT trip's frames under a bench run.
+            photos = config.photos_root_for(target, self._photos_root)
+            self.log.info("recorder is writing %s; serving that, photos from %s", target, photos)
             self._archive.close()
             self._archive = Archive(target, log=self.log)
             if self._server is not None:
                 self._server.archive = self._archive
+                self._server.photos_root = photos
 
     def _follow_mission(self, data: dict[str, Any]) -> None:
         """Note which mission is open, so ``/api/telemetry`` can be filtered by it.
@@ -206,7 +213,11 @@ class DashboardService(Service):
                 archive=self._archive,
                 live=self._live,
                 static_root=self._static_root,
-                photos_root=self._photos_root,
+                # Derived from the archive rather than taken from the field, so
+                # a dhs_status that swapped the database before this thread got
+                # to the socket does not leave the server serving one database's
+                # rows beside another's photographs.
+                photos_root=config.photos_root_for(self._archive.path, self._photos_root),
             )
         except OSError:
             # A port already taken, most likely a previous instance that has not

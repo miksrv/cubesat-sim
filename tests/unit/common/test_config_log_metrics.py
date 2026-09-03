@@ -46,6 +46,51 @@ def test_the_lock_and_socket_are_runtime_not_state():
     assert config.HOSTD_SOCKET.parent == config.RUN_DIR
 
 
+# ── photos_root_for ──────────────────────────────────────────────────────────
+
+
+def test_the_mission_database_keeps_the_photo_root_it_has_always_had():
+    # Nothing on a card that has been recording since before there was a second
+    # database moves, which is the whole reason the diag root is a sibling.
+    assert config.photos_root_for(config.DB_PATH) == config.PHOTOS_DIR
+
+
+def test_the_diagnostic_database_files_beside_it_not_under_it():
+    root = config.photos_root_for(config.DIAG_DB_PATH)
+    assert root == config.PHOTOS_DIR.parent / f"{config.PHOTOS_DIR.name}-diag"
+    assert root.parent == config.PHOTOS_DIR.parent
+
+
+def test_the_two_databases_never_share_a_directory():
+    # W3: both number their missions from 1, so mission 3 exists in each.
+    mission_id = 3
+    flight = config.photos_root_for(config.DB_PATH) / str(mission_id)
+    diag = config.photos_root_for(config.DIAG_DB_PATH) / str(mission_id)
+    assert flight != diag
+
+
+def test_the_leaf_name_is_still_a_plain_run_of_digits():
+    # The allowlist retention fences its deletions with. A root that added a
+    # level above the id, or a suffix after it, would have moved that fence.
+    assert (config.photos_root_for(config.DIAG_DB_PATH) / "3").name == "3"
+
+
+def test_a_caller_with_its_own_root_gets_both_of_its_roots(tmp_path):
+    # The dashboard is handed a root; its diag root must be derived from that
+    # one and not from the shipped constant, or a test redirects one of two.
+    own = tmp_path / "photos"
+    assert config.photos_root_for(config.DB_PATH, own) == own
+    assert config.photos_root_for(config.DIAG_DB_PATH, own) == tmp_path / "photos-diag"
+
+
+def test_a_database_path_can_name_a_root_but_never_a_place():
+    # PAYLOAD takes this string off the wire. Path.stem is one segment, so the
+    # worst a malformed database path can do is name an unused directory.
+    root = config.photos_root_for("/var/lib/cubesat/../../etc/passwd.db")
+    assert root.name == f"{config.PHOTOS_DIR.name}-passwd"
+    assert root.parent == config.PHOTOS_DIR.parent
+
+
 # ── logging ──────────────────────────────────────────────────────────────────
 
 

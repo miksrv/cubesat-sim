@@ -706,7 +706,10 @@ cubesat profile flight --mission "walk to work"
 
 Labels are for grouping in the dashboard, not for identity — two runs labelled the same are still
 two missions. Photos are filed per mission (`photos/<mission_id>/`) so a gallery groups the
-same way the charts do.
+same way the charts do — per mission **and per database**, since `comms.db` and `diag.db` number
+their missions independently and a `DIAG` run therefore files under `photos-diag/<mission_id>/`.
+A sibling root rather than a level of nesting, so the directory name stays the run of digits
+retention's deletion fence is an allowlist for.
 
 ### Schema
 
@@ -959,7 +962,7 @@ read it as "what the rewrite changed", not as work outstanding.*
 | `src/cubesat/dhs/` | **New** — owns the database: packet assembly, writes gated on profile, cadence from state, position columns, the `missions` table and its lifecycle, retention |
 | `src/cubesat/hal/` | **New** — `typing.Protocol` interfaces, real drivers, mocks, and the shared I2C advisory lock |
 | layout | `src` becomes a real src layout: the package is `cubesat`, installed editable, launched as `python -m cubesat.<service>`. No more `src.*` imports or `PYTHONPATH=.` |
-| runtime data | Out of the checkout: `/var/lib/cubesat/` (database, photos, `last-profile`), `/run/cubesat/` (bus lock, socket), created at boot by `systemd-tmpfiles` from `config/tmpfiles.d/cubesat.conf` — not by `StateDirectory`/`RuntimeDirectory`, which re-chown the tree to the starting unit's own user and so let root-owned HOSTD lock the unprivileged services out |
+| runtime data | Out of the checkout: `/var/lib/cubesat/` (databases, one photo root per database, `last-profile`), `/run/cubesat/` (bus lock, socket), created at boot by `systemd-tmpfiles` from `config/tmpfiles.d/cubesat.conf` — not by `StateDirectory`/`RuntimeDirectory`, which re-chown the tree to the starting unit's own user and so let root-owned HOSTD lock the unprivileged services out |
 | `src/cubesat/comms/mesh.py` | Rewritten on `meshtastic` (P0, already planned in `PLAN.md`) |
 | `src/cubesat/adcs/`, `src/cubesat/payload/` | Subscribe to `obc/status`; interval from state via `common/cadence.py` |
 | `src/cubesat/common/` | New `service.py` base class, `states.py` enums, `topics.py`, `cadence.py`; profile loading; LoRa keys replaced |

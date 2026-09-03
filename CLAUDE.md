@@ -149,8 +149,8 @@ discarded. Do not reach for that number hoping to unload the bus; the lever for 
 cadence.
 
 **Erasing a mission is DHS' job, and it deliberately disagrees with retention.** `delete_mission`
-on `cubesat/command` removes the four tables' rows *and* the `missions` row, then
-`photos/<mission_id>/`; retention keeps the row and stamps `purged_at`. That is not an
+on `cubesat/command` removes the four tables' rows *and* the `missions` row, then that mission's
+photo directory; retention keeps the row and stamps `purged_at`. That is not an
 inconsistency to tidy up — the horizon is the satellite deciding it can no longer afford a record,
 a person pressing delete is saying the trip should not be listed, and a delete leaving a ghost row
 would read as a button that does nothing. Three fences hold it: it is refused in `EXPO` (an open
@@ -232,6 +232,19 @@ uplinked `set_profile`; `STANDBY` has no beacon row, so it listens without trans
 cloud API is gone: none was ever deployed, and the ground segment is being rebuilt as an interface
 over the satellite's own dashboard rather than a service the satellite reports into. `downlink`
 names one channel.
+
+**A mission id names a directory only with its database beside it** (2026-09-03). `comms.db` and
+`diag.db` number their missions independently, both from 1, so `DIAG` mission 3 and a `FLIGHT` trip
+3 are two missions with one id — and one `photos/<mission_id>/` for both meant deleting the bench run
+from the archive dialog took the trip's photographs with it. The second database files under a
+**sibling** root, `photos-diag/<mission_id>/`, chosen over `photos/<db>/<mission_id>/` because the
+leaf name stays a plain run of digits, which is the allowlist retention fences the most destructive
+code here with, and because nothing already on the card has to move. `common/config.py` →
+`photos_root_for` is the one mapping; PAYLOAD, DHS' delete and horizon, and the dashboard's two photo
+routes all go through it. PAYLOAD takes the root from the same `dhs_status` as the id and never
+separately — a mission whose database is missing reads as no mission, the same withholding a
+non-integer id gets. Do not reintroduce a single root, and do not give the sibling a suffix on the
+id instead: that would move the fence.
 
 **A safety fence is an allowlist, and it is also an inventory.** HOSTD's permitted set names
 everything root can `systemctl`, including levers no profile can reach, because a property that
@@ -447,7 +460,7 @@ Runtime data lives outside the checkout, created by systemd, never by `mkdir` in
 
 | Path | Contents | Created by |
 |---|---|---|
-| `/var/lib/cubesat/` | `comms.db`, `diag.db`, `photos/<mission_id>/`, `last-profile`, dashboard build | `config/tmpfiles.d/cubesat.conf` |
+| `/var/lib/cubesat/` | `comms.db`, `diag.db`, `photos/<mission_id>/`, `photos-diag/<mission_id>/`, `last-profile`, dashboard build | `config/tmpfiles.d/cubesat.conf` |
 | `/run/cubesat/` | `i2c.lock`, `hostd.sock`, `photo/` (a photograph with no mission, in RAM) | `config/tmpfiles.d/cubesat.conf` |
 | `/var/log/cubesat/` | `<service>.log` | `config/tmpfiles.d/cubesat.conf` |
 

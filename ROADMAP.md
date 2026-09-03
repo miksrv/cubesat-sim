@@ -29,7 +29,6 @@ code is worth writing.
 | [P6](#p6-the-autonomous-logging-profile) | `[~]` in progress | The autonomous logging profile — written, waiting on a walk |
 | [W1](#w1-mission-export-carries-no-photographs) | `[ ]` needs a decision | A mission export carries no photographs |
 | [W2](#w2-import-belongs-in-the-client-not-in-the-satellite) | `[ ]` not started | Import belongs in the client, not in the satellite |
-| [W3](#w3-photo-directories-collide-across-the-two-databases) | `[ ]` not started | Photo directories collide across the two databases — a live hazard |
 | [W4](#w4-adcs-mounting-offset--requested-2026-09-01-to-be-done-on-the-running-satellite) | `[ ]` needs the satellite | The ADCS mounting offset, captured as data |
 | [W5](#w5-a-ships-log-not-mission-events--requested-2026-09-01) | `[ ]` needs a decision | A ship's log, not "Mission Events" |
 | [W6](#w6-the-mesh-preset-both-nodes-are-moved--2026-09-02) | `[ ]` bench | Audit both mesh nodes against each other |
@@ -104,7 +103,8 @@ there, and both are still blocked on something structural rather than on effort.
 
 **Export is in the dialog only as far as the endpoint goes.** `GET /api/missions/<id>/export`
 returns `{mission, telemetry, attitude, radio}` as `mission-<id>.json`, and that body **carries no
-photographs** — the frames live under `photos/<mission_id>/` and are listed separately. So a dialog
+photographs** — the frames live in the mission's own photo directory (`photos/<mission_id>/`, or
+`photos-diag/<mission_id>/` for a `DIAG` run) and are listed separately. So a dialog
 that offers "export" and hands back a file with an empty camera panel will surprise someone, and the
 backend-less demo build replays a trip the same way. Closing that means either embedding the frames
 (a mission's worth of JPEGs inside one JSON) or exporting a container, and that is the decision
@@ -119,18 +119,6 @@ demo, already renders a recorded mission through the same widgets as the live vi
 means "open this exported file as a replay source" — no write path, no ownership question, no id
 collision, and it works in a browser that is not talking to a satellite at all. If import into the
 archive is genuinely wanted later, it is a DHS command like delete, not an upload endpoint.
-
-#### W3: Photo directories collide across the two databases
-
-**A photo directory is named after a mission id, and there are two id spaces.** `comms.db` and
-`diag.db` each number their missions from 1, while photographs are filed in one
-`photos/<mission_id>/` for both — so `DIAG` mission 3 and `FLIGHT` mission 3 share a directory.
-Retention has always had this (it removes the directory of any mission it ages out, in whichever
-database it is running against), but a person deleting a `DIAG` bench run from the dialog can now
-reach a `FLIGHT` trip's photographs in one click, which is a much easier way to meet it. The fix is
-to file frames under the database as well as the mission — `photos/<db>/<mission_id>/` — which is a
-migration of what is on the card, PAYLOAD's `path_for`, retention's fence and the dashboard's two
-photo routes. **Until then, do not delete a `DIAG` mission whose id also exists in `comms.db`.**
 
 ### W4: ADCS mounting offset — requested 2026-09-01, to be done on the running satellite
 

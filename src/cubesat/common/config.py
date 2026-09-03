@@ -97,6 +97,42 @@ LOG_DIR = Path(os.getenv("CUBESAT_LOG_DIR", "/var/log/cubesat"))
 DB_PATH = DATA_DIR / "comms.db"
 DIAG_DB_PATH = DATA_DIR / "diag.db"
 PHOTOS_DIR = DATA_DIR / "photos"
+
+
+def photos_root_for(database: str | Path, root: Path | None = None) -> Path:
+    """Which photo root a mission recorded in ``database`` files its frames under.
+
+    There are two databases and they number their missions independently, both
+    from 1, so one ``photos/<mission_id>/`` for both is a collision: a DIAG
+    bench run and a FLIGHT trip that happen to be mission 3 share a directory,
+    and deleting the first takes the second's photographs with it.
+
+    The mission database keeps the bare ``photos/`` it has always had — nothing
+    on an existing card moves — and every other database gets a root of its
+    own, ``photos-diag/`` for ``diag.db``. That is deliberately a sibling rather
+    than ``photos/<db>/<mission_id>/``: the leaf name stays a plain run of
+    digits, which is the allowlist ``dhs/retention.py`` fences the most
+    destructive code in this project with, and DIAG is a handful of bench runs
+    that do not deserve a level of nesting in front of every trip ever taken.
+
+    Derived rather than tabulated, so a third database cannot quietly inherit
+    ``comms.db``'s directory by being forgotten here. The name comes from
+    ``Path.stem``, which is always a single path segment: a database path
+    arriving off the wire — PAYLOAD reads one from ``dhs_status`` — can name a
+    root, never a place.
+
+    ``root`` is the mission database's root for callers that hold their own —
+    the dashboard is handed one — and every sibling is derived from *that*,
+    so a caller with a redirected root has both of its roots redirected rather
+    than one of each. It defaults to ``PHOTOS_DIR``, read at call time.
+    """
+    base = root if root is not None else PHOTOS_DIR
+    path = Path(database)
+    if path.name == DB_PATH.name:
+        return base
+    return base.parent / f"{base.name}-{path.stem}"
+
+
 #: Written by HOSTD after every profile application. Informational only —
 #: nothing reads it to decide anything. See "the profile is not persisted".
 LAST_PROFILE_FILE = DATA_DIR / "last-profile"

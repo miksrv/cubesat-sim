@@ -73,8 +73,10 @@ from __future__ import annotations
 import base64
 import functools
 import time
+from pathlib import Path
 from typing import Any
 
+from cubesat.common import config
 from cubesat.common.service import Service
 from cubesat.common.states import MissionState
 from cubesat.common.topics import (
@@ -142,6 +144,10 @@ class PayloadService(Service):
         self._last_read: float | None = None
         #: From dhs_status. None until DHS opens a mission.
         self._mission_id: int | None = None
+        #: The photo root the open mission files under, from the same message as
+        #: the id and only ever set with it. Two databases issue mission ids from
+        #: 1 apiece, so the id on its own does not name a directory.
+        self._photos_root: Path | None = None
         #: The last GNSS sub-object that carried a fix, with its own timestamp.
         self._position: dict[str, Any] | None = None
 
@@ -281,7 +287,7 @@ class PayloadService(Service):
             self._on_adcs_status(data)
 
     def _on_dhs_status(self, data: dict[str, Any]) -> None:
-        """Take the mission id from DHS, which owns it.
+        """Take the mission id **and the database it belongs to** from DHS, which owns both.
 
         Retained, so it arrives on connect. Kept as the integer DHS reports —
         the id is a row id, and every topic that names one (``dhs_status``,
@@ -289,14 +295,36 @@ class PayloadService(Service):
         becomes a directory name only at the filesystem boundary, in
         ``CameraController.path_for``. An id that is not an integer is treated
         as no mission rather than guessed at.
+
+        The id alone does not name a directory: ``comms.db`` and ``diag.db``
+        each issue mission ids from 1, so a DIAG bench run and a FLIGHT trip can
+        both be mission 3. ``database`` is on this same message, and the root it
+        maps to is taken **with** the id, never separately — that is what makes
+        the two impossible to get out of step, and what stops a bench run's
+        frames landing in a trip's directory. A mission arriving without a
+        database gets the id's own treatment: no mission, rather than a guess.
         """
         mission = data.get("mission")
         raw = mission.get("id") if isinstance(mission, dict) else None
         mission_id = raw if isinstance(raw, int) and not isinstance(raw, bool) else None
-        if mission_id == self._mission_id:
+        database = data.get("database")
+        root: Path | None = None
+        if mission_id is not None:
+            if isinstance(database, str):
+                root = config.photos_root_for(database)
+            else:
+                self.log.warning(
+                    "DHS reports mission %s without a database; not filing photographs",
+                    mission_id,
+                )
+                mission_id = None
+        if mission_id == self._mission_id and root == self._photos_root:
             return
-        self.log.info("mission id %s -> %s", self._mission_id, mission_id)
+        self.log.info(
+            "mission id %s -> %s, filing under %s", self._mission_id, mission_id, root
+        )
         self._mission_id = mission_id
+        self._photos_root = root
         # A mission opening is what starts photography, and its closing is what
         # ends it. Publishes the status itself when it acts.
         self._reconcile_mission_photos()
@@ -437,6 +465,7 @@ class PayloadService(Service):
     def _context(self, params: dict[str, Any]) -> CaptureContext:
         return CaptureContext(
             mission_id=self._mission_id,
+            photos_root=self._photos_root,
             state=self.mission_state,
             position=self._position,
             overlay=bool(params.get("overlay")),
@@ -472,7 +501,7 @@ class PayloadService(Service):
             storage=self._controller.storage().as_dict(),
             mission_photos=self._controller.mission_photos.as_dict(),
             mission_id=self._mission_id,
-            photo_dir=str(self._controller.path_for(self._mission_id)),
+            photo_dir=str(self._controller.path_for(self._mission_id, self._photos_root)),
         )
 
 

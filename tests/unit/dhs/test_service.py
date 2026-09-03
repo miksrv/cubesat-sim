@@ -589,6 +589,21 @@ def test_a_retention_pass_runs_as_soon_as_a_database_is_opened(dhs, monkeypatch)
     assert passes[0]["purge_photos"] == config.DHS_PURGE_PHOTOS
 
 
+def test_the_horizon_purges_the_photo_root_of_the_database_it_is_running_against(
+    dhs, monkeypatch
+):
+    # W3: both databases number their missions from 1, so diag.db's horizon
+    # naming photos/ would have aged out a trip's photographs on the strength
+    # of a bench run's id.
+    service, client = dhs
+    passes = []
+    monkeypatch.setattr(retention, "purge", lambda *a, **k: passes.append(k))
+    obc(client, profile=Profile.DIAG, persistence=Persistence.DIAG_DB)
+
+    assert passes[0]["photos_root"] == config.photos_root_for(config.DIAG_DB_PATH)
+    assert passes[0]["photos_root"] != config.PHOTOS_DIR
+
+
 def test_retention_runs_on_a_horizon_of_hours_and_not_on_every_tick(dhs, monkeypatch):
     # The horizon is measured in days, so a pass per tick is a scan of the
     # largest table in the file to delete nothing.
@@ -904,8 +919,8 @@ def recorded_mission(dhs, label="walk to work"):
     return mission_id
 
 
-def photos_of(mission_id):
-    directory = config.PHOTOS_DIR / str(mission_id)
+def photos_of(mission_id, root=None):
+    directory = (root if root is not None else config.PHOTOS_DIR) / str(mission_id)
     directory.mkdir(parents=True)
     (directory / "photo_20260901_071200.jpg").write_bytes(b"x" * 100)
     return directory
@@ -1040,6 +1055,26 @@ def test_a_delete_acts_on_the_database_the_recorder_is_writing(dhs):
 
     assert missions_in(config.DIAG_DB_PATH) == []
     assert last_delete(client)["ok"] is True
+
+
+def test_deleting_a_diag_run_cannot_reach_a_trips_photographs(dhs):
+    # W3, the case this closed: both databases number their missions from 1, so
+    # a bench run and a trip can both be mission 1, and the archive dialog is
+    # one click. The DIAG run's own frames go, the trip's stay.
+    service, client = dhs
+    obc(client, profile=Profile.DIAG, persistence=Persistence.DIAG_DB)
+    mission_id = status(client)["mission"]["id"]
+    service.tick()
+    obc(client, state=MissionState.STANDBY, profile=Profile.DIAG,
+        persistence=Persistence.DIAG_DB)
+    diag_photos = photos_of(mission_id, config.photos_root_for(config.DIAG_DB_PATH))
+    trip_photos = photos_of(mission_id)
+
+    delete(client, mission_id)
+
+    assert not diag_photos.exists()
+    assert trip_photos.exists()
+    assert last_delete(client)["photos"] == 1
 
 
 def test_a_command_that_is_not_ours_leaves_no_trace(dhs):

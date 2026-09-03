@@ -81,12 +81,22 @@ def comms(service_factory):
     return build
 
 
-def obc(client, state=MissionState.NOMINAL, profile=Profile.FLIGHT):
+def obc(client, state=MissionState.NOMINAL, profile=Profile.FLIGHT, boot=None):
     """Deliver the retained message COMMS takes its envelope from."""
     client.deliver(
         TOPICS["obc_status"],
-        {"status": state.value, "profile": profile.value, "cadence_scale": 1.0},
+        {
+            "status": state.value,
+            "profile": profile.value,
+            "cadence_scale": 1.0,
+            "boot": boot,
+        },
     )
+
+
+def boot_report(resumed=True, previous="FLIGHT", reason=None, at=1.0):
+    """OBC's verdict on how this run began — see obc/resume.py."""
+    return {"at": at, "previous": previous, "resumed": resumed, "reason": reason}
 
 
 def status(client):
@@ -530,6 +540,112 @@ def test_a_transmit_that_failed_is_retried_on_the_next_wake(comms):
     clock.advance(service.interval)
     service.tick()
     assert len(service._mesh._radio.sent) == 1
+
+
+# ── the boot beacon ─────────────────────────────────────────────────────────
+#
+# The counterpart of the going-down beacon: that one explains a disappearance,
+# this one explains a reappearance. Both are gated on the profile rather than on
+# the beacon flag, for the same reason.
+
+
+def test_a_resumed_trip_is_announced_once(comms):
+    service, client = comms()
+    obc(client, boot=boot_report())
+
+    assert len(service._mesh._radio.sent) == 1
+    line = service._mesh._radio.sent[0]
+    assert " boot=FLIGHT rs=1" in line
+    assert "why=" not in line
+
+
+def test_a_refusal_says_why_rather_than_nothing(comms):
+    # A satellite that silently declined to resume is indistinguishable from one
+    # that never woke up.
+    service, client = comms()
+    obc(client, boot=boot_report(resumed=False, reason="mains"))
+    assert " boot=FLIGHT rs=0 why=mains" in service._mesh._radio.sent[0]
+
+
+def test_an_ordinary_reboot_is_not_worth_the_airtime(comms):
+    # Nothing resumable was interrupted, so there is nothing to say.
+    service, client = comms()
+    obc(client, boot=boot_report(resumed=False, previous=None, reason="profile"))
+    assert service._mesh._radio.sent == []
+
+
+def test_the_retained_status_redelivered_does_not_repeat_it(comms):
+    # obc_status is retained, so a reconnect replays it — and a satellite that
+    # re-announced its own boot on every reconnect would be spending a shared
+    # mesh's airtime on old news.
+    service, client = comms()
+    report = boot_report()
+    obc(client, boot=report)
+    obc(client, boot=report)
+    obc(client, state=MissionState.LOW_POWER, boot=report)
+    assert len(service._mesh._radio.sent) == 1
+
+
+def test_a_second_boot_report_is_a_second_announcement(comms):
+    service, client = comms()
+    obc(client, boot=boot_report(at=1.0))
+    obc(client, boot=boot_report(at=2.0, resumed=False, reason="loop"))
+    assert len(service._mesh._radio.sent) == 2
+
+
+def test_a_silenced_transmitter_still_reports_its_boot(comms):
+    # Same rule as the going-down beacon and the acks: `beacon off` rations the
+    # schedule, not the messages that explain what the satellite is doing.
+    service, client = comms()
+    obc(client)
+    command(client, "set_comms_config", params={"beacon_enabled": False})
+    service._mesh._radio.sent.clear()
+
+    obc(client, boot=boot_report())
+
+    assert service.beacon_enabled is False
+    assert len(service._mesh._radio.sent) == 1
+
+
+def test_a_profile_that_forbids_the_radio_says_nothing(comms):
+    service, client = comms()
+    obc(client, profile=Profile.MAINTENANCE, boot=boot_report())
+    assert service._mesh._radio.sent == []
+
+
+def test_the_boot_beacon_counts_against_the_airtime_budget(comms):
+    # It leaves like any other transmission, so the scheduled beacon does not
+    # follow it seconds later saying the same thing more slowly.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client, boot=boot_report())
+    sent = len(service._mesh._radio.sent)
+
+    service.tick()
+
+    assert len(service._mesh._radio.sent) == sent
+
+
+def test_a_boot_beacon_that_will_not_transmit_is_logged_and_stepped_over(comms, caplog):
+    # A radio that is not there is not a reason to fail to come up: the trip has
+    # already resumed by the time this line is composed.
+    class Broken(MockRadio):
+        def send(self, payload):
+            raise OSError("device disconnected")
+
+    service, client = comms(radio=Broken())
+    with caplog.at_level(logging.WARNING):
+        obc(client, boot=boot_report())
+
+    assert service.running is True
+    assert "could not transmit the boot beacon" in caplog.text
+
+
+def test_a_boot_field_that_is_not_a_report_is_ignored(comms):
+    service, client = comms()
+    for junk in (None, "resumed", 7, []):
+        obc(client, boot=junk)
+    assert service._mesh._radio.sent == []
 
 
 # ── the going-down beacon ───────────────────────────────────────────────────

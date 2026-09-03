@@ -134,9 +134,14 @@ def wait_out(clock, client, seconds):
         beat(client, "eps", *MISSION_SERVICES)
 
 
-def hostd_says(client, profile, ttl_expires_at=None):
+def hostd_says(client, profile, ttl_expires_at=None, boot=False, previous=None):
     """HOSTD's retained answer. It carries the absolute TTL deadline, because
-    HOSTD holds the applied profile and so owns when that profile started."""
+    HOSTD holds the applied profile and so owns when that profile started.
+
+    ``boot`` and ``previous`` are what a boot publishes: whether anything has
+    asked for a profile since the machine came up, and what the run before it
+    was doing. See W11 and ``obc/resume.py``.
+    """
     client.deliver(
         TOPICS["host_status"],
         {
@@ -144,6 +149,8 @@ def hostd_says(client, profile, ttl_expires_at=None):
             "profile_requested": profile,
             "ttl_expires_at": ttl_expires_at,
             "errors": [],
+            "boot": boot,
+            "previous": previous,
         },
     )
 
@@ -355,4 +362,78 @@ def test_coming_home_with_a_flat_pack_and_plugging_in_recovers(service_factory, 
 
     wait_for_state(client, MissionState.NOMINAL.value)
     assert host_actions(client, "poweroff") == []
+    shut_down(service, thread)
+
+
+def test_a_reset_on_a_walk_puts_the_trip_back_together(service_factory, monkeypatch):
+    # The scenario W11 exists for, through the real run loop: an hour into a
+    # walk something reboots the Pi. HOSTD comes up in HOSTED, as it always
+    # does, and what happens next is decided by a measurement — no mains — not
+    # by the file that names the profile.
+    clock = Clock()
+    service, client, thread = launch(service_factory, monkeypatch, clock=clock)
+    wait_for_state(client, MissionState.STANDBY.value)
+
+    hostd_says(
+        client,
+        "HOSTED",
+        boot=True,
+        previous={
+            "profile": "FLIGHT",
+            "ttl_expires_at": clock.now + 540 * 60.0,
+            "mission_label": "walk to work",
+            "resume_count": 0,
+        },
+    )
+    battery(client, 62.0, external_power=False)
+
+    assert until(lambda: host_actions(client, "apply_profile"))
+    asked = host_actions(client, "apply_profile")[-1]
+    assert asked["profile"] == "FLIGHT"
+    assert asked["resume"] is True
+    # Under its own name, and with the remainder of the strap it already had.
+    assert asked["mission_label"] == "walk to work"
+    assert asked["ttl_minutes"] == 540.0
+
+    # HOSTD obeys, the subsystems come back, and the recording resumes — with
+    # the mission row saying it is the second half of a trip.
+    hostd_says(client, "FLIGHT", ttl_expires_at=clock.now + 540 * 60.0)
+    report_in(client, *MISSION_SERVICES)
+    wait_for_state(client, MissionState.NOMINAL.value)
+    status = client.payloads(TOPICS["obc_status"])[-1]
+    assert status["mission_start_reason"] == "resume"
+    assert status["mission_label"] == "walk to work"
+    assert status["boot"]["resumed"] is True
+
+    # And once it has outlived the reset that started it, the fence is cleared:
+    # three resumes only mean a boot loop when all three were short.
+    wait_out(clock, client, config.RESUME_SETTLE_SEC)
+    assert until(lambda: host_actions(client, "clear_resume"))
+
+    shut_down(service, thread)
+
+
+def test_a_reset_at_a_desk_comes_up_reachable(service_factory, monkeypatch):
+    # The other half, and the one the whole design protects: the same file, the
+    # same interrupted FLIGHT, and mains present. It stays in HOSTED with SSH.
+    clock = Clock()
+    service, client, thread = launch(service_factory, monkeypatch, clock=clock)
+    wait_for_state(client, MissionState.STANDBY.value)
+
+    hostd_says(
+        client,
+        "HOSTED",
+        boot=True,
+        previous={
+            "profile": "FLIGHT",
+            "ttl_expires_at": clock.now + 540 * 60.0,
+            "mission_label": "walk to work",
+            "resume_count": 0,
+        },
+    )
+    battery(client, 62.0, external_power=True)
+
+    assert until(lambda: client.payloads(TOPICS["obc_status"])[-1].get("boot") is not None)
+    assert host_actions(client, "apply_profile") == []
+    assert client.payloads(TOPICS["obc_status"])[-1]["boot"]["reason"] == "mains"
     shut_down(service, thread)

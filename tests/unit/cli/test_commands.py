@@ -15,7 +15,7 @@ from cubesat.cli.commands import mission as mission_cmd
 from cubesat.cli.commands import profile as profile_cmd
 from cubesat.cli.commands import status as status_cmd
 from cubesat.cli.session import Session
-from cubesat.common import config, profiles
+from cubesat.common import config, last_profile, profiles
 from cubesat.common.states import EndReason, Profile
 from cubesat.common.topics import TOPICS
 from cubesat.dhs import schema
@@ -251,8 +251,10 @@ def test_status_names_the_subsystems_obc_declared_lost(session, fake_client):
 def test_status_reports_the_profile_before_the_last_boot(
     session, fake_client, tmp_path, monkeypatch
 ):
-    # HOSTD writes it, nothing reads it to decide anything, and it answers the
-    # question no live topic can: what was it doing when it died?
+    # HOSTD writes it, and it answers the question no live topic can: what was
+    # it doing when it died? The satellite reads it for one narrow purpose —
+    # resuming an interrupted FLIGHT, and only after measuring that there is no
+    # mains — so what is printed is the evidence that rule was given.
     path = tmp_path / "last-profile"
     path.write_text("FLIGHT\n")
     monkeypatch.setattr(config, "LAST_PROFILE_FILE", path)
@@ -261,6 +263,72 @@ def test_status_reports_the_profile_before_the_last_boot(
     _code, lines = status_cmd.show(session)
 
     assert "Before this boot: FLIGHT" in text(lines)
+
+
+def test_status_reports_the_mission_and_the_resumes_behind_this_boot(
+    session, fake_client, tmp_path, monkeypatch
+):
+    path = tmp_path / "last-profile"
+    last_profile.write(
+        path,
+        last_profile.PreviousRun(
+            profile="FLIGHT", mission_label="walk to work", resume_count=2
+        ),
+    )
+    monkeypatch.setattr(config, "LAST_PROFILE_FILE", path)
+    fake_client.deliver(TOPICS["obc_status"], {"status": "STANDBY", "profile": "HOSTED"})
+
+    _code, lines = status_cmd.show(session)
+
+    assert "Before this boot: FLIGHT (walk to work), 2 resume(s) in a row" in text(lines)
+
+
+def test_status_reports_a_resumed_trip(session, fake_client, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "LAST_PROFILE_FILE", tmp_path / "absent")
+    fake_client.deliver(
+        TOPICS["obc_status"],
+        {
+            "status": "NOMINAL",
+            "profile": "FLIGHT",
+            "boot": {"at": 1.0, "previous": "FLIGHT", "resumed": True, "reason": None},
+        },
+    )
+    _code, lines = status_cmd.show(session)
+    assert "This boot: resumed FLIGHT after a reset" in text(lines)
+
+
+def test_status_reports_a_refusal_to_resume_with_its_reason(
+    session, fake_client, tmp_path, monkeypatch
+):
+    # The half an operator most needs: it woke up, it knew what it had been
+    # doing, and it decided not to.
+    monkeypatch.setattr(config, "LAST_PROFILE_FILE", tmp_path / "absent")
+    fake_client.deliver(
+        TOPICS["obc_status"],
+        {
+            "status": "STANDBY",
+            "profile": "HOSTED",
+            "boot": {"at": 1.0, "previous": "FLIGHT", "resumed": False, "reason": "loop"},
+        },
+    )
+    _code, lines = status_cmd.show(session)
+    assert "This boot: did not resume FLIGHT (loop)" in text(lines)
+
+
+def test_status_says_nothing_about_a_boot_that_interrupted_nothing(
+    session, fake_client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "LAST_PROFILE_FILE", tmp_path / "absent")
+    fake_client.deliver(
+        TOPICS["obc_status"],
+        {
+            "status": "STANDBY",
+            "profile": "HOSTED",
+            "boot": {"at": 1.0, "previous": None, "resumed": False, "reason": "profile"},
+        },
+    )
+    _code, lines = status_cmd.show(session)
+    assert "This boot" not in text(lines)
 
 
 def test_status_says_nothing_about_a_last_profile_file_that_is_absent(

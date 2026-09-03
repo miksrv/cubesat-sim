@@ -287,6 +287,10 @@ class CommsService(Service):
         #: ``beacon_enabled`` is false anyway, because the envelope is unknown.
         self._beacon_requested = True
 
+        #: The ``at`` of the boot report already transmitted, so the retained
+        #: obc_status redelivered on a reconnect does not say it twice.
+        self._boot_reported: Any = None
+
         #: What the active profile permits, resolved once per profile change
         #: rather than per tick, so a misconfigured profile is logged once.
         self._downlink = NO_DOWNLINK
@@ -436,6 +440,52 @@ class CommsService(Service):
         with self._lock:
             self._going_down_beacon()
 
+    def _on_boot_report(self, report: Any) -> None:
+        """Say once, on the air, how this run began — if it began interestingly.
+
+        OBC publishes the verdict of the resume rule on ``obc_status``
+        (``obc/resume.py``); this is where it becomes a transmission. Three
+        things bound it:
+
+        * **Only when something resumable was interrupted.** ``previous`` is
+          null for an ordinary reboot in ``HOSTED``, and a desk reboot is not
+          worth a shared mesh's airtime.
+        * **Once per report.** Keyed on the report's own ``at``, so the retained
+          ``obc_status`` arriving again on a reconnect does not re-transmit it.
+          A COMMS restarted mid-trip does say it again — one line, and the
+          alternative is persisting radio history to the card, which this
+          service deliberately does not do.
+        * **Gated on ``lora_listening``, not on ``beacon_enabled``.** Same rule
+          as the going-down beacon and the acks: a runtime flag set an hour ago
+          must not silence the message that explains what the satellite is now
+          doing. A refusal is transmitted for exactly that reason — a satellite
+          that silently declined to resume is indistinguishable from one that
+          never woke up.
+        """
+        if not isinstance(report, dict):
+            return
+        previous = report.get("previous")
+        if not isinstance(previous, str) or not previous:
+            return
+        stamp = report.get("at")
+        if stamp == self._boot_reported:
+            return
+        self._boot_reported = stamp
+        if not self.lora_listening:
+            return
+        fields = {"boot": previous, "rs": "1" if report.get("resumed") else "0"}
+        reason = report.get("reason")
+        if not report.get("resumed") and isinstance(reason, str) and reason:
+            fields["why"] = reason
+        if self._beacon(boot=fields):
+            self.log.info("boot beacon sent: %s", fields)
+            # It costs the airtime budget like any other transmission, so it
+            # holds off the scheduled beacon that would otherwise follow it
+            # seconds later saying the same thing more slowly.
+            self._last_beacon = self._clock()
+        else:
+            self.log.warning("could not transmit the boot beacon")
+
     def _going_down_beacon(self) -> None:
         """One last line: where it was, what the battery was, and that it chose this.
 
@@ -526,13 +576,22 @@ class CommsService(Service):
             "reason_code": data.get("reason_code"),
         }
 
-    def _on_obc_status(self, _data: dict[str, Any]) -> None:
+    def _on_obc_status(self, data: dict[str, Any]) -> None:
         """Re-resolve the downlink envelope when the profile changes.
 
         The base class has already absorbed the profile and the mission state
         from this message. Only a change is acted on, so the profiles file is
         read once per profile rather than twice a minute.
         """
+        self._reconcile_downlink()
+        # After the envelope, never before it: on the first status of a run this
+        # message carries both the profile and the boot report, and a boot
+        # beacon composed before `_downlink` is resolved would be gated on an
+        # envelope nobody had read yet — silent, and marked as said.
+        self._on_boot_report(data.get("boot"))
+
+    def _reconcile_downlink(self) -> None:
+        """Resolve what this profile permits, once per change."""
         profile = self.profile
         if profile is None or profile is self._downlink_profile:
             return
@@ -1073,7 +1132,13 @@ class CommsService(Service):
         if self._beacon():
             self._last_beacon = now
 
-    def _beacon(self, *, going_down: bool = False, reply: dict[str, str] | None = None) -> bool:
+    def _beacon(
+        self,
+        *,
+        going_down: bool = False,
+        boot: dict[str, str] | None = None,
+        reply: dict[str, str] | None = None,
+    ) -> bool:
         """One line, one complete observation. See ``beacon.py`` for the format."""
         line = beacon.build(
             now=time.time(),
@@ -1083,6 +1148,7 @@ class CommsService(Service):
             adcs=self._adcs,
             mission_id=self._mission_id,
             going_down=going_down,
+            boot=boot,
             reply=reply,
         )
         sent = self._mesh.send(line)

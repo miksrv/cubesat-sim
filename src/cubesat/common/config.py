@@ -133,8 +133,11 @@ def photos_root_for(database: str | Path, root: Path | None = None) -> Path:
     return base.parent / f"{base.name}-{path.stem}"
 
 
-#: Written by HOSTD after every profile application. Informational only —
-#: nothing reads it to decide anything. See "the profile is not persisted".
+#: Written by HOSTD after every profile application, as JSON. It never decides
+#: whether to restore a profile — only *which* one, and only after the physical
+#: evidence has already said yes: no mains at boot. See "the profile is not
+#: persisted" in docs/concept.md, and ``obc/resume.py`` for the rule that reads
+#: it. Everything else about it is information: ``cubesat status`` prints it.
 LAST_PROFILE_FILE = DATA_DIR / "last-profile"
 DASHBOARD_ROOT = Path(os.getenv("CUBESAT_DASHBOARD_ROOT", str(DATA_DIR / "dashboard")))
 
@@ -197,6 +200,26 @@ EPS_CHARGE_RATE_WINDOW_SEC: float = float(
 #: Below this the rate is null and the power policy falls back to the mains pin.
 EPS_CHARGE_RATE_MIN_SPAN_SEC: float = float(
     os.getenv("EPS_CHARGE_RATE_MIN_SPAN_SEC", _eps.get("charge_rate_min_span_sec", 300.0))
+)
+
+_resume = _yaml.get("resume", {})
+
+#: How many resumes in a row read as a boot loop rather than as a flight. See
+#: ``obc/resume.py``; the fence is a lifetime rather than a counter, so this
+#: counts *short* sessions in a row and not resumes in general.
+RESUME_MAX_CONSECUTIVE: int = int(
+    os.getenv("CUBESAT_RESUME_MAX_CONSECUTIVE", _resume.get("max_consecutive", 3))
+)
+
+#: How long a resumed session must live before the consecutive count is cleared.
+RESUME_SETTLE_SEC: float = float(
+    os.getenv("CUBESAT_RESUME_SETTLE_SEC", _resume.get("settle_sec", 300.0))
+)
+
+#: How long OBC waits for the first ``eps_status`` before giving up on resuming.
+#: A missing measurement is not a measurement of no mains.
+RESUME_EVIDENCE_TIMEOUT_SEC: float = float(
+    os.getenv("CUBESAT_RESUME_EVIDENCE_TIMEOUT_SEC", _resume.get("evidence_timeout_sec", 60.0))
 )
 
 _dhs = _yaml.get("dhs", {})

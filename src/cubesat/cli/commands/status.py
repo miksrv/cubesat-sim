@@ -11,9 +11,11 @@ database, which meant it could not answer at all in the profiles that record
 nothing. Now it answers the same way everywhere.
 
 The last profile before the current boot comes off the disk instead, from
-``/var/lib/cubesat/last-profile``. It is the one thing here the satellite itself
-never acts on — HOSTD writes it and nothing reads it to decide anything — and it
-answers the question no live topic can: what was it doing when it died?
+``/var/lib/cubesat/last-profile``. It answers the question no live topic can:
+what was it doing when it died? The satellite reads the same file for one narrow
+purpose — resuming an interrupted ``FLIGHT``, and only after measuring that
+there is no mains (``obc/resume.py``) — so what is printed here is the evidence
+that rule was given, including how many resumes in a row it has taken.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 from cubesat.cli.session import Session
-from cubesat.common import config
+from cubesat.common import config, last_profile
 
 SNAPSHOT = (
     "host_status",
@@ -54,6 +56,9 @@ def show(session: Session) -> tuple[int, list[str]]:
     last = _last_profile()
     if last is not None:
         lines.append(f"Before this boot: {last}")
+    boot = obc.get("boot")
+    if isinstance(boot, dict) and boot.get("previous"):
+        lines.append(f"This boot: {_boot(boot)}")
     errors = (seen.get("host_status") or {}).get("errors") or []
     lines.extend(f"⚠ HOSTD: {error}" for error in errors)
     return 0, lines
@@ -150,9 +155,22 @@ def _subsystems(obc: dict[str, Any]) -> str:
 
 
 def _last_profile() -> str | None:
-    """Information, never instruction — see the module docstring."""
-    try:
-        text = config.LAST_PROFILE_FILE.read_text().strip()
-    except OSError:
+    """What the run before this boot was doing — see the module docstring."""
+    previous = last_profile.read(config.LAST_PROFILE_FILE)
+    if previous is None or not previous.profile:
         return None
-    return text or None
+    line = previous.profile
+    if previous.mission_label:
+        line += f" ({previous.mission_label})"
+    if previous.resume_count:
+        line += f", {previous.resume_count} resume(s) in a row"
+    return line
+
+
+def _boot(boot: dict[str, Any]) -> str:
+    """OBC's verdict on this boot: resumed, or refused with a reason."""
+    previous = boot.get("previous")
+    if boot.get("resumed"):
+        return f"resumed {previous} after a reset"
+    reason = boot.get("reason")
+    return f"did not resume {previous}" + (f" ({reason})" if reason else "")

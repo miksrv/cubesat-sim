@@ -33,6 +33,14 @@ lon=37.6173 alt=156 sat=23 m=42
     sat  satellites in the fix                        m    mission id
     down present, and only ever ``1``, on the going-down beacon
 
+**``boot=`` is the first, and it is the counterpart of ``down=``.** A satellite
+that resumes a trip after a reset — or declines to — says so once on coming up:
+``boot=FLIGHT rs=1`` for a resumed trip, ``boot=FLIGHT rs=0 why=mains`` for a
+refusal and the reason for it. It is transmitted only when something resumable
+was interrupted, because a desk reboot in ``HOSTED`` is not news and airtime on
+a shared mesh is not free. A refusal that says nothing is indistinguishable from
+a satellite that never woke up, which is why ``rs=0`` is transmitted at all.
+
 **``down=1`` is the last message a satellite sends.** COMMS transmits it once on
 entering ``CRITICAL``, the only state permitted to power the host off. Without
 it, a satellite that shut itself down at 8 % battery leaves a silence
@@ -132,7 +140,7 @@ DROP_ORDER: tuple[tuple[str, ...], ...] = (
 #: reply contract (docs/concept.md → The radio command contract): an ack that
 #: dropped the name of the command it acknowledges is an ordinary beacon that
 #: cost the airtime and answered nothing.
-CORE_KEYS = ("t", "down", "re", "ok", "err")
+CORE_KEYS = ("t", "down", "re", "ok", "err", "boot", "rs", "why")
 
 
 def build(
@@ -144,6 +152,7 @@ def build(
     adcs: dict[str, Any] | None = None,
     mission_id: Any = None,
     going_down: bool = False,
+    boot: dict[str, str] | None = None,
     reply: dict[str, str] | None = None,
     limit: int = MAX_RADIO_MESSAGE_BYTES,
 ) -> str:
@@ -163,6 +172,12 @@ def build(
         # fields of telemetry: this is the one line where what happened matters
         # more than what was measured.
         _put(fields, "down", "1")
+    if boot:
+        # The same slot as ``down``, for the same reason: what happened matters
+        # more than what was measured, and this line is read by a person who
+        # wants to know whether the trip is still being recorded.
+        for key, value in boot.items():
+            _put(fields, key, value)
     if reply:
         # The ack and query fields, right after the headline slot and before
         # the telemetry: ``re=`` is what makes this transmission an answer, and

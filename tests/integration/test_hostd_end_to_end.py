@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from cubesat.common import config, profiles
+from cubesat.common import last_profile as last_profile_file
 from cubesat.common.states import Profile
 from cubesat.common.topics import TOPICS
 from cubesat.hostd.allowlist import DASHBOARD_UNIT, unit_for
@@ -114,7 +115,7 @@ def test_a_cold_boot_comes_up_idle_reachable_and_in_the_default_profile(hostd, s
     for unit in MISSION_UNITS:
         expected = "active" if unit == unit_for("comms") else "inactive"
         assert status["units"][unit] == expected
-    assert config.LAST_PROFILE_FILE.read_text().strip() == Profile.HOSTED.value
+    assert last_profile_file.read(config.LAST_PROFILE_FILE).profile == Profile.HOSTED.value
     # And the emergency door is open.
     assert until(socket_path.exists)
 

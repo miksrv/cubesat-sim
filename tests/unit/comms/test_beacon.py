@@ -228,7 +228,11 @@ def test_every_field_is_either_droppable_or_declared_core():
     # So a field added without a decision about its priority fails here rather
     # than silently becoming un-droppable.
     everything = beacon.build(
-        mission_id=42, going_down=True, reply={"re": "x", "ok": "0", "err": "unknown"}, **FULL
+        mission_id=42,
+        going_down=True,
+        boot={"boot": "FLIGHT", "rs": "0", "why": "mains"},
+        reply={"re": "x", "ok": "0", "err": "unknown"},
+        **FULL,
     )
     emitted = set(read(everything))
     droppable = {key for group in beacon.DROP_ORDER for key in group}

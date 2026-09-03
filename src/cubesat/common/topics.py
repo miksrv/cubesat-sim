@@ -13,9 +13,10 @@ from typing import Any
 
 TOPICS: dict[str, str] = {
     # Ground -> satellite. One topic for every command; the "command" field
-    # selects the handler. COMMS re-publishes anything it receives over LoRa onto
-    # this same topic, so nothing downstream needs to know which channel a
-    # command arrived on.
+    # selects the handler. COMMS re-publishes an uplink onto this same topic, so
+    # nothing downstream needs to know which *link* a command arrived on. Which
+    # mesh channel it must have arrived on is COMMS' own rule, applied before
+    # any of this — see comms/service.py -> _refuse_uplink.
     "command": "cubesat/command",
     # OBC -> HOSTD, and back. host/status reports the ACHIEVED profile
     # separately from the requested one.
@@ -86,6 +87,45 @@ RETAINED = frozenset(
         TOPICS["dhs_telemetry"],
     }
 )
+
+
+# ── what cubesat/payload/photo carries ──────────────────────────────────────
+#
+# The values on that topic's own fields, here rather than in a service because
+# two services now speak them: PAYLOAD writes them, and since 2026-09-03 COMMS
+# reads them to answer ``!photo`` over the radio with the frame's size and
+# number. This file is already the readable definition of the MQTT contract, and
+# a shared vocabulary living inside one of the two services would make the other
+# import it — which is how a bus architecture quietly grows a dependency graph.
+
+#: ``kind``: a photograph somebody asked for, against one a mission took of
+#: itself on its 300 s cadence. One topic, two payload shapes — see the topic's
+#: own comment above for why only one of them carries the image. The distinction
+#: is load-bearing for the radio ack too: an ack window is 10 s wide against a
+#: 300 s cadence, so roughly one ``!photo`` in thirty would otherwise be answered
+#: with the mission's own frame — a plausible wrong number rather than an error.
+#:
+#: ``KIND_MISSION`` was ``"timelapse"`` until 2026-09-01, and that rename is the
+#: sort that breaks a consumer silently: the ground segment already lost every
+#: frame once to a ``kind`` mismatch it invented on its own side. Change it here
+#: and in cubesat-groundstation's decodePhoto in the same breath.
+KIND_PHOTO = "photo"
+KIND_MISSION = "mission_frame"
+
+#: ``status``.
+STATUS_SUCCESS = "SUCCESS"
+STATUS_ERROR = "ERROR"
+
+#: ``reason_code``: why a capture did not happen, in one word, published
+#: alongside the sentence a person reads. The sentence cannot travel over the
+#: radio at all — a beacon field may not contain a space, and a truncated
+#: English clause is exactly the plausible wrong answer this project refuses —
+#: so the cause is published as a code as well. Three, because there are three
+#: ways to be told no and they send somebody to three different places: the
+#: mission state, the card, the camera.
+REASON_STATE = "state"
+REASON_NOSPACE = "nospace"
+REASON_CAMERA = "camera"
 
 
 def envelope(**fields: Any) -> str:

@@ -196,12 +196,16 @@ def _beacon(session: Session, state: str) -> tuple[int, list[str]]:
     The profile decides whether the radio runs at all, so this cannot widen
     anything: in ``MAINTENANCE`` it is refused by COMMS and the status below says
     so rather than this tool pretending otherwise.
+
+    The parameter is ``beacon_enabled``; it was ``lora_enabled`` until
+    2026-09-03. This tool ships with the satellite, so it sends the current name
+    only — COMMS accepts the old one for clients that do not.
     """
     session.subscribe("comms_status")
     wanted = state == "on"
-    session.send("set_comms_config", lora_enabled=wanted)
+    session.send("set_comms_config", beacon_enabled=wanted)
     answer = session.await_message(
-        "comms_status", lambda payload: payload.get("lora_enabled") is wanted, timeout=10.0
+        "comms_status", lambda payload: payload.get("beacon_enabled") is wanted, timeout=10.0
     )
     if answer is not None:
         return 0, [f"Beacon {state}."]

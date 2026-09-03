@@ -209,7 +209,10 @@ def test_a_command_typed_into_a_phone_comes_out_in_a_shape_obc_accepts(
     service, client = build(service_factory, monkeypatch, radio=radio)
     thread = start(service)
     announce(client)
-    uplink = '{"command":"set_profile","params":{"profile":"HOSTED"},"request_id":"req_010"}'
+    # Twelve bytes of thumb-typing, against a 240-byte message. Since
+    # 2026-09-03 this is the *only* shape the radio takes: JSON on the air was
+    # removed, and the compact table is the whole vocabulary.
+    uplink = "profile hosted"
     assert len(uplink.encode("utf-8")) < MAX_RADIO_MESSAGE_BYTES
 
     radio.inject(uplink)
@@ -217,23 +220,27 @@ def test_a_command_typed_into_a_phone_comes_out_in_a_shape_obc_accepts(
     stop(service, thread)
 
     published = [p for p in client.published if p.topic == TOPICS["command"]]
-    # Byte for byte, so a field this build has never heard of still arrives.
-    assert published[0].payload == uplink
     parsed = commands.parse(json.loads(published[0].payload))
     assert parsed is not None and parsed.name == commands.SET_PROFILE
-    assert parsed.request_id == "req_010"
     request = commands.profile_request(parsed)
     assert request is not None and request.profile == "HOSTED"
+    # And nothing the compact spelling cannot say came along for the ride: no
+    # request_id over the air, no TTL, no mission label.
+    assert parsed.request_id is None
+    assert request.ttl_minutes is None and request.mission_label is None
 
 
 def test_mesh_chatter_never_reaches_the_bus(service_factory, monkeypatch):
+    # The third line is the one that changed on 2026-09-03: hand-composed JSON
+    # is no longer a command over the air either, so it sits with the chat.
     radio = MockRadio()
     service, client = build(service_factory, monkeypatch, radio=radio)
     thread = start(service)
     announce(client)
     radio.inject("anyone out there?")
     radio.inject('{"note": "still not a command"}')
-    radio.inject('{"command": "recover"}')
+    radio.inject('{"command": "safe_mode"}')
+    radio.inject("recover")
     assert wait_until(lambda: relayed(client))
     stop(service, thread)
 
@@ -256,15 +263,15 @@ def test_a_ground_command_cannot_switch_on_a_channel_the_profile_forbids(
     announce(client, profile=Profile.MAINTENANCE)
     client.deliver(
         TOPICS["command"],
-        {"command": "set_comms_config", "params": {"lora_enabled": True}},
+        {"command": "set_comms_config", "params": {"beacon_enabled": True}},
     )
 
-    assert wait_until(lambda: service._lora_requested is True), "the command was never handled"
+    assert wait_until(lambda: service._beacon_requested is True), "the command was never handled"
     stop(service, thread)
 
     # Handled, remembered, and it changed nothing that matters: the ground asked
     # for the transmitter and the profile still refuses it.
-    assert service.lora_enabled is False
+    assert service.beacon_enabled is False
     assert radio.sent == []
 
 
@@ -272,7 +279,7 @@ def test_silencing_the_radio_over_the_radio_is_recoverable_over_the_radio(
     service_factory, monkeypatch
 ):
     # A ground command can turn a permitted channel off — and because
-    # lora_enabled gates transmitting only, the same radio can turn it back on.
+    # beacon_enabled gates transmitting only, the same radio can turn it back on.
     # Otherwise this would be a one-way door with the key on the far side.
     radio = MockRadio()
     service, client = build(service_factory, monkeypatch, radio=radio)
@@ -280,17 +287,17 @@ def test_silencing_the_radio_over_the_radio_is_recoverable_over_the_radio(
     announce(client)
     assert wait_until(lambda: len(radio.sent) >= 2)
 
-    radio.inject('{"command":"set_comms_config","params":{"lora_enabled":false}}')
+    radio.inject("beacon off")
     assert wait_until(lambda: relayed(client))
     loop_back(client)
-    assert wait_until(lambda: client.last(TOPICS["comms_status"])["lora_enabled"] is False)
+    assert wait_until(lambda: client.last(TOPICS["comms_status"])["beacon_enabled"] is False)
     quiet_since = len(radio.sent)
     time.sleep(0.1)
     assert len(radio.sent) == quiet_since, "the transmitter did not stop"
     # Still listening, and still saying so.
     assert client.last(TOPICS["comms_status"])["lora_listening"] is True
 
-    radio.inject('{"command":"set_comms_config","params":{"lora_enabled":true}}')
+    radio.inject("beacon on")
     assert wait_until(lambda: len(relayed(client)) >= 2), "the radio had gone deaf"
     loop_back(client)
     assert wait_until(lambda: len(radio.sent) > quiet_since), "the radio did not come back"
@@ -313,7 +320,7 @@ def test_safe_stops_talking_but_never_stops_listening(
     assert service.interval > 0, "SAFE must keep waking, or it cannot hear"
     silent_at = len(radio.sent)
 
-    radio.inject('{"command":"recover"}')
+    radio.inject("recover")
     assert wait_until(lambda: relayed(client)), "SAFE went deaf"
     stop(service, thread)
 
@@ -357,16 +364,16 @@ def test_a_satellite_that_powers_itself_off_says_so_first(service_factory, monke
 def test_the_going_down_beacon_outlives_a_ground_command_that_silenced_the_radio(
     service_factory, monkeypatch
 ):
-    # lora_enabled gates transmitting, but not this. A flag somebody set an hour
+    # beacon_enabled gates transmitting, but not this. A flag somebody set an hour
     # ago must not silence the one message that explains a disappearance.
     radio = MockRadio()
     service, client = build(service_factory, monkeypatch, radio=radio)
     thread = start(service)
     announce(client)
-    radio.inject('{"command":"set_comms_config","params":{"lora_enabled":false}}')
+    radio.inject("beacon off")
     assert wait_until(lambda: relayed(client))
     loop_back(client)
-    assert wait_until(lambda: client.last(TOPICS["comms_status"])["lora_enabled"] is False)
+    assert wait_until(lambda: client.last(TOPICS["comms_status"])["beacon_enabled"] is False)
     quiet_since = len(radio.sent)
 
     announce(client, state=MissionState.CRITICAL)

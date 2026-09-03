@@ -29,8 +29,16 @@ from cubesat.common import metrics as metrics_module
 from cubesat.common import profiles as profiles_module
 from cubesat.common.profiles import ProfileConfig
 from cubesat.common.states import MissionState, Profile
-from cubesat.common.topics import RETAINED, TOPICS
-from cubesat.comms.service import CommsService
+from cubesat.common.topics import (
+    KIND_MISSION,
+    KIND_PHOTO,
+    REASON_STATE,
+    RETAINED,
+    STATUS_ERROR,
+    STATUS_SUCCESS,
+    TOPICS,
+)
+from cubesat.comms.service import ACK_DELAY_SEC, MAX_PENDING_ACKS, CommsService
 from cubesat.hal.interfaces import MAX_RADIO_MESSAGE_BYTES
 from cubesat.hal.mock.radio import MockRadio
 
@@ -39,7 +47,9 @@ FIX = {"lat": 55.75583, "lon": 37.61733, "alt": 156.4, "fix": True, "satellites"
 ADCS = {"roll": 1.2, "yaw": 178.9, "gnss": FIX}
 SCIENCE = {"temperature": 23.4, "humidity": 45.2, "pressure": 1013.0, "light": 412.0}
 
-RECOVER = '{"command": "recover"}'
+#: The shortest accepted uplink there is, and since 2026-09-03 the only shape
+#: the radio takes at all: a bare compact verb.
+RECOVER = "recover"
 
 
 class Clock:
@@ -118,7 +128,7 @@ def test_the_radio_is_probed_even_before_a_profile_has_said_anything(comms):
     service, client = comms()
     service.on_start()
     assert service._mesh.present is True
-    assert service.lora_enabled is False
+    assert service.beacon_enabled is False
 
 
 def test_a_radio_that_never_answered_says_so_rather_than_staying_silent(comms):
@@ -140,6 +150,9 @@ def test_comms_subscribes_to_everything_the_packet_is_assembled_from(comms):
         TOPICS["eps_status"],
         TOPICS["adcs_status"],
         TOPICS["payload_data"],
+        # For the !photo ack alone, and the one payload deliberately not cached
+        # whole: it carries the image.
+        TOPICS["payload_photo"],
         TOPICS["dhs_status"],
     }
 
@@ -251,7 +264,7 @@ def test_the_profile_decides_whether_the_beacon_starts_on(comms, profile, transm
     # way afterwards, for every profile whose envelope permits it.
     service, client = comms()
     obc(client, profile=profile)
-    assert service.lora_enabled is transmitting
+    assert service.beacon_enabled is transmitting
 
 
 def test_a_quiet_profile_can_be_asked_to_beacon(comms):
@@ -260,10 +273,10 @@ def test_a_quiet_profile_can_be_asked_to_beacon(comms):
     # this one command.
     service, client = comms()
     obc(client, profile=Profile.DEMO)
-    assert service.lora_enabled is False
+    assert service.beacon_enabled is False
 
-    command(client, "set_comms_config", params={"lora_enabled": True})
-    assert service.lora_enabled is True
+    command(client, "set_comms_config", params={"beacon_enabled": True})
+    assert service.beacon_enabled is True
 
 
 def test_entering_a_profile_resets_the_beacon_to_that_profile_s_default(comms):
@@ -273,10 +286,10 @@ def test_entering_a_profile_resets_the_beacon_to_that_profile_s_default(comms):
     # first time anybody ever turned the beacon on.
     service, client = comms()
     obc(client, profile=Profile.FLIGHT)
-    assert service.lora_enabled is True
+    assert service.beacon_enabled is True
 
     obc(client, profile=Profile.DEMO)
-    assert service.lora_enabled is False
+    assert service.beacon_enabled is False
     # Still listening, which is how the next trip is started.
     assert service.lora_listening is True
 
@@ -285,7 +298,7 @@ def test_before_any_profile_is_known_nothing_is_permitted(comms):
     # Assuming the permissive envelope would transmit under a profile that
     # forbids transmitting, which in MAINTENANCE is the whole point.
     service, client = comms()
-    assert service.lora_enabled is False
+    assert service.beacon_enabled is False
 
 
 def test_a_profile_this_deployment_does_not_define_permits_nothing(comms, caplog):
@@ -297,7 +310,7 @@ def test_a_profile_this_deployment_does_not_define_permits_nothing(comms, caplog
     with caplog.at_level(logging.WARNING):
         obc(client, profile=Profile.FLIGHT)
 
-    assert service.lora_enabled is False
+    assert service.beacon_enabled is False
     assert "no downlink permitted" in caplog.text
 
 
@@ -346,12 +359,11 @@ def test_hosted_listens_in_standby_and_never_beacons(comms):
     # table, so it transmits nothing on its own.
     service, client = comms()
     obc(client, state=MissionState.STANDBY, profile=Profile.HOSTED)
-    uplink = '{"command":"set_profile","params":{"profile":"FLIGHT"}}'
-    service._mesh._radio.inject(uplink)
+    service._mesh._radio.inject("profile flight")
 
     service.tick()
 
-    assert relayed(client) == [json.loads(uplink)]
+    assert relayed(client) == [{"command": "set_profile", "params": {"profile": "FLIGHT"}}]
     assert service._mesh._radio.sent == []
 
 
@@ -491,7 +503,7 @@ def test_a_mission_state_this_build_cannot_name_transmits_nothing_but_still_list
 
     service.tick()
 
-    assert service.lora_enabled is True
+    assert service.beacon_enabled is True
     assert service._mesh._radio.sent == []
     assert relayed(client) == [{"command": "recover"}]
     assert "unknown mission state" in caplog.text
@@ -578,12 +590,12 @@ def test_a_silenced_transmitter_still_says_it_is_going_down(comms):
     # one message that explains a disappearance.
     service, client = comms()
     obc(client)
-    command(client, "set_comms_config", params={"lora_enabled": False})
+    command(client, "set_comms_config", params={"beacon_enabled": False})
     service._mesh._radio.sent.clear()
 
     obc(client, state=MissionState.CRITICAL)
 
-    assert service.lora_enabled is False
+    assert service.beacon_enabled is False
     assert len(service._mesh._radio.sent) == 1
     assert "down=1" in service._mesh._radio.sent[0]
 
@@ -656,19 +668,56 @@ def test_a_reconnect_republishes_the_status_even_though_nothing_changed(comms):
 # ── the uplink ──────────────────────────────────────────────────────────────
 
 
-def test_a_command_off_the_radio_is_republished_byte_for_byte(comms):
+def test_a_command_off_the_radio_reaches_the_bus_as_the_canonical_json(comms):
     # The load-bearing property: nothing downstream knows or cares which channel
-    # a command arrived on, so FLIGHT is recoverable with no SSH.
+    # a command arrived on, so FLIGHT is recoverable with no SSH. What crosses
+    # the air is the compact verb; what reaches the bus is what every other
+    # client publishes.
     service, client = comms()
     obc(client)
-    uplink = '{"command":"set_profile","params":{"profile":"HOSTED"},"unknown_field":1}'
-    service._mesh._radio.inject(uplink)
+    service._mesh._radio.inject("profile hosted")
 
     service.tick()
 
     published = [p for p in client.published if p.topic == TOPICS["command"]]
-    assert [p.payload for p in published] == [uplink]
+    assert relayed(client) == [{"command": "set_profile", "params": {"profile": "HOSTED"}}]
     assert published[0].retain is False
+
+
+def test_json_typed_into_a_phone_is_not_a_command_over_the_radio(comms, caplog):
+    """Removed on 2026-09-03: the radio takes compact verbs and nothing else.
+
+    It used to be relayed verbatim, which meant a second parser on the air with
+    its own idea of what a command is. What it becomes is an uplink that did not
+    parse — logged, because behind the private-channel filter the sender holds
+    the key and is likelier an operator reaching for last week's spelling than a
+    stranger, and never answered, because a reply is what `!` buys.
+    """
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    service._mesh._radio.inject('{"command":"set_profile","params":{"profile":"HOSTED"}}')
+    with caplog.at_level(logging.WARNING):
+        service.tick()
+
+    assert relayed(client) == []
+    assert "not a command" in caplog.text
+    clock.advance(ACK_DELAY_SEC + 0.1)
+    service.tick()
+    assert sent_replies(service) == []
+
+
+def test_a_json_uplink_is_still_kept_on_the_record(comms):
+    # It reached us on our own channel, so it stays in the radio log even though
+    # nothing acts on it: a command somebody typed in the wrong spelling is
+    # exactly the traffic worth being able to look back at.
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject('{"command": "recover"}')
+    service.tick()
+
+    received = [e for e in radio_events(client) if e["direction"] == "rx"]
+    assert [e["text"] for e in received] == ['{"command": "recover"}']
 
 
 def test_an_uplink_is_relayed_before_the_beacon_spends_the_airtime(comms, monkeypatch):
@@ -699,7 +748,7 @@ def test_mesh_chatter_is_dropped_rather_than_relayed(comms, caplog):
         service.tick()
 
     assert not [p for p in client.published if p.topic == TOPICS["command"]]
-    assert "dropping a message" in caplog.text
+    assert "dropping an uplink" in caplog.text
 
 
 def test_an_uplink_refreshes_the_status_so_the_ground_can_see_it_landed(comms):
@@ -947,37 +996,168 @@ def test_mission_answers_with_the_id_and_rows_dhs_reported(comms):
     assert " rows=42" in line
 
 
-def test_a_burst_of_commands_collapses_into_one_reply(comms):
-    # One pending slot is the whole airtime budget: extras collapse into the
-    # latest rather than queueing up transmissions.
+def test_two_commands_with_an_effect_get_two_replies(comms):
+    # The single pending slot lost the first of any two commands sent inside ten
+    # seconds — silently, which for `photo` is a picture taken and never
+    # mentioned. Two events are two answers: an operator who gets one
+    # confirmation for two commands cannot tell which one it is about.
     clock = Clock()
     service, client = comms(clock=clock)
     obc(client)
     service._mesh._radio.inject(RECOVER)
-    service._mesh._radio.inject('{"command": "safe_mode"}')
+    service._mesh._radio.inject("safe")
     service.tick()
-    clock.advance(10.1)
+    clock.advance(ACK_DELAY_SEC + 0.1)
+    service.tick()
+    service.tick()
+
+    replies = sent_replies(service)
+    assert [" re=recover" in replies[0], " re=safe" in replies[1]] == [True, True]
+
+
+def test_two_questions_in_a_row_are_answered_once(comms):
+    # A query is a snapshot of the present, so the fresh answer answers the
+    # older question too. Five near-identical telemetry lines are airtime spent
+    # saying the same thing on a shared mesh.
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject("!sys")
+    service._mesh._radio.inject("!ping")
+    service.tick()
     service.tick()
 
     replies = sent_replies(service)
     assert len(replies) == 1
-    assert " re=safe_mode" in replies[0]
+    assert " re=ping" in replies[0]
 
 
-def test_a_satellite_told_to_be_quiet_is_quiet_in_its_answers_too(comms):
-    # Replies obey lora_enabled like every other transmission — dropped, not
-    # queued for a louder day. Listening continues: the uplink still relays.
+def test_only_one_reply_leaves_per_wake(comms):
+    # The queue exists so a reply is late rather than lost, not so a burst of
+    # commands buys a burst of transmissions on a shared duty-cycle-limited mesh.
     clock = Clock()
     service, client = comms(clock=clock)
     obc(client)
-    command(client, "set_comms_config", params={"lora_enabled": False})
+    service._mesh._radio.inject(RECOVER)
+    service._mesh._radio.inject("safe")
+    service.tick()
+    clock.advance(ACK_DELAY_SEC + 0.1)
+    service.tick()
+    assert len(sent_replies(service)) == 1
+
+
+def test_a_question_asked_while_an_ack_ripens_is_not_made_to_wait(comms):
+    # The first *due* reply goes, not strictly the first: `!ping` answers about
+    # the present, and a photo ack still counting out its ten seconds is not a
+    # reason to hold the present back.
+    service, client = comms()
+    obc(client)
     service._mesh._radio.inject(RECOVER)
     service.tick()
-    clock.advance(10.1)
+    service._mesh._radio.inject("!ping")
+    service.tick()
+
+    replies = sent_replies(service)
+    assert len(replies) == 1
+    assert " re=ping" in replies[0]
+
+
+def test_the_reply_queue_does_not_grow_without_a_bound(comms, caplog):
+    # A flooded channel must not grow this list, and the oldest is what goes:
+    # at one reply per wake an answer that far down the queue would describe a
+    # satellite that has moved on by the time it left.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    for index in range(MAX_PENDING_ACKS + 3):
+        # Distinct commands with an effect, so none of them collapse into
+        # another: only a query replaces an unsent query.
+        service._mesh._radio.inject("restart " + "a" * (index + 1))
+    with caplog.at_level(logging.WARNING):
+        service.tick()
+
+    assert len(service._pending_acks) == MAX_PENDING_ACKS
+    assert "dropping the oldest unsent reply" in caplog.text
+
+
+def test_a_satellite_told_to_be_quiet_still_answers_the_question_it_was_asked(comms):
+    """An answer is not a beacon (2026-09-03).
+
+    `beacon off` rations the schedule; it must not swallow the reply to a
+    command somebody just sent. Met three times inside five minutes on
+    2026-09-02 in `DEMO`, where quiet is the profile's own default — the
+    commands worked and the phone saw a satellite that was not listening.
+    """
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    command(client, "set_comms_config", params={"beacon_enabled": False})
+    service._mesh._radio.inject(RECOVER)
+    service.tick()
+    clock.advance(ACK_DELAY_SEC + 0.1)
     service.tick()
 
     assert relayed(client) == [{"command": "recover"}]
+    assert len(sent_replies(service)) == 1
+    # And nothing else: the schedule really is off.
+    assert len(service._mesh._radio.sent) == 1
+
+
+def test_beacon_off_confirms_itself(comms):
+    """The worst of the three, because its two outcomes look identical.
+
+    "The transmitter is off now" and "the command never arrived" are the same
+    silence, and the operator is the one person who cannot tell them apart.
+    """
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client, profile=Profile.FLIGHT)
+    service._mesh._radio.inject("beacon off")
+    service.tick()
+    # The relay goes onto the bus and comes back around the loop as an ordinary
+    # MQTT message, which is how a command addressed to COMMS reaches COMMS.
+    client.deliver(TOPICS["command"], relayed(client)[0])
+    clock.advance(ACK_DELAY_SEC + 0.1)
+    service.tick()
+
+    assert service.beacon_enabled is False
+    replies = sent_replies(service)
+    assert len(replies) == 1
+    # And it names the verb that was typed, not the command it became.
+    assert " re=beacon" in replies[0]
+
+
+def test_a_reply_goes_out_in_a_state_with_no_beacon_row(comms):
+    # HOSTED sits in STANDBY, which the beacon table does not name, so the
+    # satellite never transmits on its own schedule there. It is still every
+    # boot's landing profile and a field reboot's only way back in, so a command
+    # sent to it has to be answered.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client, state=MissionState.STANDBY, profile=Profile.HOSTED)
+    assert config.BEACON_INTERVALS.get(MissionState.STANDBY.value) is None
+
+    service._mesh._radio.inject(RECOVER)
+    service.tick()
+    clock.advance(ACK_DELAY_SEC + 0.1)
+    service.tick()
+
+    assert len(sent_replies(service)) == 1
+
+
+def test_a_profile_that_forbids_the_radio_answers_nothing_and_keeps_nothing(comms):
+    # Where "always" stops. The queue is discarded rather than held: those
+    # replies would be answering commands that arrived under another profile.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client, profile=Profile.FLIGHT)
+    service._mesh._radio.inject(RECOVER)
+    service.tick()
+    obc(client, profile=Profile.MAINTENANCE)
+    clock.advance(ACK_DELAY_SEC + 0.1)
+    service.tick()
+
     assert sent_replies(service) == []
+    assert service._pending_acks == []
 
 
 def test_a_profile_with_no_radio_polls_nothing(comms):
@@ -990,19 +1170,19 @@ def test_a_profile_with_no_radio_polls_nothing(comms):
 
 
 def test_silencing_the_transmitter_leaves_the_receiver_listening(comms):
-    # Point B: otherwise `set_comms_config {"lora_enabled": false}` sent over
+    # Point B: otherwise `set_comms_config {"beacon_enabled": false}` sent over
     # the radio would be a one-way door with the key on the far side of it.
     service, client = comms()
     obc(client)
-    command(client, "set_comms_config", params={"lora_enabled": False})
-    service._mesh._radio.inject('{"command":"set_comms_config","params":{"lora_enabled":true}}')
+    command(client, "set_comms_config", params={"beacon_enabled": False})
+    service._mesh._radio.inject("beacon on")
 
     service.tick()
 
     assert service._mesh._radio.sent == []
-    assert relayed(client)[0]["params"] == {"lora_enabled": True}
+    assert relayed(client)[0]["params"] == {"beacon_enabled": True}
     # And the status says which of the two states this is.
-    assert status(client)["lora_enabled"] is False
+    assert status(client)["beacon_enabled"] is False
     assert status(client)["lora_listening"] is True
 
 
@@ -1059,10 +1239,10 @@ def test_an_empty_cache_answers_with_empty_objects_and_not_with_nulls(comms):
 def test_a_ground_command_can_turn_a_permitted_channel_off(comms):
     service, client = comms()
     obc(client)
-    command(client, "set_comms_config", params={"lora_enabled": False})
+    command(client, "set_comms_config", params={"beacon_enabled": False})
 
-    assert service.lora_enabled is False
-    assert status(client)["lora_enabled"] is False
+    assert service.beacon_enabled is False
+    assert status(client)["beacon_enabled"] is False
     service.tick()
     assert service._mesh._radio.sent == []
 
@@ -1075,18 +1255,18 @@ def test_a_ground_command_cannot_turn_a_forbidden_channel_on(comms):
     # honours what the ground last asked for.
     service, client = comms()
     obc(client, profile=Profile.MAINTENANCE)
-    command(client, "set_comms_config", params={"lora_enabled": True})
+    command(client, "set_comms_config", params={"beacon_enabled": True})
 
-    assert service.lora_enabled is False
-    assert service._lora_requested is True
+    assert service.beacon_enabled is False
+    assert service._beacon_requested is True
 
 
 def test_a_channel_turned_off_comes_back_when_the_ground_asks(comms):
     service, client = comms()
     obc(client)
-    command(client, "set_comms_config", params={"lora_enabled": False})
-    command(client, "set_comms_config", params={"lora_enabled": True})
-    assert service.lora_enabled is True
+    command(client, "set_comms_config", params={"beacon_enabled": False})
+    command(client, "set_comms_config", params={"beacon_enabled": True})
+    assert service.beacon_enabled is True
 
 
 def test_the_flags_are_not_persisted_so_a_restart_returns_to_the_profile(comms):
@@ -1095,11 +1275,11 @@ def test_the_flags_are_not_persisted_so_a_restart_returns_to_the_profile(comms):
     # itself unrestored across a boot.
     service, client = comms()
     obc(client)
-    command(client, "set_comms_config", params={"lora_enabled": False})
+    command(client, "set_comms_config", params={"beacon_enabled": False})
 
     restarted, restarted_client = comms()
     obc(restarted_client)
-    assert restarted.lora_enabled is True
+    assert restarted.beacon_enabled is True
 
 
 def test_a_config_command_with_no_parameters_changes_nothing(comms, caplog):
@@ -1110,7 +1290,7 @@ def test_a_config_command_with_no_parameters_changes_nothing(comms, caplog):
     obc(client, profile=Profile.FLIGHT)
     with caplog.at_level(logging.WARNING):
         command(client, "set_comms_config")
-    assert service.lora_enabled is True
+    assert service.beacon_enabled is True
     assert "nothing changed" in caplog.text
 
 
@@ -1136,8 +1316,8 @@ def test_a_retired_flag_alongside_a_live_one_does_not_swallow_it(comms, caplog):
     service, client = comms()
     obc(client)
     with caplog.at_level(logging.WARNING):
-        command(client, "set_comms_config", params={"api_enabled": True, "lora_enabled": False})
-    assert service.lora_enabled is False
+        command(client, "set_comms_config", params={"api_enabled": True, "beacon_enabled": False})
+    assert service.beacon_enabled is False
     assert "the cloud ground station is gone" in caplog.text
 
 
@@ -1149,6 +1329,183 @@ def test_commands_that_belong_to_somebody_else_are_ignored_in_silence(comms, nam
     with caplog.at_level(logging.INFO):
         command(client, name)
     assert client.published == []
+
+
+# ── the photo ack ───────────────────────────────────────────────────────────
+
+
+def photo(client, **fields):
+    """One ``payload_photo`` the way PAYLOAD publishes it, image included."""
+    client.deliver(
+        TOPICS["payload_photo"],
+        {
+            "timestamp": time.time(),
+            "status": STATUS_SUCCESS,
+            "kind": KIND_PHOTO,
+            "file": "photo_20260903_110000.jpg",
+            "path": "/run/cubesat/photo/photo_20260903_110000.jpg",
+            "size_bytes": 218_112,
+            "mission_id": None,
+            "sequence": None,
+            "overlay": None,
+            "photo_base64": "/9j/" + "A" * 4096,
+            **fields,
+        },
+    )
+
+
+def take_photo(service, client, clock, **fields):
+    """Uplink `photo`, let PAYLOAD answer, and wind on to the ack."""
+    service._mesh._radio.inject("photo")
+    service.tick()
+    photo(client, **fields)
+    clock.advance(ACK_DELAY_SEC + 0.1)
+    service.tick()
+    return sent_replies(service)
+
+
+def test_photo_is_answered_with_the_frame_and_not_with_the_weather(comms):
+    # The command with a physical side effect, answered on 2026-09-02 with the
+    # ordinary telemetry line while the picture was visible in the dashboard.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    replies = take_photo(service, client, clock, size_bytes=218_112, sequence=7)
+
+    assert len(replies) == 1
+    assert " re=photo " in replies[0]
+    assert " ok=1 " in replies[0]
+    assert " kb=213 " in replies[0]
+    assert " seq=7 " in replies[0]
+
+
+def test_the_image_itself_never_settles_in_the_link_service(comms):
+    """The trap in the subscription: `payload_photo` carries the whole JPEG.
+
+    COMMS keeps "the latest payload from each subsystem, kept whole", and doing
+    that here would park a base64 copy of every frame in the link service's
+    memory for the sake of two integers — on a topic that is *retained*, so the
+    broker re-delivers the last one on every reconnect.
+    """
+    service, client = comms()
+    obc(client)
+    photo(client)
+
+    assert service._photo is not None
+    assert "photo_base64" not in service._photo
+    assert "/9j/" not in json.dumps(service._photo)
+
+
+def test_a_mission_frame_is_not_an_answer_to_anybody(comms):
+    # A mission photographs itself every 300 s and an ack window is ten seconds
+    # wide, so without this roughly one !photo in thirty would be answered with
+    # somebody else's frame — a plausible wrong number rather than an error.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    service._mesh._radio.inject("photo")
+    service.tick()
+    photo(client, kind=KIND_MISSION, sequence=99, size_bytes=999_999)
+    clock.advance(ACK_DELAY_SEC + 0.1)
+    service.tick()
+
+    assert " err=noreply" in sent_replies(service)[0]
+    assert " seq=99" not in sent_replies(service)[0]
+
+
+def test_a_refused_photo_is_named_rather_than_reported_as_a_success(comms):
+    # "Did it work or not" is the whole request. A refusal reaches the radio as
+    # one word, because a beacon field may not contain a space and PAYLOAD's
+    # sentence cannot travel.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    replies = take_photo(
+        service,
+        client,
+        clock,
+        status=STATUS_ERROR,
+        kind=None,
+        reason="Photo capture not allowed: mission state is 'LOW_POWER'",
+        reason_code=REASON_STATE,
+    )
+
+    assert " ok=0 " in replies[0]
+    assert f" err={REASON_STATE}" in replies[0]
+
+
+def test_a_refusal_with_no_code_still_says_it_failed(comms):
+    # An older PAYLOAD, or a shape nobody planned: the ack says it failed and
+    # does not invent a cause.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    replies = take_photo(service, client, clock, status=STATUS_ERROR, kind=None, reason_code=None)
+    assert " ok=0 err=failed" in replies[0]
+
+
+def test_a_photograph_from_before_the_command_is_not_its_outcome(comms):
+    # payload_photo is retained, so the broker replays the last one on every
+    # reconnect. An ack that read it would report a frame taken minutes ago as
+    # the answer to a command sent afterwards.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    photo(client, timestamp=time.time() - 300, sequence=3)
+    service._mesh._radio.inject("photo")
+    service.tick()
+    clock.advance(ACK_DELAY_SEC + 0.1)
+    service.tick()
+
+    assert " err=noreply" in sent_replies(service)[0]
+
+
+def test_silence_from_payload_is_reported_without_a_verdict(comms):
+    # PAYLOAD stopped by the profile, or a camera that never came back, look
+    # exactly like this. `ok=0` would be a verdict on a capture COMMS never saw.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    service._mesh._radio.inject("photo")
+    service.tick()
+    clock.advance(ACK_DELAY_SEC + 0.1)
+    service.tick()
+
+    line = sent_replies(service)[0]
+    assert " re=photo err=noreply" in line
+    assert " ok=" not in line
+
+
+def test_a_photo_asked_for_with_a_bang_is_answered_the_same_way(comms):
+    # Nothing downstream knows which spelling a command arrived in, and the ack
+    # is downstream of the translation too.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    service._mesh._radio.inject("!photo")
+    service.tick()
+    photo(client, size_bytes=102_400)
+    clock.advance(ACK_DELAY_SEC + 0.1)
+    service.tick()
+
+    # And `re=` still names the verb that was typed, `!` and all.
+    assert " re=photo ok=1 kb=100" in sent_replies(service)[0]
+
+
+def test_the_photo_fields_survive_a_line_that_will_not_fit(comms):
+    # Reply fields are protected in _fit: the routine telemetry gives way to
+    # them rather than the answer being cut. Asserted against the real ceiling,
+    # with the caches full enough to have something to drop.
+    clock = Clock()
+    service, client = comms(clock=clock)
+    obc(client)
+    client.deliver(TOPICS["eps_status"], EPS)
+    client.deliver(TOPICS["adcs_status"], ADCS)
+    client.deliver(TOPICS["dhs_status"], {"mission": {"id": 424242}})
+    replies = take_photo(service, client, clock, size_bytes=218_112, sequence=7)
+
+    assert len(replies[0].encode("utf-8")) <= MAX_RADIO_MESSAGE_BYTES
+    assert " ok=1 kb=213 seq=7" in replies[0]
 
 
 # ── the status topic ────────────────────────────────────────────────────────
@@ -1170,8 +1527,41 @@ def test_the_status_is_republished_the_moment_a_channel_is_toggled(comms):
     service, client = comms()
     obc(client)
     before = len(client.payloads(TOPICS["comms_status"]))
-    command(client, "set_comms_config", params={"lora_enabled": False})
+    command(client, "set_comms_config", params={"beacon_enabled": False})
     assert len(client.payloads(TOPICS["comms_status"])) == before + 1
+
+
+def test_the_old_spelling_is_still_accepted_on_the_way_in(comms):
+    """The dashboard deployed on 2026-09-02 sends `lora_enabled`.
+
+    A satellite that stopped answering its own console on the day of a rename
+    would have made the rename the fault.
+    """
+    service, client = comms()
+    obc(client, profile=Profile.FLIGHT)
+    command(client, "set_comms_config", params={"lora_enabled": False})
+    assert service.beacon_enabled is False
+    command(client, "set_comms_config", params={"lora_enabled": True})
+    assert service.beacon_enabled is True
+
+
+def test_when_a_client_sends_both_spellings_the_new_one_wins(comms):
+    # A client sending both is a client mid-upgrade, and the spelling it learned
+    # last is the one it means.
+    service, client = comms()
+    obc(client, profile=Profile.FLIGHT)
+    command(client, "set_comms_config", params={"lora_enabled": True, "beacon_enabled": False})
+    assert service.beacon_enabled is False
+
+
+def test_the_status_carries_the_old_key_beside_the_new_one(comms):
+    # Deprecated, published for the deployed dashboard, and never allowed to
+    # disagree with the key that replaced it.
+    service, client = comms()
+    obc(client, profile=Profile.DEMO)
+    reported = status(client)
+    assert reported["beacon_enabled"] is False
+    assert reported["lora_enabled"] == reported["beacon_enabled"]
 
 
 def test_the_status_reports_the_effective_channel_and_not_the_raw_flag(comms):
@@ -1180,7 +1570,7 @@ def test_the_status_reports_the_effective_channel_and_not_the_raw_flag(comms):
     service, client = comms()
     obc(client, profile=Profile.FLIGHT)
     reported = status(client)
-    assert reported["lora_enabled"] is True
+    assert reported["beacon_enabled"] is True
     assert reported["lora_listening"] is True
 
 

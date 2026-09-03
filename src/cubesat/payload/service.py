@@ -26,6 +26,14 @@ says which:
     kind="photo"          a take_photo response, carrying photo_base64
     kind="mission_frame"  one frame of an open mission: path, size, sequence
 
+A refusal is the third shape and carries no ``kind`` at all: ``status="ERROR"``,
+the sentence a person reads in ``reason``, and one word from ``camera.py`` in
+``reason_code``. The code is not decoration — since 2026-09-03 COMMS reads this
+topic to answer ``!photo`` over the radio, where a field may not contain a space
+and the sentence therefore cannot travel. It also has to tell a ``take_photo``
+answer from a mission frame that happened to be taken in the same ten seconds,
+which is what ``kind`` is for.
+
 That asymmetry is deliberate and is argued out in ``payload/camera.py``: a
 single photo is *for* the ground and the base64 is how it gets there, while a
 mission's frames pushed through the broker would be tens of megabytes competing
@@ -69,7 +77,14 @@ from typing import Any
 
 from cubesat.common.service import Service
 from cubesat.common.states import MissionState
-from cubesat.common.topics import TOPICS
+from cubesat.common.topics import (
+    REASON_CAMERA,
+    REASON_NOSPACE,
+    REASON_STATE,
+    STATUS_ERROR,
+    STATUS_SUCCESS,
+    TOPICS,
+)
 from cubesat.hal import registry
 from cubesat.hal.interfaces import Camera, EnvironmentSensor
 from cubesat.payload import science
@@ -92,9 +107,6 @@ TAKE_PHOTO = "take_photo"
 #: use those commands had, and one fewer verb on the wire is one fewer thing to
 #: get wrong over a radio link.
 HANDLED = frozenset({TAKE_PHOTO})
-
-STATUS_SUCCESS = "SUCCESS"
-STATUS_ERROR = "ERROR"
 
 
 class PayloadService(Service):
@@ -319,20 +331,20 @@ class PayloadService(Service):
     def _take_photo(self, request_id: str | None, params: dict[str, Any]) -> None:
         reason = refusal(self.mission_state)
         if reason is not None:
-            self._refuse(request_id, reason)
+            self._refuse(request_id, reason, REASON_STATE)
             return
         try:
             capture = self._controller.capture(self._context(params))
         except StorageFull as exc:
             # A refusal, not a failure: the camera is fine and the card is not,
             # and the status published alongside says how much room is left.
-            self._refuse(request_id, str(exc))
+            self._refuse(request_id, str(exc), REASON_NOSPACE)
             self._publish_status()
             return
         except Exception as exc:
             self.log.exception("photo capture failed")
             self._note_camera(False)
-            self._refuse(request_id, f"Photo capture failed: {exc}")
+            self._refuse(request_id, f"Photo capture failed: {exc}", REASON_CAMERA)
             return
         self._note_camera(True)
         self.publish(
@@ -397,15 +409,28 @@ class PayloadService(Service):
         self.log.info("mission photography finished (%s)", reason)
         self._publish_status()
 
-    def _refuse(self, request_id: str | None, reason: str) -> None:
+    def _refuse(self, request_id: str | None, reason: str, code: str) -> None:
         """Say no on the topic the request would have been answered on.
 
         A refusal that only reached the log would leave a ground station waiting
         for a photo that was never coming, and the reason is the whole point:
         "not allowed in LOW_POWER" is an answer, "no response" is a fault.
+
+        Two spellings of the same no, and both are needed. ``reason`` is the
+        sentence a person reads, with the numbers in it — how many megabytes are
+        left, which state refused. ``reason_code`` is one word from
+        ``camera.py``, and it exists because the sentence cannot cross the radio:
+        a beacon field may not contain a space, so ``!photo``'s ack carries the
+        code (``err=nospace``) and the dashboard carries the sentence.
         """
         self.log.warning("%s", reason)
-        self.publish("payload_photo", request_id=request_id, status=STATUS_ERROR, reason=reason)
+        self.publish(
+            "payload_photo",
+            request_id=request_id,
+            status=STATUS_ERROR,
+            reason=reason,
+            reason_code=code,
+        )
 
     # ── state ───────────────────────────────────────────────────────────────
 

@@ -195,7 +195,7 @@ def test_status_reads_the_host_metrics_off_the_published_row(session, fake_clien
         {"status": "NOMINAL", "profile": "DEMO", "subsystems": {"watched": ["eps"], "lost": []}},
     )
     fake_client.deliver(TOPICS["eps_status"], {"battery_percent": 72.4, "voltage": 3.905})
-    fake_client.deliver(TOPICS["comms_status"], {"lora_listening": True, "lora_enabled": False})
+    fake_client.deliver(TOPICS["comms_status"], {"lora_listening": True, "beacon_enabled": False})
     fake_client.deliver(
         TOPICS["dhs_telemetry"],
         {
@@ -226,11 +226,11 @@ def test_status_distinguishes_a_quiet_radio_from_a_deaf_one(session, fake_client
     # DEMO and EXPO start the beacon off deliberately, so "quiet" has to read as
     # a setting rather than as a fault.
     fake_client.deliver(TOPICS["obc_status"], {"status": "NOMINAL", "profile": "DEMO"})
-    fake_client.deliver(TOPICS["comms_status"], {"lora_listening": True, "lora_enabled": False})
+    fake_client.deliver(TOPICS["comms_status"], {"lora_listening": True, "beacon_enabled": False})
     _code, lines = status_cmd.show(session)
     assert "listening only (beacon off)" in text(lines)
 
-    fake_client.deliver(TOPICS["comms_status"], {"lora_listening": False, "lora_enabled": False})
+    fake_client.deliver(TOPICS["comms_status"], {"lora_listening": False, "beacon_enabled": False})
     _code, lines = status_cmd.show(session)
     assert "this profile does not use the radio" in text(lines)
 

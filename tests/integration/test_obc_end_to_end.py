@@ -34,7 +34,7 @@ STATUS_PAYLOADS = {
     "adcs": {"roll": 1.2, "yaw": 178.9, "gnss": {"fix": False, "satellites": 0}},
     "payload": {"temperature": 23.4, "humidity": 45.2},
     "dhs": {"recording": True, "rows": 1},
-    "comms": {"lora_enabled": True},
+    "comms": {"beacon_enabled": True},
 }
 
 

@@ -27,7 +27,7 @@ STATUS_PAYLOADS = {
              "gnss": {"fix": False, "satellites": 0}},
     "payload": {"temperature": 23.4, "humidity": 45.2, "pressure": 1013.25},
     "dhs": {"recording": True, "rows": 1},
-    "comms": {"lora_enabled": True, "lora_listening": True},
+    "comms": {"beacon_enabled": True, "lora_listening": True},
 }
 
 

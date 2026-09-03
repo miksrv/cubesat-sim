@@ -28,8 +28,8 @@ def canonical(text):
         ("!recover", {"command": "recover"}),
         ("!safe", {"command": "safe_mode"}),
         ("!profile FLIGHT", {"command": "set_profile", "params": {"profile": "FLIGHT"}}),
-        ("!beacon on", {"command": "set_comms_config", "params": {"lora_enabled": True}}),
-        ("!beacon off", {"command": "set_comms_config", "params": {"lora_enabled": False}}),
+        ("!beacon on", {"command": "set_comms_config", "params": {"beacon_enabled": True}}),
+        ("!beacon off", {"command": "set_comms_config", "params": {"beacon_enabled": False}}),
     ],
 )
 def test_the_contract_table_translates_to_canonical_json(text, expected):
@@ -90,7 +90,7 @@ def test_ordinary_chat_is_not_compact():
     [
         ("ping", {"command": "ping"}),
         ("profile FLIGHT", {"command": "set_profile", "params": {"profile": "FLIGHT"}}),
-        ("beacon off", {"command": "set_comms_config", "params": {"lora_enabled": False}}),
+        ("beacon off", {"command": "set_comms_config", "params": {"beacon_enabled": False}}),
     ],
 )
 def test_the_bare_spelling_is_the_same_language(text, expected):
@@ -119,11 +119,30 @@ def test_the_verb_this_one_replaced_still_works():
     """`lora on|off` was renamed to `beacon` on 2026-09-01 — the old word said
     the wrong thing, because turning it off never turned the radio off. It is
     still accepted, undocumented: answering `err=unknown` to a command that
-    worked last week is worse than one extra line in the table."""
+    worked last week is worse than one extra line in the table.
+
+    The bus payload is identical; only the spelling differs, and the spelling is
+    what comes back in `re=`. Somebody who typed the old word is told the old
+    word — the reply answers the operator, not the table.
+    """
+    assert canonical("lora off") == canonical("beacon off")
+    assert canonical("!lora on") == canonical("!beacon on")
+
+
+def test_the_spelling_travels_with_the_translation():
+    """`re=` has to name the verb the operator typed.
+
+    `beacon on` came back as `re=set_comms_config` on the hardware (2026-09-02),
+    which asks a person on a phone to translate our vocabulary into theirs before
+    they can believe the answer. The canonical name is for the bus; the verb is
+    for the air.
+    """
     from cubesat.comms.compact import translate as _translate
 
-    assert _translate("lora off") == _translate("beacon off")
-    assert _translate("!lora on") == _translate("!beacon on")
+    assert _translate("!beacon on").verb == "beacon"
+    assert _translate("lora off").verb == "lora"
+    # Capitalised by a phone keyboard on its own terms, and still the verb.
+    assert _translate("!Profile DEMO").verb == "profile"
 
 
 @pytest.mark.parametrize(

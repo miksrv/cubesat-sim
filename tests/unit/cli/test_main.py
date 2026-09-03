@@ -133,24 +133,24 @@ def test_a_failure_goes_to_stderr_so_a_script_can_separate_them(broker, capsys):
 
 
 def test_beacon_on_asks_for_it_and_confirms_from_comms(broker, capsys):
-    broker.deliver(TOPICS["comms_status"], {"lora_enabled": True, "lora_listening": True})
+    broker.deliver(TOPICS["comms_status"], {"beacon_enabled": True, "lora_listening": True})
     assert cli.main(["beacon", "on"]) == 0
     published = broker.payloads(TOPICS["command"])[-1]
     assert published["command"] == "set_comms_config"
-    assert published["params"] == {"lora_enabled": True}
+    assert published["params"] == {"beacon_enabled": True}
     assert "Beacon on." in capsys.readouterr().out
 
 
 def test_beacon_off_is_the_same_command_the_radio_sends(broker, capsys):
-    broker.deliver(TOPICS["comms_status"], {"lora_enabled": False, "lora_listening": True})
+    broker.deliver(TOPICS["comms_status"], {"beacon_enabled": False, "lora_listening": True})
     assert cli.main(["beacon", "off"]) == 0
-    assert broker.payloads(TOPICS["command"])[-1]["params"] == {"lora_enabled": False}
+    assert broker.payloads(TOPICS["command"])[-1]["params"] == {"beacon_enabled": False}
 
 
 def test_beacon_in_a_profile_without_a_radio_says_why_it_cannot(broker, capsys):
     # The profile is the envelope, and this tool does not pretend otherwise:
     # MAINTENANCE frees the serial port, so there is nothing to turn on.
-    broker.deliver(TOPICS["comms_status"], {"lora_enabled": False, "lora_listening": False})
+    broker.deliver(TOPICS["comms_status"], {"beacon_enabled": False, "lora_listening": False})
     assert cli.main(["beacon", "on"]) == 1
     assert "does not use the radio" in capsys.readouterr().err
 
@@ -163,7 +163,7 @@ def test_beacon_with_no_comms_at_all_names_the_unit(broker, capsys):
 def test_a_beacon_change_that_is_not_confirmed_is_reported_as_unconfirmed(broker, capsys):
     # COMMS is there and the radio is permitted, but no status came back saying
     # the flag moved. Not claimed as success.
-    broker.deliver(TOPICS["comms_status"], {"lora_enabled": False, "lora_listening": True})
+    broker.deliver(TOPICS["comms_status"], {"beacon_enabled": False, "lora_listening": True})
     assert cli.main(["beacon", "on"]) == 1
     assert "did not confirm" in capsys.readouterr().err
 
@@ -172,9 +172,9 @@ def test_the_old_verb_still_works_from_a_shell_history(broker, capsys):
     # `lora on|off` was renamed to `beacon` on 2026-09-01, because turning it off
     # never turned the radio off. The old spelling is an alias, not in the help:
     # a command that worked last week should not answer "unknown".
-    broker.deliver(TOPICS["comms_status"], {"lora_enabled": True, "lora_listening": True})
+    broker.deliver(TOPICS["comms_status"], {"beacon_enabled": True, "lora_listening": True})
     assert cli.main(["lora", "on"]) == 0
-    assert broker.payloads(TOPICS["command"])[-1]["params"] == {"lora_enabled": True}
+    assert broker.payloads(TOPICS["command"])[-1]["params"] == {"beacon_enabled": True}
 
 
 def test_the_help_leads_with_beacon_and_shows_the_old_name_as_an_alias(capsys):

@@ -78,18 +78,8 @@ from typing import Any
 
 from cubesat.common import config
 from cubesat.common.states import CAMERA_ALLOWED_STATES, MissionState
+from cubesat.common.topics import KIND_MISSION, KIND_PHOTO
 from cubesat.hal.interfaces import Camera, Photo
-
-#: The ``kind`` field on cubesat/payload/photo. One topic, two payload shapes —
-#: see the module docstring for why only one of them carries the image.
-#:
-#: ``KIND_MISSION`` is the wire word for a frame the mission took by itself.
-#: It was ``"timelapse"`` until 2026-09-01, and that rename is the sort that
-#: breaks a consumer silently: the ground segment already lost every frame once
-#: to a `kind` mismatch it invented on its own side. Change it here and in
-#: cubesat-groundstation's decodePhoto in the same breath.
-KIND_PHOTO = "photo"
-KIND_MISSION = "mission_frame"
 
 #: Free space is reported and compared in mebibytes, which is what
 #: ``photos.min_free_mb`` means and what ``df -m`` prints.

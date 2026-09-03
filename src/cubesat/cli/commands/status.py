@@ -83,7 +83,10 @@ def _radio(comms: dict[str, Any] | None) -> str:
         return "not running"
     if not comms.get("lora_listening"):
         return "off (this profile does not use the radio)"
-    return "beaconing" if comms.get("lora_enabled") else "listening only (beacon off)"
+    # Since 2026-09-03 "beacon off" no longer means silence: a command still
+    # gets an answer. The wording says listening rather than quiet for exactly
+    # that reason.
+    return "beaconing" if comms.get("beacon_enabled") else "listening only (beacon off)"
 
 
 def _recorder(dhs: dict[str, Any] | None) -> str:

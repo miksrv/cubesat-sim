@@ -4,7 +4,7 @@ COMMS has two jobs and no others:
 
 1. **Beacon over LoRa** — one compact line per cycle, assembled in
    ``beacon.py`` and transmitted through the Meshtastic node.
-2. **Re-publish every inbound command verbatim onto ``cubesat/command``.**
+2. **Re-publish every inbound command onto ``cubesat/command``.**
 
 There was a third — POSTing the packet to a cloud ground station and draining a
 queue of commands left there. It is gone: no such deployment exists, and the
@@ -22,10 +22,21 @@ link off meant losing the recording. Do not move persistence back here.
 which *link* a command arrived on — OBC, PAYLOAD and COMMS itself handle a
 command relayed off the radio exactly as they handle one a laptop published on
 the LAN. That is what makes ``FLIGHT`` recoverable: Wi-Fi is down, there is no
-SSH, and ``set_profile`` typed into a Meshtastic phone app is the way back.
-COMMS does not interpret what it relays; it checks the shape and puts it on the
-bus, and if the command was addressed to COMMS it comes back around the loop as
-an ordinary MQTT message and is handled there.
+SSH, and ``profile hosted`` typed into a Meshtastic phone app is the way back.
+If the command was addressed to COMMS it comes back around the loop as an
+ordinary MQTT message and is handled there.
+
+**Over the air the vocabulary is the compact table and nothing else**
+(2026-09-03). A line off the radio is a compact verb or it is not a command:
+hand-composed JSON used to be relayed verbatim and no longer is, so
+``compact.py`` is the whole of what this satellite understands on the air, while
+``cubesat/command`` still carries the full vocabulary for the dashboard, the CLI
+and any other broker client. Two things go with the JSON path: ``set_profile``
+over the radio takes a profile and nothing else, because the compact spelling
+has no room for ``ttl_minutes`` or ``mission_label`` — the profile's own TTL and
+a mission named after its start time are the defaults that answer for both — and
+``delete_mission``, which has no compact spelling on purpose and now therefore
+no over-the-air path at all.
 
 **On the radio side that is one mesh channel and no other.** An uplink counts
 only if it arrived on ``config.LORA_CHANNEL_INDEX`` — the private ``CubeSat``
@@ -46,12 +57,31 @@ suggestion rather than a rule. The flag is also deliberately **not persisted**:
 a restart returns to the profile's defaults, which is the same reasoning that
 keeps the profile itself unrestored across a boot.
 
-**``lora_enabled`` silences transmission and nothing else.** The inbox is polled
-whenever the *profile* permits LoRa, whatever the runtime flag says. That is
-what makes ``set_comms_config {"lora_enabled": false}`` sent over the radio
+**``beacon_enabled`` rations the schedule and nothing else.** The inbox is
+polled whenever the *profile* permits LoRa, whatever the runtime flag says. That
+is what makes ``set_comms_config {"beacon_enabled": false}`` sent over the radio
 recoverable over the same radio, instead of a one-way door with a comment
 explaining it. A profile with ``downlink.lora: false`` polls nothing, because
 there the radio is not merely quiet — it is not part of the mission.
+
+**And an answer is not a beacon** (2026-09-03). Replies are gated on
+``lora_listening`` — the profile — exactly like the inbox and like the
+going-down beacon, so *every profile that runs COMMS answers the commands it
+accepts*. The flag governs one thing: whether state goes out on a schedule,
+unasked. Three instances inside five minutes on 2026-09-02 are why, all in
+``DEMO``, where the profile's own default is quiet: ``!sys`` was answered from
+the caches and the answer dropped; ``!photo`` took a photograph and said nothing;
+and ``!beacon off`` had its own confirmation dropped by the flag it had just
+set, which makes "the transmitter is off now" and "the command never arrived"
+look identical to somebody holding a phone. A ``!`` line that fails to parse was
+already answered, so the satellite was answering typos and swallowing successes.
+
+The flag was called ``lora_enabled`` until that change, and the rename is not
+cosmetic: ``beacon on|off`` was itself renamed from ``lora on|off`` on
+2026-09-01 *because the old name said the wrong thing*, and a flag that no longer
+decides whether LoRa transmits at all is the same lie one level down. The old
+spelling is still accepted **on the way in** — the dashboard deployed on
+2026-09-02 sends it — and still published alongside the new one, deprecated.
 
 **Waking and transmitting are two different intervals, and that is the most
 important thing in this file.** The cadence table says how often COMMS wakes —
@@ -97,10 +127,10 @@ because *mosquitto* bounced. ``on_connected`` costs one message and closes that.
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from cubesat.common import config
@@ -109,14 +139,21 @@ from cubesat.common import profiles as profiles_module
 from cubesat.common.profiles import DownlinkSpec, ProfileConfig, ProfileError
 from cubesat.common.service import Service
 from cubesat.common.states import MissionState, Profile
-from cubesat.common.topics import TOPICS
-from cubesat.comms import beacon, compact, mesh
+from cubesat.common.topics import KIND_PHOTO, STATUS_ERROR, TOPICS
+from cubesat.comms import beacon, compact
 from cubesat.comms.mesh import MeshChannel
 from cubesat.hal import registry
 from cubesat.hal.interfaces import Radio, RadioMessage
 
 GET_TELEMETRY = "get_telemetry"
 SET_COMMS_CONFIG = "set_comms_config"
+TAKE_PHOTO = "take_photo"
+
+#: How much of a rejected uplink is quoted in the log. Truncating *here* is fine
+#: and truncating a payload is not: this is a line for a human about something
+#: that is being discarded anyway, which is the one place a shortened copy
+#: cannot mislead.
+LOG_EXCERPT_CHARS = 120
 
 #: The commands COMMS answers for. Everything else on ``cubesat/command``
 #: belongs to OBC or PAYLOAD and is ignored in silence — those are not errors,
@@ -144,21 +181,51 @@ NO_DOWNLINK = DownlinkSpec()
 
 #: How long after an accepted uplink the ack beacon goes out — long enough for
 #: the command's effect to land, so the ``st=`` and ``pr=`` fields it carries
-#: *are* the verdict (docs/concept.md → The radio command contract). One
-#: pending slot, so extras collapse into the latest: that is the whole event
-#: budget for now. Queries skip the wait — they ask about the present, and the
-#: present delayed by ten seconds is a different present.
+#: *are* the verdict (docs/concept.md → The radio command contract). Queries
+#: skip the wait — they ask about the present, and the present delayed by ten
+#: seconds is a different present.
 ACK_DELAY_SEC = 10.0
 
-#: The commands COMMS answers itself, mapped to the short ``re=`` name a phone
-#: reader sees — the verb they typed, not the canonical command it became.
-QUERIES = {
-    "ping": "ping",
-    "get_position": "pos",
-    "get_system": "sys",
-    "get_environment": "env",
-    "get_mission": "mission",
-}
+#: How many replies may be waiting at once. Beyond this the **oldest** is
+#: dropped, which is the same judgement the bound itself is made of: at one
+#: reply per wake and a 30 s cadence in ``NOMINAL``, eight is already four
+#: minutes of backlog, and an answer that arrives four minutes late describes a
+#: satellite that has moved on. It is a memory bound as well — a flooded channel
+#: must not grow this list — but the airtime and the staleness are what set the
+#: number. A person at a phone keyboard cannot produce eight distinct commands
+#: with side effects inside one wake; anything that does is not a conversation.
+MAX_PENDING_ACKS = 8
+
+#: The commands COMMS answers itself out of its own caches. These are the ones
+#: that **collapse**: a query is a snapshot of the present, so a newer one
+#: answers the older question too, and five nearly identical telemetry lines in
+#: a row are airtime spent saying the same thing on a shared mesh. Every other
+#: command keeps its own reply — see ``_schedule_ack``.
+QUERIES = frozenset(
+    {"ping", "get_position", "get_system", "get_environment", "get_mission"}
+)
+
+
+@dataclass
+class _Ack:
+    """One reply waiting for its turn on the air.
+
+    ``fields`` is what was known when the command was accepted. What the reply
+    can only learn *later* is not stored here at all: ``st=`` and ``pr=`` come
+    from the caches at transmit time, and a ``take_photo`` ack reads PAYLOAD's
+    own message about the frame — see ``photo_since``, which is the wall-clock
+    moment the command was relayed, so a photograph published *before* it (the
+    retained one the broker replays on every reconnect, or a mission frame) can
+    never be reported as this command's outcome.
+    """
+
+    re: str
+    due: float
+    fields: dict[str, str] = field(default_factory=dict)
+    #: A state query, so a newer query replaces it. False for anything with an
+    #: effect: ``!photo`` twice is two photographs and deserves two answers.
+    collapses: bool = False
+    photo_since: float | None = None
 
 
 class CommsService(Service):
@@ -171,7 +238,17 @@ class CommsService(Service):
     #: own missions and does not record one, but a beacon that says which
     #: session it belongs to is what lets a ground station line the line up
     #: against the archive it collects later.
-    subscriptions = ("command", "eps_status", "adcs_status", "payload_data", "dhs_status")
+    #: ``payload_photo`` is here for the ``!photo`` ack alone (2026-09-03) and
+    #: is the one subscription whose payload must **not** be kept — see
+    #: ``_on_payload_photo``.
+    subscriptions = (
+        "command",
+        "eps_status",
+        "adcs_status",
+        "payload_data",
+        "payload_photo",
+        "dhs_status",
+    )
 
     def __init__(
         self,
@@ -207,8 +284,8 @@ class CommsService(Service):
         #: ``downlink.beacon`` the moment one is announced, and never persisted —
         #: see the module docstring. True until then, which matters only for the
         #: seconds before OBC's first status: with no profile resolved,
-        #: ``lora_enabled`` is false anyway, because the envelope is unknown.
-        self._lora_requested = True
+        #: ``beacon_enabled`` is false anyway, because the envelope is unknown.
+        self._beacon_requested = True
 
         #: What the active profile permits, resolved once per profile change
         #: rather than per tick, so a misconfigured profile is logged once.
@@ -217,20 +294,30 @@ class CommsService(Service):
 
         #: The latest payload from each subsystem, kept whole. The beacon takes
         #: four numbers out of these; ``get_telemetry`` answers with all of it.
+        #: ``payload_photo`` is deliberately **not** among them: it carries a
+        #: whole image, and what is kept of it is five small fields — see
+        #: ``_on_payload_photo``.
         self._eps: dict[str, Any] | None = None
         self._adcs: dict[str, Any] | None = None
         self._science: dict[str, Any] | None = None
+        #: The last thing PAYLOAD said about a *requested* photograph, reduced
+        #: to what an ack can carry. None until one is taken.
+        self._photo: dict[str, Any] | None = None
         #: From ``dhs_status``. None until DHS opens a mission.
         self._mission_id: Any = None
         #: Rows recorded so far, same source — what ``!mission`` answers with.
         self._mission_rows: int | None = None
 
         self._last_uplink: float | None = None
-        #: The one scheduled reply: (ack fields, monotonic due time). A single
-        #: slot rather than a queue, so a burst of commands costs one
-        #: transmission carrying the latest — the airtime budget by
-        #: construction rather than by bookkeeping.
-        self._pending_ack: tuple[dict[str, str], float] | None = None
+        #: The replies waiting to be transmitted, oldest first. It was a single
+        #: slot until 2026-09-03, which made the airtime budget out of losing
+        #: things: two commands inside ten seconds and the first one's
+        #: confirmation vanished without a word, which for ``!photo`` — a
+        #: command with a physical side effect — is exactly the outcome the
+        #: reply rule exists to prevent. The budget is now "one reply per wake",
+        #: kept by ``_maybe_ack``; what collapses is only the state queries,
+        #: which genuinely answer each other. See ``MAX_PENDING_ACKS``.
+        self._pending_acks: list[_Ack] = []
         #: When the last beacon actually reached the air, on the monotonic
         #: clock. None means one has never gone out, and the first permitted
         #: wake transmits: a satellite that has just come up should say so.
@@ -242,24 +329,35 @@ class CommsService(Service):
     # ── what is permitted ───────────────────────────────────────────────────
 
     @property
-    def lora_enabled(self) -> bool:
-        """Whether the radio may **transmit** right now.
+    def beacon_enabled(self) -> bool:
+        """Whether the **scheduled** beacon may transmit right now.
 
         The profile first, then the runtime flag. Written this way round on
         purpose: the conjunction is what makes a ground command unable to widen
         the envelope, and it reads as the rule it implements.
+
+        It governs the schedule and only the schedule. A reply to a command a
+        person just sent, and the going-down beacon, are gated on
+        ``lora_listening`` instead — a satellite in a position to hear a question
+        is in a position to answer it.
         """
-        return self._downlink.lora and self._lora_requested
+        return self._downlink.lora and self._beacon_requested
 
     @property
     def lora_listening(self) -> bool:
         """Whether the radio inbox is polled. The **profile** alone decides.
 
-        Deliberately not conjoined with ``_lora_requested``. Silencing a
+        Deliberately not conjoined with ``_beacon_requested``. Silencing a
         transmitter that can still hear is a recoverable state; silencing one
         that cannot is a locked door, and the key would be on the far side of
         it. A profile with ``downlink.lora: false`` polls nothing, because there
         the radio is not merely quiet — it is not part of the mission.
+
+        Since 2026-09-03 this is also the gate on replies, which is why "the
+        satellite always answers" has a boundary and it is stated here: a
+        profile with ``downlink.lora: false`` says nothing at all. Today that is
+        ``MAINTENANCE`` alone, which runs no COMMS, so in practice the rule
+        reads *every profile that runs COMMS answers commands*.
         """
         return self._downlink.lora
 
@@ -342,9 +440,10 @@ class CommsService(Service):
         """One last line: where it was, what the battery was, and that it chose this.
 
         Gated on ``lora_listening`` — the profile — and **not** on
-        ``lora_enabled``. Same reasoning as the inbox: a runtime flag somebody
-        set an hour ago should not be able to silence the one message that
-        explains a disappearance. A profile that forbids the radio still says
+        ``beacon_enabled``. Same reasoning as the inbox, and as the reply that
+        followed it here on 2026-09-03: a runtime flag somebody set an hour ago
+        should not be able to silence the one message that explains a
+        disappearance. A profile that forbids the radio still says
         nothing, because there the radio is not part of the mission at all.
 
         Failure is expected here more than anywhere else in this file: transmit
@@ -386,8 +485,46 @@ class CommsService(Service):
                 self._adcs = data
             elif topic == TOPICS["payload_data"]:
                 self._science = data
+            elif topic == TOPICS["payload_photo"]:
+                self._on_payload_photo(data)
             elif topic == TOPICS["dhs_status"]:
                 self._on_dhs_status(data)
+
+    def _on_payload_photo(self, data: dict[str, Any]) -> None:
+        """Keep five small fields out of a message that carries a whole image.
+
+        **Do not cache this payload the way the others are cached.**
+        ``payload_photo`` carries ``photo_base64`` — the entire JPEG, close to a
+        megabyte of it — and this service keeps "the latest payload from each
+        subsystem, kept whole". Subscribing the ordinary way would park a base64
+        copy of every photograph in the link service's memory for the sake of
+        two integers, and the topic is *retained*, so the broker re-delivers the
+        last one on every reconnect. The dict below is what survives the
+        handler; the parsed message is transient and is what the two integers
+        were extracted from.
+
+        Only a ``take_photo`` answer is kept, and that is a positive rule rather
+        than "not a mission frame": a mission photographs itself every 300 s, an
+        ack window is 10 s wide, so roughly one ``!photo`` in thirty would
+        otherwise be answered with somebody else's frame — a plausible wrong
+        number rather than an error, which is the class this project refuses.
+        A refusal carries no ``kind`` at all, and it is the half of the answer
+        the operator most needs.
+        """
+        kind = data.get("kind")
+        status = data.get("status")
+        if kind != KIND_PHOTO and status != STATUS_ERROR:
+            return
+        self._photo = {
+            # PAYLOAD's own stamp, not the arrival time: the retained frame
+            # replayed on a reconnect must not read as an answer to a command
+            # sent afterwards.
+            "at": data.get("timestamp"),
+            "ok": status != STATUS_ERROR,
+            "size_bytes": data.get("size_bytes"),
+            "sequence": data.get("sequence"),
+            "reason_code": data.get("reason_code"),
+        }
 
     def _on_obc_status(self, _data: dict[str, Any]) -> None:
         """Re-resolve the downlink envelope when the profile changes.
@@ -407,10 +544,10 @@ class CommsService(Service):
         # from the trip before would make that setting true only until the first
         # time anybody ever turned the beacon on.
         #
-        # It is not a widening of the envelope — `lora_enabled` is still the
-        # conjunction — and it is not a lock either: `lora on` from the radio,
+        # It is not a widening of the envelope — `beacon_enabled` is still the
+        # conjunction — and it is not a lock either: `beacon on` from the radio,
         # from SSH or from the dashboard console works immediately afterwards.
-        self._lora_requested = self._downlink.beacon
+        self._beacon_requested = self._downlink.beacon
         self.log.info(
             "profile %s permits lora=%s and starts the beacon %s",
             profile.value,
@@ -477,23 +614,36 @@ class CommsService(Service):
         )
 
     def _set_config(self, params: Any) -> None:
-        """Turn a permitted channel off, or back on, in memory only.
+        """Turn the scheduled beacon off, or back on, in memory only.
 
-        Note what turning LoRa off over LoRa costs: the uplink stops being
-        polled, so the way back on is MQTT or a restart. That is not an
-        oversight — the flags reset to the profile's defaults on restart
-        precisely so a power cycle is a way out of any state a command left.
+        **Turning it off over the radio costs nothing but the schedule.** The
+        inbox keeps being polled — that is ``lora_listening``, the profile's
+        call — and since 2026-09-03 the answer to a command goes out too, this
+        command's own confirmation included. So there is no one-way door here:
+        quiet is not deaf, and the satellite that was just silenced still says
+        so. The flag resets to the profile's default on restart, which keeps a
+        power cycle a way out of any state a command left.
         """
         if not isinstance(params, dict):
             self.log.warning("set_comms_config with no params; nothing changed")
             return
-        if "lora_enabled" in params:
-            self._lora_requested = bool(params["lora_enabled"])
+        # ``lora_enabled`` is the name this parameter had until 2026-09-03, and
+        # it is accepted for as long as a client that predates the rename might
+        # still be sending it: the dashboard build deployed on 2026-09-02 does,
+        # and a satellite that stopped answering its own console on the day the
+        # rename landed would have made the rename the fault. The new name wins
+        # when both appear — a client that sends both is a client mid-upgrade,
+        # and the spelling it learned last is the one it means.
+        for name in ("lora_enabled", "beacon_enabled"):
+            if name in params:
+                self._beacon_requested = bool(params[name])
         for name, reason in RETIRED_PARAMS.items():
             if name in params:
                 self.log.warning("%s is no longer COMMS' to set: %s", name, reason)
         self.log.info(
-            "lora now %s (profile permits %s)", self.lora_enabled, self._downlink.lora
+            "the beacon is now %s (profile permits lora=%s)",
+            self.beacon_enabled,
+            self._downlink.lora,
         )
         self._publish_status()
 
@@ -543,7 +693,7 @@ class CommsService(Service):
                 rssi=message.rssi,
                 hops=message.hops,
             )
-            self._relay("lora", message.text)
+            self._relay(message.text)
 
     def _refuse_uplink(self, message: RadioMessage) -> None:
         """Drop a message that arrived on somebody else's channel, in silence.
@@ -583,23 +733,24 @@ class CommsService(Service):
             len(message.text.encode("utf-8")),
         )
 
-    def _relay(self, source: str, text: str) -> None:
-        """Put one uplinked command on the bus, byte for byte as it arrived.
+    def _relay(self, text: str) -> None:
+        """Put one uplinked line on the bus, if it is a command at all.
 
-        Verbatim matters more than it looks. A field this build does not know
-        about still reaches the service that does, and there is no re-encoding
-        step that can quietly disagree with whoever composed the message.
+        **The compact table is the whole radio vocabulary** since 2026-09-03. A
+        line is translated to canonical JSON *here*, once, on the way in (see
+        ``compact.py``), and anything that table does not know is not a command.
+        Hand-composed JSON used to be a third branch, relayed byte for byte;
+        dropping it leaves one parser for the air instead of two, and nothing
+        left that could disagree with ``compact.py`` about what a command is.
 
-        A compact line is the one exception, translated to canonical JSON
-        *here*, once, on the way in (see ``compact.py``). The bare spelling and
-        the ``!`` one part ways only when a line does not parse: ``!`` declared
-        intent, so its typos are answered; a bare line that is not a command is
-        somebody's chat, left alone.
+        The bare spelling and the ``!`` one part ways only when a line does not
+        parse: ``!`` declared intent, so its typos are answered on the air; a
+        bare line that is not a command costs a log line and no airtime.
         """
         if compact.is_compact(text):
             translated = compact.translate(text)
             if translated is None:
-                self.log.warning("unknown compact uplink: %r", text[:120])
+                self.log.warning("unknown compact uplink: %r", text[:LOG_EXCERPT_CHARS])
                 self._schedule_ack("?", ok="0", err="unknown")
                 return
             self._relay_compact(text, translated)
@@ -608,13 +759,22 @@ class CommsService(Service):
         if bare is not None:
             self._relay_compact(text, bare)
             return
-        command = mesh.uplink_command(text, self.log, source=source)
-        if command is None:
-            return
-        self._last_uplink = time.time()
-        self.publish_raw("command", command, qos=1)
-        self.log.info("relayed a command from the %s channel onto %s", source, TOPICS["command"])
-        self._schedule_ack(self._command_name(command))
+        # Not a command in any spelling the radio has — JSON included, since
+        # 2026-09-03. It is logged and it is not answered, and both halves are
+        # chosen rather than left over.
+        #
+        # Logged, because this branch already sits behind the private-channel
+        # filter: whoever typed the line holds the ``CubeSat`` key, so an
+        # unrecognised one is far likelier an operator reaching for the JSON
+        # that worked last week than a stranger's chat. This line is the trace
+        # that person goes looking for, and it costs no airtime — which is the
+        # resource that is actually scarce out here.
+        #
+        # Not answered, because a reply is precisely what ``!`` buys. Spending
+        # an ``err=unknown`` on every stray line is what the bare spelling was
+        # careful not to do on a shared band, and answering JSON in particular
+        # would make a promise about it that the radio no longer keeps.
+        self.log.warning("dropping an uplink that is not a command: %r", text[:LOG_EXCERPT_CHARS])
 
     def _relay_compact(self, text: str, translated: compact.Compact) -> None:
         self._last_uplink = time.time()
@@ -623,21 +783,17 @@ class CommsService(Service):
             # the radio is the thing being asked. The beacon the answer rides
             # already carries state, battery and position, so a query reply is
             # the ordinary proof of life plus the fields that were asked for.
-            short = QUERIES[translated.command]
-            self._schedule_ack(short, extra=self._query_reply(translated.command), immediate=True)
+            self._schedule_ack(
+                translated.verb, extra=self._query_reply(translated.command), query=True
+            )
             return
         self.publish_raw("command", translated.json, qos=1)
         self.log.info("relayed %r as %s", text, translated.json)
-        self._schedule_ack(translated.command)
-
-    @staticmethod
-    def _command_name(command_json: str) -> str:
-        # uplink_command has already vetted the JSON, so this cannot fail —
-        # but the ack must never be the thing that breaks a relay.
-        try:
-            return str(json.loads(command_json)["command"])
-        except Exception:  # pragma: no cover — vetted upstream
-            return "?"
+        # ``re=`` names the verb that was typed, never the command it became.
+        # `beacon on` came back as `re=set_comms_config` until 2026-09-03, which
+        # asks a person on a phone to translate our vocabulary back into theirs
+        # before they can believe the answer.
+        self._schedule_ack(translated.verb, reads_photo=translated.command == TAKE_PHOTO)
 
     def _schedule_ack(
         self,
@@ -646,15 +802,28 @@ class CommsService(Service):
         ok: str | None = None,
         err: str | None = None,
         extra: dict[str, str] | None = None,
-        immediate: bool = False,
+        query: bool = False,
+        reads_photo: bool = False,
     ) -> None:
         """One out-of-schedule beacon, ``ACK_DELAY_SEC`` from now, saying ``re=``.
 
         The delay is what lets the ack carry the *outcome*: by the time it goes
         out, ``st=`` and ``pr=`` show what the command actually did, which is
         more honest than an ``ok=1`` COMMS cannot vouch for. ``ok``/``err``
-        appear only where COMMS itself is the handler and actually knows.
-        ``extra`` is a query's answer, riding the same slot.
+        appear only where COMMS itself is the handler and actually knows, or
+        where the handler said something the ack can read — ``reads_photo``
+        being the one of those, resolved at transmit time in ``_photo_fields``.
+
+        **What collapses and what does not.** A ``query`` is a snapshot of the
+        present: it is answered without waiting, and a newer one replaces an
+        unsent older one, because the fresh answer answers the earlier question
+        too and five near-identical telemetry lines are airtime spent twice on a
+        shared mesh. Everything else has an effect in the world — a photograph
+        taken, a profile switched, a transmitter silenced — and keeps its own
+        reply, because two photographs are two events and an operator who
+        received one confirmation for two commands cannot tell which one it is
+        about. That distinction is the fix: the single slot this replaced lost
+        the first of any two commands sent inside ten seconds, silently.
         """
         fields = {"re": re}
         if ok is not None:
@@ -663,7 +832,27 @@ class CommsService(Service):
             fields["err"] = err
         if extra:
             fields.update(extra)
-        self._pending_ack = (fields, self._clock() + (0.0 if immediate else ACK_DELAY_SEC))
+        if query:
+            self._pending_acks = [ack for ack in self._pending_acks if not ack.collapses]
+        self._pending_acks.append(
+            _Ack(
+                re=re,
+                due=self._clock() + (0.0 if query else ACK_DELAY_SEC),
+                fields=fields,
+                collapses=query,
+                photo_since=time.time() if reads_photo else None,
+            )
+        )
+        while len(self._pending_acks) > MAX_PENDING_ACKS:
+            # The oldest goes, and it is logged: an answer nobody will ever hear
+            # is exactly the failure this queue exists to end, so it must not
+            # also be invisible from the satellite's side.
+            dropped = self._pending_acks.pop(0)
+            self.log.warning(
+                "the reply queue is full (%d); dropping the oldest unsent reply re=%s",
+                MAX_PENDING_ACKS,
+                dropped.re,
+            )
 
     # ── the queries ─────────────────────────────────────────────────────────
 
@@ -753,25 +942,88 @@ class CommsService(Service):
         return str(max(0, round(time.time() - timestamp)))
 
     def _maybe_ack(self) -> None:
-        """Transmit the pending reply, if it is due and speaking is permitted.
+        """Transmit **one** due reply, if the profile permits speaking at all.
 
-        The slot is cleared before the permission check: a satellite told to be
-        quiet is quiet in its answers too — the reply is dropped, not queued
-        for a louder day. A failed send is dropped for the same reason the
-        going-down beacon steps over one: the next scheduled beacon carries the
-        same state fields anyway.
+        Gated on ``lora_listening`` and not on ``beacon_enabled`` (2026-09-03).
+        An answer is not a beacon: a runtime flag somebody set an hour ago
+        rations the *schedule*, and it must not be able to swallow the answer to
+        a question somebody just asked — least of all the confirmation of
+        ``beacon off`` itself, which is the one command whose success and whose
+        total failure look identical from a phone. A profile that forbids the
+        radio still says nothing, because there the radio is not part of the
+        mission at all, and the queue is discarded rather than held: those
+        replies would be answering commands that arrived under another profile.
+
+        **One per wake is the airtime budget**, and it is deliberate: the queue
+        exists so a reply is *late* rather than lost, not so a burst of commands
+        can buy a burst of transmissions on a shared duty-cycle-limited mesh.
+        The first *due* entry goes, not strictly the first — a query asked while
+        a photo ack is still ripening is answered now rather than made to wait
+        out somebody else's ten seconds.
+
+        A failed send drops the reply for the same reason the going-down beacon
+        steps over one: the next scheduled beacon carries the same state fields
+        anyway, and retrying an answer to a question that is by then two minutes
+        old spends airtime on a stale one.
         """
-        if self._pending_ack is None:
+        if not self._pending_acks:
             return
-        fields, due = self._pending_ack
-        if self._clock() < due:
+        if not self.lora_listening:
+            self._pending_acks.clear()
             return
-        self._pending_ack = None
-        if not self.lora_enabled:
+        now = self._clock()
+        position = next(
+            (index for index, entry in enumerate(self._pending_acks) if entry.due <= now), None
+        )
+        if position is None:
             return
+        ack = self._pending_acks.pop(position)
+        fields = dict(ack.fields)
+        if ack.photo_since is not None:
+            fields.update(self._photo_fields(ack.photo_since))
         if self._beacon(reply=fields):
-            self.log.info("ack sent: re=%s", fields["re"])
+            self.log.info("ack sent: re=%s", ack.re)
             self._last_beacon = self._clock()
+
+    def _photo_fields(self, since: float) -> dict[str, str]:
+        """What PAYLOAD said about the photograph this ack is answering for.
+
+        The general shape of a reply is that it reads the *handler's own*
+        message, and this is the one command whose outcome is not a state field:
+        a frame was written or it was not, and until 2026-09-03 ``!photo`` came
+        back as an ordinary telemetry line that said nothing about it while the
+        picture was visible in the dashboard.
+
+        ``kb`` is the size the operator asked for and ``seq`` the frame's number
+        within its mission (absent outside one — a photograph with no mission
+        open is never filed and has no sequence). The mission id itself is
+        already on every beacon as ``m=``, so it is not repeated. The free
+        megabytes the contract also named are **not** here: they are on
+        ``payload_status``, which COMMS does not hold, and the case they were
+        wanted for arrives instead as ``err=nospace`` from the refusal itself.
+
+        With nothing published since the command went out, the answer is
+        ``err=noreply`` and deliberately no ``ok=``. Silence is COMMS' own
+        observation and is worth reporting — PAYLOAD stopped by the profile, or
+        a camera that never came back, look exactly like this — but ``ok=0``
+        would be a verdict on a capture COMMS never saw, which is the invented
+        number this project refuses.
+        """
+        photo = self._photo
+        at = (photo or {}).get("at")
+        if photo is None or not isinstance(at, (int, float)) or at < since:
+            return {"err": "noreply"}
+        if not photo["ok"]:
+            code = photo.get("reason_code")
+            return {"ok": "0", "err": code if isinstance(code, str) and code else "failed"}
+        fields = {"ok": "1"}
+        size = photo.get("size_bytes")
+        if isinstance(size, int) and not isinstance(size, bool):
+            fields["kb"] = str(round(size / 1024))
+        sequence = photo.get("sequence")
+        if isinstance(sequence, int) and not isinstance(sequence, bool):
+            fields["seq"] = str(sequence)
+        return fields
 
     # ── the two channels ────────────────────────────────────────────────────
 
@@ -810,7 +1062,7 @@ class CommsService(Service):
         next wake tries again instead of leaving a returning radio idle for the
         rest of the interval.
         """
-        if not self.lora_enabled:
+        if not self.beacon_enabled:
             return
         interval = self._beacon_interval()
         if interval is None:
@@ -886,16 +1138,24 @@ class CommsService(Service):
         the same thing again buys nothing and would drown the one that says
         something new.
 
-        ``lora_enabled`` is the **effective** value, the profile and the runtime
-        flag already combined. A reader wants to know whether the radio is
-        transmitting, not to have to fetch a profiles file to work it out.
+        ``beacon_enabled`` is the **effective** value, the profile and the
+        runtime flag already combined. A reader wants to know whether the radio
+        is beaconing, not to have to fetch a profiles file to work it out.
 
-        ``lora_listening`` is reported separately from ``lora_enabled`` for the
-        same reason ``host_status`` reports the achieved profile separately from
-        the requested one: since a silenced transmitter still hears, "quiet" and
-        "deaf" are now genuinely different states, and this topic is the only
-        place that difference is visible. Collapsing them would turn a
-        debuggable radio into a mystery.
+        It is published under its old name ``lora_enabled`` as well, with the
+        same value, and that duplication is temporary on purpose: the dashboard
+        build deployed on 2026-09-02 reads the old key, and a satellite whose
+        radio widget went blank on the day of a rename would have made the
+        rename the fault. The mirror goes when the groundstation build that
+        reads ``beacon_enabled`` is deployed — it is the only reader left, and
+        nothing on the satellite consumes either key.
+
+        ``lora_listening`` is reported separately from ``beacon_enabled`` for
+        the same reason ``host_status`` reports the achieved profile separately
+        from the requested one: since a silenced transmitter still hears, and
+        since 2026-09-03 still answers, "quiet" and "deaf" are genuinely
+        different states, and this topic is the only place that difference is
+        visible. Collapsing them would turn a debuggable radio into a mystery.
 
         ``command_channel`` is the third of that set and exists for the same
         reason. Since the uplink filter landed, hearing a message and acting on
@@ -909,7 +1169,10 @@ class CommsService(Service):
         """
         snapshot: dict[str, Any] = {
             "radio": self._mesh.describe(),
-            "lora_enabled": self.lora_enabled,
+            "beacon_enabled": self.beacon_enabled,
+            # Deprecated 2026-09-03, kept for the deployed dashboard. Same
+            # value, always — never let these two disagree.
+            "lora_enabled": self.beacon_enabled,
             "lora_listening": self.lora_listening,
             "command_channel": self._command_channel,
             "last_uplink": self._last_uplink,

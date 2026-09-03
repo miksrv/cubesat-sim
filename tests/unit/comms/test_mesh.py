@@ -1,34 +1,27 @@
-"""The uplink contract, and a radio that cannot take the service down with it.
-
-``uplink_command`` is the gate every inbound command passes through, from the
-radio and from the cloud queue alike, so it is tested as the shape check it is:
-it must parse to an object and carry a ``command`` field, and then the *original
-text* comes back out. Returning the text rather than the parsed object is what
-makes "verbatim" true — a field this build has never heard of still reaches the
-service that has.
+"""A radio that cannot take the service down with it.
 
 ``MeshChannel`` is tested for one property above all: every way a radio can fail
 is a return value. COMMS is the only way back into a satellite in ``FLIGHT``,
 and a link service that exits on a bad packet has removed the recovery path it
 exists to provide.
+
+The uplink contract that used to be tested here went with ``uplink_command`` on
+2026-09-03: the radio takes compact verbs and nothing else now, so what an
+inbound line means is ``compact.py``'s to decide and ``test_service.py``'s to
+check. Nothing in this module looks at what a message says.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 
-import pytest
-
-from cubesat.comms import mesh
-from cubesat.comms.mesh import LOG_EXCERPT_CHARS, MeshChannel
+from cubesat.comms.mesh import MeshChannel
 from cubesat.hal.interfaces import RadioMessage
 from cubesat.hal.mock.radio import MockRadio
 
 LOG = logging.getLogger("test-mesh")
 
-RECOVER = '{"command": "recover"}'
-SET_PROFILE = '{"command":"set_profile","params":{"profile":"HOSTED"}}'
+RECOVER = "recover"
 
 
 class BrokenRadio:
@@ -55,60 +48,6 @@ class SilentRadio(MockRadio):
         return False
 
 
-# ── the uplink contract ─────────────────────────────────────────────────────
-
-
-def test_a_command_comes_back_exactly_as_it_arrived():
-    # Byte for byte, so there is no re-encoding step that can quietly disagree
-    # with whoever composed the message on the other side.
-    assert mesh.uplink_command(SET_PROFILE, LOG, source="lora") == SET_PROFILE
-
-
-def test_a_field_this_build_has_never_heard_of_survives_the_relay():
-    text = '{"command":"set_profile","params":{"profile":"EXPO"},"invented_tomorrow":true}'
-    assert mesh.uplink_command(text, LOG, source="lora") == text
-
-
-def test_the_ground_can_type_a_command_into_a_phone_and_have_it_fit():
-    # 55 bytes, comfortably inside the 240-byte message. This is the recovery
-    # path for FLIGHT, where Wi-Fi is down and there is no SSH.
-    assert len(SET_PROFILE.encode("utf-8")) < 240
-    assert mesh.uplink_command(SET_PROFILE, LOG, source="lora") is not None
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "hello from the mesh",
-        "",
-        "[1, 2, 3]",
-        '"just a string"',
-        "null",
-        '{"params": {"profile": "EXPO"}}',
-        '{"command": 42}',
-    ],
-)
-def test_anything_that_is_not_a_command_is_dropped(text, caplog):
-    with caplog.at_level(logging.WARNING):
-        assert mesh.uplink_command(text, LOG, source="lora") is None
-    assert "lora: dropping" in caplog.text
-
-
-def test_a_rejected_message_is_quoted_in_the_log_but_not_at_full_length(caplog):
-    # Truncating here is fine and truncating a payload is not: this is a line
-    # for a human about something already being discarded.
-    with caplog.at_level(logging.WARNING):
-        mesh.uplink_command("x" * (LOG_EXCERPT_CHARS * 3), LOG, source="api")
-    assert "…" in caplog.text
-    assert len(caplog.text) < LOG_EXCERPT_CHARS * 3
-
-
-def test_the_channel_a_message_came_in_on_is_named_in_the_log(caplog):
-    with caplog.at_level(logging.WARNING):
-        mesh.uplink_command("nonsense", LOG, source="api")
-    assert "api: dropping" in caplog.text
-
-
 # ── the channel ─────────────────────────────────────────────────────────────
 
 
@@ -128,8 +67,8 @@ def test_a_radio_that_says_no_is_reported_absent(caplog):
 
 
 def test_a_probe_that_raises_is_the_same_answer_as_one_that_says_no(caplog):
-    # A driver may raise rather than return False. COMMS still comes up — the
-    # cloud channel may well be the working one.
+    # A driver may raise rather than return False. Either way the answer to
+    # "is it there?" is no, and COMMS still comes up to say so.
     channel = MeshChannel(BrokenRadio(), LOG)
     with caplog.at_level(logging.ERROR):
         assert channel.open() is False
@@ -222,12 +161,3 @@ def test_a_driver_without_them_reports_nulls_rather_than_failing():
     # neither.
     described = MeshChannel(MockRadio(), LOG).describe()
     assert described["node"] is None and described["region"] is None
-
-
-def test_an_api_queue_item_is_held_to_the_same_standard_as_a_radio_message():
-    # One validator for both channels. Two would eventually disagree about what
-    # a command is, and then a command would work over one link and not the
-    # other — the one property this design will not give up.
-    queued = {"command": "safe_mode", "request_id": "req_010"}
-    assert mesh.uplink_command(json.dumps(queued), LOG, source="api") is not None
-    assert mesh.uplink_command(json.dumps({"note": "hello"}), LOG, source="api") is None

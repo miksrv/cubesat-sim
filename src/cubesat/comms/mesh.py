@@ -1,83 +1,31 @@
-"""The Meshtastic channel, and the uplink contract every channel shares.
+"""The Meshtastic channel: a radio that cannot take the service down with it.
 
-Two things live here. ``MeshChannel`` wraps the ``Radio`` the HAL hands over and
-makes it unable to hurt the service: a radio that is unplugged, a board in a
-boot loop or a library raising something nobody has seen before costs a beacon,
-never the process. Everything below catches broadly and on purpose — COMMS is
-the only way back into a satellite in ``FLIGHT``, and a link service that exits
-on a bad packet has removed the recovery path it exists to provide.
+``MeshChannel`` wraps the ``Radio`` the HAL hands over and makes it unable to
+hurt the service: a radio that is unplugged, a board in a boot loop or a library
+raising something nobody has seen before costs a beacon, never the process.
+Everything below catches broadly and on purpose — COMMS is the only way back
+into a satellite in ``FLIGHT``, and a link service that exits on a bad packet
+has removed the recovery path it exists to provide.
 
-``uplink_command`` is the other half, and it is deliberately not a mesh-only
-function. **Every command works identically over MQTT and over LoRa**, because
-COMMS re-publishes an uplink verbatim onto ``cubesat/command`` and nothing
-downstream knows or cares which link it arrived on. One validator, applied to
-both links, is what keeps that true — two would eventually disagree about what
-a command is, and then a command would work over one link and not the other.
+There was a second half here until 2026-09-03: ``uplink_command``, a JSON shape
+check that let a hand-composed command be relayed off the air byte for byte. It
+went with the JSON uplink itself. **The radio vocabulary is now the compact
+table in ``compact.py`` and nothing else** — one parser for the air instead of
+two, so there is no second opinion about what a command is, and no shape check
+here for the compact table to drift away from.
 
-Nothing here looks at the *mesh* channel, and that is the right place for that
-rule not to be: which channel may carry a command is COMMS' policy and lives in
-``service.py`` → ``_refuse_uplink``, ahead of this function. By the time a line
-reaches ``uplink_command`` it has already been established as coming from the
-private channel, and what is left to decide is only whether it is a command.
-
-**Commands arrive as JSON text.** Not a compact binary encoding, for the same
-reason the beacon going out is readable: a person can type
-
-    {"command":"set_profile","params":{"profile":"HOSTED"}}
-
-into the Meshtastic phone app — 55 bytes, comfortably inside the 240-byte
-message — and recover a satellite whose Wi-Fi is off and which has no SSH. A
-translation layer would also break the "verbatim" property: the text that
-arrives is the text that is re-published, so there is no encoding step that can
-quietly disagree with the decoder on the other side.
-
-**Validation stops at the shape.** It must parse to an object and carry a
-``command`` field. That is all — this module does not know what commands exist,
-does not check parameters and never acts on one. Whether ``set_profile`` is
-legal is OBC's decision, ``take_photo`` is PAYLOAD's, and ``set_comms_config``
-comes back around the loop to COMMS itself as an ordinary MQTT message. Deciding
-here would mean the LoRa path and the MQTT path validated differently, which is
-the one property this design will not give up.
+Which traffic is even considered is decided earlier still, in ``service.py`` →
+``_refuse_uplink``: only the private ``CubeSat`` channel is acted on. That rule
+is COMMS' policy and deliberately not this module's — nothing here looks at the
+mesh channel at all.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from cubesat.hal.interfaces import Radio, RadioMessage
-
-#: How much of a rejected message is quoted in the log. Truncating *here* is
-#: fine and truncating a payload is not: this is a log line for a human, not
-#: something anyone will act on, and an uplink that is being dropped anyway is
-#: the one place a shortened copy cannot mislead.
-LOG_EXCERPT_CHARS = 120
-
-
-def uplink_command(text: str, log: logging.Logger, *, source: str) -> str | None:
-    """Return ``text`` unchanged if it is a command, else None.
-
-    Returning the original string rather than the parsed object is the point:
-    what gets re-published is the bytes that arrived, so a field this build does
-    not know about still reaches the service that does.
-    """
-    try:
-        data = json.loads(text)
-    except ValueError:
-        log.warning("%s: dropping a message that is not JSON: %s", source, _excerpt(text))
-        return None
-    if not isinstance(data, dict) or not isinstance(data.get("command"), str):
-        # Ordinary mesh chat looks exactly like this, and so does a fat-fingered
-        # command typed into a phone. Worth a warning either way: the second
-        # case is somebody standing in a field wondering why nothing happened.
-        log.warning("%s: dropping a message with no command field: %s", source, _excerpt(text))
-        return None
-    return text
-
-
-def _excerpt(text: str) -> str:
-    return repr(text if len(text) <= LOG_EXCERPT_CHARS else text[:LOG_EXCERPT_CHARS] + "…")
 
 
 class MeshChannel:

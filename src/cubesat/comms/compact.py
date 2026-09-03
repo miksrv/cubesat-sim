@@ -1,12 +1,15 @@
 """The compact uplink syntax: what a person can actually type on a phone.
 
-The JSON uplink is fine for a ground station and hopeless for a thumb: quoted
-JSON on a phone keyboard in a field is where commands go to be mistyped. So
-COMMS additionally accepts a compact form and canonicalises it into JSON
-**before** the relay — one translation point, on the way in, and the JSON path
-stays verbatim, so there is still no re-encoding step that can quietly disagree
-with whoever composed the message. The contract, with the reasoning, is
-``docs/concept.md`` → The radio command contract.
+**This table is the whole radio vocabulary** since 2026-09-03. Quoted JSON on a
+phone keyboard in a field is where commands go to be mistyped, so COMMS accepts
+a compact form and canonicalises it into JSON **before** the relay — one
+translation point, on the way in. Hand-composed JSON off the air used to be
+relayed verbatim beside it and no longer is: an uplink is a line this table
+knows or it is not a command, which leaves one parser on the radio side instead
+of two with room to disagree. Everything the satellite understands is still
+reachable over MQTT, where the dashboard and the CLI publish the JSON directly.
+The contract, with the reasoning, is ``docs/concept.md`` → The radio command
+contract.
 
 The spelling is a bare verb — ``ping``, ``profile FLIGHT`` — the same lines the
 dashboard's Mission Console takes, so there is one command language however the
@@ -32,22 +35,33 @@ The query verbs — ``ping``, ``pos``, ``sys``, ``env``, ``mission`` — are
 answered by COMMS itself from its caches, immediately and without a relay:
 the radio is the thing being asked.
 
-Ordinary mesh chat does not start with ``!``, so a message that is neither a
-``!`` line nor JSON is still just chat and is never answered.
+Ordinary mesh chat does not start with ``!``, so a message this table does not
+know is still just chat and is never answered.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
 class Compact:
-    """One translated line: the canonical JSON and the command it names."""
+    """One translated line: the canonical JSON, the command, and the spelling.
+
+    ``verb`` is the word the operator actually typed — ``beacon``, ``photo``,
+    ``pos`` — and it travels with the translation for one reason: the ``re=``
+    field of the reply is read on a phone, and a person who typed ``beacon off``
+    and got back ``re=set_comms_config`` has to translate the answer back into
+    their own vocabulary to believe it (observed on the hardware, 2026-09-02).
+    The canonical name is what goes on the bus; the spelling is what goes on the
+    air. Filled in by ``translate`` rather than by each builder, so a new verb
+    cannot forget it.
+    """
 
     json: str
     command: str
+    verb: str = ""
 
 
 def is_compact(text: str) -> bool:
@@ -63,8 +77,8 @@ def translate(text: str) -> Compact | None:
     Takes the bare spelling and the ``!``-prefixed one alike — the prefix is
     stripped, not required. What None means depends on the caller's channel:
     for a ``!`` line it is a *reply* (``re=? ok=0 err=unknown``), for a bare
-    line it means the text was never a command — chat, or JSON for the
-    verbatim path.
+    line it means the text was never a command at all — chat, or a spelling the
+    radio stopped taking, and either way it is logged and left alone.
     """
     stripped = text.strip()
     words = stripped.removeprefix("!").split()
@@ -74,7 +88,8 @@ def translate(text: str) -> Compact | None:
     builder = _TABLE.get(verb)
     if builder is None:
         return None
-    return builder(args)
+    translated = builder(args)
+    return None if translated is None else replace(translated, verb=verb)
 
 
 def _command(name: str, **params: object) -> Compact:
@@ -120,11 +135,17 @@ def _beacon(args: list[str]) -> Compact | None:
     place that distinction has to be unmistakable is the command that makes the
     satellite go quiet — because "quiet but listening" is the way back into a
     satellite in SAFE, and "deaf" is not a state anything here can recover from.
+
+    The parameter it sets was renamed for the same reason on 2026-09-03:
+    ``lora_enabled`` said the radio was being switched off, and since replies
+    are gated on the profile rather than on this flag, it does not even silence
+    every transmission any more. COMMS still accepts the old spelling on the way
+    in — see ``_set_config``.
     """
     if args == ["on"]:
-        return _command("set_comms_config", lora_enabled=True)
+        return _command("set_comms_config", beacon_enabled=True)
     if args == ["off"]:
-        return _command("set_comms_config", lora_enabled=False)
+        return _command("set_comms_config", beacon_enabled=False)
     return None
 
 

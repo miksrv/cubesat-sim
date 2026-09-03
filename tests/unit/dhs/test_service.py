@@ -49,7 +49,7 @@ def dhs(service_factory, monkeypatch, tmp_path):
 
 
 def obc(client, state=MissionState.NOMINAL, profile=Profile.FLIGHT,
-        persistence=Persistence.MISSION_DB, label=None):
+        persistence=Persistence.MISSION_DB, label=None, start_reason=None):
     """Deliver the one retained message DHS opens a mission from."""
     client.deliver(
         TOPICS["obc_status"],
@@ -59,6 +59,7 @@ def obc(client, state=MissionState.NOMINAL, profile=Profile.FLIGHT,
             "cadence_scale": 1.0,
             "persistence": persistence.value,
             "mission_label": label,
+            "mission_start_reason": start_reason,
         },
     )
 
@@ -214,6 +215,33 @@ def test_a_mission_label_applies_to_the_next_mission_and_not_to_a_running_one(dh
     obc(client, label="something else")
 
     assert missions_in(tmp_path / "comms.db")[0]["label"] == "walk to work"
+
+
+def test_a_mission_records_why_it_started(dhs, tmp_path):
+    # A mission opened by a resume is the second half of a trip whose first half
+    # is already in this table, closed as interrupted by orphan recovery. The
+    # column is what says which of the two a row is (W11).
+    service, client = dhs
+    service.on_start()
+    obc(client, label="walk to work", start_reason="resume")
+    assert missions_in(tmp_path / "comms.db")[0]["start_reason"] == "resume"
+
+
+def test_a_mission_nobody_said_anything_about_records_nothing_about_it(dhs, tmp_path):
+    # Null rather than an assumed "command": obc_status from a build that does
+    # not send the field is not evidence that a human asked for this.
+    service, client = dhs
+    service.on_start()
+    obc(client)
+    assert missions_in(tmp_path / "comms.db")[0]["start_reason"] is None
+
+
+@pytest.mark.parametrize("junk", [7, True, {"why": "resume"}])
+def test_a_start_reason_that_is_not_a_word_is_dropped(dhs, tmp_path, junk):
+    service, client = dhs
+    service.on_start()
+    obc(client, start_reason=junk)
+    assert missions_in(tmp_path / "comms.db")[0]["start_reason"] is None
 
 
 # ── the recording gate ──────────────────────────────────────────────────────

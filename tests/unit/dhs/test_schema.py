@@ -82,12 +82,13 @@ def test_a_version_1_database_is_migrated_in_place_with_its_history_intact(db_pa
     with caplog.at_level(logging.INFO):
         conn = schema.connect(db_path, LOG)
 
-    assert user_version(conn) == schema.SCHEMA_VERSION == 4
-    # Step 1 is not re-run; only the steps this file had never had.
+    assert user_version(conn) == schema.SCHEMA_VERSION
+    # Step 1 is not re-run; every step this file had never had is. Derived from
+    # MIGRATIONS rather than listed, so a new migration is covered by this test
+    # the day it lands instead of the day somebody remembers to add a line.
     assert "applying schema migration 1" not in caplog.text
-    assert "applying schema migration 2" in caplog.text
-    assert "applying schema migration 3" in caplog.text
-    assert "applying schema migration 4" in caplog.text
+    for migration in schema.MIGRATIONS[1:]:
+        assert f"applying schema migration {migration.version}" in caplog.text
     # And the reason any of this matters: a walk to work happened once.
     assert conn.execute("SELECT COUNT(*) AS n FROM telemetry").fetchone()["n"] == 3
     mission = conn.execute("SELECT * FROM missions").fetchone()

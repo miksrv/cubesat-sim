@@ -345,6 +345,18 @@ _PURGED_AT_DDL = (
     "ALTER TABLE missions ADD COLUMN purged_at TEXT",
 )
 
+_START_REASON_DDL = (
+    # Why the mission was opened: `command` or `resume` (ROADMAP W11, 2026-09-03).
+    #
+    # A mission opened by a resume is the second half of a trip whose first half
+    # is already in this table, closed as `interrupted` by orphan recovery at
+    # the timestamp of its own last row. Without this column the two are one
+    # label repeated, and nothing says which of them the reset fell between.
+    # Null on every mission recorded before the column existed, which is the
+    # honest answer for a run whose start nobody was recording.
+    "ALTER TABLE missions ADD COLUMN start_reason TEXT",
+)
+
 #: Forward-only, in order. Never edit a migration that has shipped — a file that
 #: already applied it will not apply it again, so the edit would only ever reach
 #: databases created after it, and the two would silently diverge. That is why
@@ -355,6 +367,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=2, statements=_PURGED_AT_DDL),
     Migration(version=3, statements=(_ATTITUDE_DDL, *_ATTITUDE_INDEX_DDL)),
     Migration(version=4, statements=(_RADIO_DDL, *_RADIO_INDEX_DDL)),
+    Migration(version=5, statements=_START_REASON_DDL),
 )
 
 #: What a database this build can write looks like.

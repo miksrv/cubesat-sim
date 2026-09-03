@@ -9,6 +9,7 @@ something here starts looking like a decision, it belongs next door.
     apply_profile   the whole sequence: stop, network, start, governor, note, report
     set_governor    the governor only, for LOW_POWER without a profile change
     poweroff        requested by OBC on CRITICAL, and by nothing else
+    clear_resume    forget that the last start was a resume — bookkeeping only
 
 Three properties this file is responsible for:
 
@@ -20,10 +21,14 @@ Three properties this file is responsible for:
 * **Applying the active profile again changes nothing.** Units already active
   are left alone; a restart in the middle of a demonstration would be a bug with
   an audience.
-* **The last profile is written, never read back as instruction.** Every boot
-  applies ``default_profile``. The satellite that hit ``CRITICAL`` on a trip and
-  is plugged in at a desk hours later must come up on the home network with SSH
-  reachable — see ``docs/concept.md``.
+* **The last profile is written, and read back as evidence rather than as
+  instruction.** Every boot applies ``default_profile``, always: the satellite
+  that hit ``CRITICAL`` on a trip and is plugged in at a desk hours later must
+  come up on the home network with SSH reachable. What HOSTD publishes is what
+  the file said *before* this boot overwrote it (``previous``) and whether the
+  active profile is still the one applied at start (``boot``). Whether any of
+  that justifies resuming a trip is OBC's decision and is taken from a
+  measurement — see ``obc/resume.py`` and ``docs/concept.md``.
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from cubesat.common import config
+from cubesat.common import config, last_profile
 from cubesat.common import profiles as profiles_module
 from cubesat.common.profiles import (
     KNOWN_SERVICES,
@@ -67,6 +72,15 @@ POWEROFF = "poweroff"
 #: service would also stop and start everything else the profile names, which in
 #: `EXPO` means taking the dashboard away from a room full of people.
 RESTART_SERVICE = "restart_service"
+#: Clear the consecutive-resume count in ``last-profile``. Added 2026-09-03
+#: (ROADMAP W11).
+#:
+#: The narrowest action here by some distance: it starts nothing, stops nothing
+#: and reconfigures nothing — it rewrites one integer in a file HOSTD already
+#: owns. It exists as an action rather than as a timer inside HOSTD because
+#: *when* a resumed session has lived long enough to stop counting as a boot
+#: loop is a judgement, and judgements live in OBC.
+CLEAR_RESUME = "clear_resume"
 
 
 class _Outcome:
@@ -142,6 +156,25 @@ class HostdService(Service):
         self._unit_states: dict[str, str] = {}
         self._errors: tuple[str, ...] = ()
         self._ttl_expires_at: float | None = None
+        #: What ``last-profile`` said before this boot overwrote it. Captured in
+        #: ``on_start`` and never re-read: the file is about to describe *this*
+        #: run, and the question OBC asks — "what was interrupted?" — has only
+        #: one honest answer per boot.
+        self._previous: last_profile.PreviousRun | None = None
+        #: True while the active profile is still the one applied at start.
+        #: False the moment anything asks for a profile, including a resume. It
+        #: is what lets OBC tell a boot from a `systemctl restart cubesat@obc`,
+        #: which is the difference between resuming a trip and overriding a
+        #: human who has already said what they want.
+        self._boot = False
+        #: Carried between an apply and the file write it produces, because the
+        #: consecutive-resume count is a property of the *sequence* of applies
+        #: rather than of any one of them.
+        self._resume_count = 0
+        #: The last thing written to ``last-profile``, so ``clear_resume`` can
+        #: rewrite it with a zeroed count instead of re-reading a file this
+        #: process is the only writer of.
+        self._noted: last_profile.PreviousRun | None = None
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
@@ -155,14 +188,17 @@ class HostdService(Service):
             self.log.info("unit allowlist: %s", ", ".join(sorted(self._allowlist.permitted)))
             self.log.info("units a profile may ask for: %s",
                           ", ".join(sorted(self._allowlist.profile_units)))
-            self._log_previous_profile()
+            self._read_previous_profile()
             if self._socket is not None:
                 self._socket.start()
             # The default profile, never the previous one. This is the decision
             # argued out in docs/concept.md: a boot means the situation is no
             # longer known, and HOSTED is the only safe assumption after an
-            # unattended gap.
-            self.handle({"action": APPLY_PROFILE, "profile": self._profiles.default.value})
+            # unattended gap. What the previous run was doing is published
+            # beside it, for OBC to weigh against a measurement — see W11.
+            self.handle(
+                {"action": APPLY_PROFILE, "profile": self._profiles.default.value, "boot": True}
+            )
 
     def on_stop(self) -> None:
         if self._socket is not None:
@@ -173,19 +209,21 @@ class HostdService(Service):
         # tracked, so anything arriving here is an action for us.
         self.handle(data)
 
-    def _log_previous_profile(self) -> None:
-        """Read ``last-profile`` for the log, and for nothing else.
+    def _read_previous_profile(self) -> None:
+        """Read ``last-profile`` once, before this boot overwrites it.
 
-        "What was it doing before it died?" deserves an answer; "what should it
-        do now?" is answered by ``default_profile`` alone.
+        "What was it doing before it died?" is answered here and published;
+        "what should it do now?" is still answered by ``default_profile`` alone.
+        The consecutive-resume count is carried forward from the file rather
+        than reset, which is the whole of the boot-loop fence on this side: a
+        reset that lands back here must not forget how many resets preceded it.
         """
-        try:
-            previous = config.LAST_PROFILE_FILE.read_text().strip()
-        except OSError:
-            previous = ""
+        self._previous = last_profile.read(config.LAST_PROFILE_FILE)
+        self._resume_count = self._previous.resume_count if self._previous else 0
         self.log.info(
-            "previous run left profile %s; not restoring it — applying %s",
-            previous or "(unrecorded)",
+            "previous run left profile %s (resumes in a row: %d); not restoring it — applying %s",
+            self._previous.profile if self._previous and self._previous.profile else "(unrecorded)",
+            self._resume_count,
             self._profiles.default.value,
         )
 
@@ -205,6 +243,8 @@ class HostdService(Service):
                 return self._set_governor(action)
             if name == RESTART_SERVICE:
                 return self._restart_service(action)
+            if name == CLEAR_RESUME:
+                return self._clear_resume()
             if name == POWEROFF:
                 return self._poweroff(action)
             self.log.error("unknown action %r; nothing was done", name)
@@ -228,10 +268,18 @@ class HostdService(Service):
             self._publish()
             return self._result(ok=False)
 
+        boot = bool(_field(action, "boot"))
+        resume = bool(_field(action, "resume"))
         self.log.info(
-            "applying profile %s (request_id=%s)", spec.name.value, action.get("request_id")
+            "applying profile %s (request_id=%s%s)",
+            spec.name.value,
+            action.get("request_id"),
+            ", resume" if resume else "",
         )
         self._requested = spec.name.value
+        # Set before the sequence rather than after it: a partial apply is still
+        # something having been asked for, and `boot` means "nothing has asked".
+        self._boot = boot
         out = _Outcome(self.log)
         wanted = self._wanted_units(spec)
 
@@ -251,10 +299,13 @@ class HostdService(Service):
         #    that changes what is running.
         self._apply_governor(spec.power.governor, out)
 
-        # 5. Note it, for the log and for `cubesat status`. Not instruction.
-        self._note_profile(spec, out)
-
+        # 5. The deadline before the note, because the note records it: a
+        #    resumed trip serves out the remainder of the strap it already had,
+        #    and it can only do that if the file holds an absolute moment.
         self._ttl_expires_at = self._deadline_for(spec, action)
+        # 6. Note it, for the log, for `cubesat status`, and as the evidence the
+        #    next boot will publish. Still not instruction.
+        self._note_profile(spec, action, boot=boot, resume=resume, out=out)
         self._unit_states = self._collect_unit_states()
         self._errors = tuple(out.errors)
         if out.achieved:
@@ -337,9 +388,42 @@ class HostdService(Service):
             return
         self._governor = governor
 
-    def _note_profile(self, spec: ProfileSpec, out: _Outcome) -> None:
+    def _note_profile(
+        self,
+        spec: ProfileSpec,
+        action: dict[str, Any],
+        *,
+        boot: bool,
+        resume: bool,
+        out: _Outcome,
+    ) -> None:
+        """Record what is running, and how many resumes led to it.
+
+        Three ways the count moves, and each of them is the fence saying
+        something different:
+
+        * **a resume** — one more short life in a row, so it increments;
+        * **the boot-time default** — nothing has been decided yet, so it is
+          carried forward unchanged. Resetting it here would be the fence
+          forgetting its own history on every reset, which is precisely the
+          sequence it exists to notice;
+        * **anything else** — a ground command, a TTL expiring — clears it. Some
+          decision other than a resume has been taken, so this is not a loop.
+        """
+        if resume:
+            self._resume_count += 1
+        elif not boot:
+            self._resume_count = 0
+        noted = last_profile.PreviousRun(
+            profile=spec.name.value,
+            written_at=self._clock(),
+            ttl_expires_at=self._ttl_expires_at,
+            mission_label=_text(_field(action, "mission_label")),
+            resume_count=self._resume_count,
+        )
+        self._noted = noted
         try:
-            config.LAST_PROFILE_FILE.write_text(f"{spec.name.value}\n")
+            last_profile.write(config.LAST_PROFILE_FILE, noted)
         except OSError as exc:
             # Reported but not fatal: the file is information, and losing it
             # does not make the platform any less the profile it now is.
@@ -446,6 +530,32 @@ class HostdService(Service):
         self._publish()
         return self._result(ok=out.achieved)
 
+    # ── clear_resume ────────────────────────────────────────────────────────
+
+    def _clear_resume(self) -> dict[str, Any]:
+        """Forget that this session began as a resume. Bookkeeping, nothing else.
+
+        Sent by OBC once a resumed session has lived long enough to be a flight
+        rather than a boot loop. Nothing on the platform changes: no unit, no
+        network, no governor, and the achieved profile is untouched.
+
+        Idempotent, and silent when there is nothing to forget — OBC may send it
+        after a session that was never a resume at all (a `FLIGHT` entered by
+        hand and then restarted, say), and that is a no-op rather than an error.
+        """
+        out = _Outcome(self.log)
+        self._resume_count = 0
+        if self._noted is not None and self._noted.resume_count:
+            self.log.info("resumed session settled; clearing the consecutive-resume count")
+            self._noted = replace(self._noted, resume_count=0)
+            try:
+                last_profile.write(config.LAST_PROFILE_FILE, self._noted)
+            except OSError as exc:
+                out.noted(f"could not clear the resume count in {config.LAST_PROFILE_FILE}: {exc}")
+        self._errors = tuple(out.errors)
+        self._publish()
+        return self._result(ok=out.achieved)
+
     # ── poweroff ────────────────────────────────────────────────────────────
 
     def _poweroff(self, action: dict[str, Any]) -> dict[str, Any]:
@@ -496,6 +606,13 @@ class HostdService(Service):
             governor=self._governor,
             errors=list(self._errors),
             ttl_expires_at=self._ttl_expires_at,
+            # What the run before this boot was doing, and whether anything has
+            # asked for a profile since. Published rather than acted on: HOSTD
+            # still has no opinion about what either fact means — see W11 and
+            # obc/resume.py, which is where the two are weighed against a
+            # measurement of the mains pin.
+            previous=self._previous.as_dict() if self._previous is not None else None,
+            boot=self._boot,
         )
 
     def _result(self, *, ok: bool) -> dict[str, Any]:
@@ -506,6 +623,16 @@ class HostdService(Service):
             "profile_requested": self._requested,
             "errors": list(self._errors),
         }
+
+
+def _text(value: Any) -> str | None:
+    """A field that has to survive into a file, or nothing.
+
+    Values here arrive from a ground command that may have come over the radio,
+    so a label that is not a string is dropped rather than coerced: a mission
+    named ``{'$ne': None}`` is not a mission name.
+    """
+    return value if isinstance(value, str) and value else None
 
 
 def _field(action: dict[str, Any], name: str) -> Any:

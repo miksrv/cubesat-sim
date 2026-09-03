@@ -173,6 +173,10 @@ class DhsService(Service):
         #: Applied to the next mission opened, never to one already running:
         #: labels are for grouping, not identity.
         self._mission_label: str | None = None
+        #: Why the next mission opens: a command, or a resume after a reset.
+        #: Read off obc_status beside the label, for the same reason the label
+        #: is there — DHS opens a mission from that one retained message.
+        self._mission_start_reason: str | None = None
 
         #: The latest payload from each subsystem. Assembled into a row on the
         #: tick; kept whole in raw_json so nothing measured is lost to a column
@@ -255,6 +259,8 @@ class DhsService(Service):
 
         label = data.get("mission_label")
         self._mission_label = label if isinstance(label, str) else None
+        reason = data.get("mission_start_reason")
+        self._mission_start_reason = reason if isinstance(reason, str) else None
         self._reconcile()
 
     def _on_host_status(self, data: dict[str, Any]) -> None:
@@ -494,7 +500,9 @@ class DhsService(Service):
 
     def _open_mission(self, store: MissionStore, profile: Profile) -> None:
         try:
-            self._mission = store.open(profile.value, self._mission_label)
+            self._mission = store.open(
+                profile.value, self._mission_label, self._mission_start_reason
+            )
         except (sqlite3.Error, OSError):
             self.log.exception("could not open a mission; nothing is being recorded")
             return

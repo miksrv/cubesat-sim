@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from cubesat.common import config, profiles
+from cubesat.common import last_profile as last_profile_file
 from cubesat.common.states import Profile
 from cubesat.common.topics import TOPICS
 from cubesat.hostd.allowlist import DASHBOARD_UNIT, MDNS_UNIT, Refused, unit_for
@@ -121,7 +122,13 @@ def test_the_boot_applies_the_default_profile_and_never_the_previous_one(hostd, 
 
     assert "previous run left profile FLIGHT" in caplog.text
     assert "not restoring it" in caplog.text
-    assert config.LAST_PROFILE_FILE.read_text().strip() == Profile.HOSTED.value
+    # The file now describes this run, and the pre-2026-09-03 spelling it was
+    # written in — a bare profile name — was still read.
+    assert last_profile_file.read(config.LAST_PROFILE_FILE).profile == Profile.HOSTED.value
+    # What the interrupted run was doing is published rather than acted on: OBC
+    # weighs it against a mains reading, and HOSTD keeps no opinion (W11).
+    assert client.last(TOPICS["host_status"])["previous"]["profile"] == "FLIGHT"
+    assert client.last(TOPICS["host_status"])["boot"] is True
     status = client.last(TOPICS["host_status"])
     assert status["profile"] == status["profile_requested"] == Profile.HOSTED.value
     # HOSTED runs the external services and, of the mission services, COMMS
@@ -497,6 +504,118 @@ def test_hostd_does_not_act_on_an_expiry_it_has_published(service_factory):
 
     assert len(client.published) == published
     assert client.last(TOPICS["host_status"])["profile"] == "FLIGHT"
+
+
+# ── the record of the previous run, and the resume count ────────────────────
+
+
+def read_file():
+    return last_profile_file.read(config.LAST_PROFILE_FILE)
+
+
+def test_the_file_records_what_a_resume_would_need_to_know(hostd):
+    # Everything the rule in obc/resume.py weighs, written by the one process
+    # that knows it: the profile, its absolute deadline and the mission's name.
+    service, _, _ = hostd
+    service.handle(
+        {"action": "apply_profile", "profile": "FLIGHT", "mission_label": "walk to work"}
+    )
+    written = read_file()
+    assert written.profile == "FLIGHT"
+    assert written.ttl_expires_at == NOW + 600 * 60
+    assert written.mission_label == "walk to work"
+    assert written.written_at == NOW
+
+
+@pytest.mark.parametrize("label", [None, "", 7, {"$ne": None}])
+def test_a_label_that_is_not_a_name_is_not_written(hostd, label):
+    # This arrives from a ground command that may have come over the radio.
+    service, _, _ = hostd
+    service.handle({"action": "apply_profile", "profile": "FLIGHT", "mission_label": label})
+    assert read_file().mission_label is None
+
+
+def test_a_resume_counts_and_the_boot_that_follows_it_carries_the_count(hostd, build):
+    # The fence's whole mechanism on this side: a reset that lands back here
+    # must not forget how many resets preceded it, or three short lives in a row
+    # would read as the first one every time.
+    service, _, _ = hostd
+    service.handle({"action": "apply_profile", "profile": "FLIGHT", "resume": True})
+    assert read_file().resume_count == 1
+
+    # A second satellite process over the same file — which is what a reboot is.
+    again, client, _ = build()
+    again.on_start()
+    assert client.last(TOPICS["host_status"])["previous"]["resume_count"] == 1
+    # The boot-time default carries it forward rather than clearing it.
+    assert read_file().resume_count == 1
+    again.handle({"action": "apply_profile", "profile": "FLIGHT", "resume": True})
+    assert read_file().resume_count == 2
+
+
+def test_a_profile_asked_for_by_anybody_clears_the_count(hostd):
+    # A decision other than a resume has been taken, so this is not a loop: a
+    # ground command, or a TTL sending the satellite back to HOSTED.
+    service, _, _ = hostd
+    service.handle({"action": "apply_profile", "profile": "FLIGHT", "resume": True})
+    service.handle({"action": "apply_profile", "profile": "DEMO"})
+    assert read_file().resume_count == 0
+
+
+def test_clear_resume_zeroes_the_count_without_touching_the_platform(hostd):
+    service, client, executor = hostd
+    service.handle({"action": "apply_profile", "profile": "FLIGHT", "resume": True})
+    started = list(units_touched(executor, "start"))
+
+    assert service.handle({"action": "clear_resume"})["ok"] is True
+
+    assert read_file().resume_count == 0
+    # Still FLIGHT, still the same units: this rewrites one integer.
+    assert read_file().profile == "FLIGHT"
+    assert client.last(TOPICS["host_status"])["profile"] == "FLIGHT"
+    assert list(units_touched(executor, "start")) == started
+
+
+def test_clear_resume_on_a_session_that_was_never_a_resume_is_a_no_op(hostd):
+    # OBC may send it after a FLIGHT entered by hand and then restarted.
+    service, _, _ = hostd
+    service.handle({"action": "apply_profile", "profile": "FLIGHT"})
+    assert service.handle({"action": "clear_resume"})["ok"] is True
+    assert read_file().resume_count == 0
+
+
+def test_clear_resume_survives_a_file_it_cannot_write(hostd, monkeypatch, tmp_path):
+    service, _, _ = hostd
+    service.handle({"action": "apply_profile", "profile": "FLIGHT", "resume": True})
+    monkeypatch.setattr(config, "LAST_PROFILE_FILE", tmp_path)  # a directory
+    result = service.handle({"action": "clear_resume"})
+    assert result["ok"] is True
+    assert any("could not clear the resume count" in error for error in result["errors"])
+
+
+def test_the_boot_flag_says_whether_anybody_has_asked_for_a_profile_yet(hostd):
+    # What lets OBC tell a boot from a `systemctl restart cubesat@obc`: a human
+    # who has already asked for a profile has said what they want.
+    service, client, _ = hostd
+    service.on_start()
+    assert client.last(TOPICS["host_status"])["boot"] is True
+
+    service.handle({"action": "apply_profile", "profile": "DEMO"})
+    assert client.last(TOPICS["host_status"])["boot"] is False
+
+
+def test_a_resume_is_not_a_boot_either(hostd):
+    service, client, _ = hostd
+    service.on_start()
+    service.handle({"action": "apply_profile", "profile": "FLIGHT", "resume": True})
+    assert client.last(TOPICS["host_status"])["boot"] is False
+
+
+def test_a_first_ever_start_publishes_no_previous_run(hostd):
+    service, client, _ = hostd
+    config.LAST_PROFILE_FILE.unlink(missing_ok=True)
+    service.on_start()
+    assert client.last(TOPICS["host_status"])["previous"] is None
 
 
 # ── restart_service ─────────────────────────────────────────────────────────

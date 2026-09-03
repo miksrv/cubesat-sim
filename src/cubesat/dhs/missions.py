@@ -118,26 +118,35 @@ class MissionStore:
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
-    def open(self, profile: str, label: str | None = None) -> Mission:
+    def open(
+        self, profile: str, label: str | None = None, start_reason: str | None = None
+    ) -> Mission:
         """Start a mission and return it.
 
         With no label, one is made from the start time — see ``default_label``.
         Done here rather than at the caller so that every path into the archive
         gets it: a mission opened by DHS, and one opened by a future tool.
+
+        ``start_reason`` says whether this run was asked for or resumed after a
+        reset (ROADMAP W11). It is stored as given: DHS reads it off
+        ``obc_status``, and a value this build does not recognise is still the
+        truest thing anybody knows about why the mission exists.
         """
         started_at = utc_iso()
         label = label or default_label(started_at)
         with transaction(self._conn) as conn:
             cursor = conn.execute(
-                "INSERT INTO missions (label, profile, started_at) VALUES (?, ?, ?)",
-                (label, profile, started_at),
+                "INSERT INTO missions (label, profile, started_at, start_reason) "
+                "VALUES (?, ?, ?, ?)",
+                (label, profile, started_at, start_reason),
             )
         mission_id = int(cursor.lastrowid or 0)
         self._log.info(
-            "mission %d opened (profile=%s, label=%s) at %s",
+            "mission %d opened (profile=%s, label=%s, start_reason=%s) at %s",
             mission_id,
             profile,
             label,
+            start_reason or "command",
             started_at,
         )
         return Mission(id=mission_id, profile=profile, started_at=started_at, label=label)

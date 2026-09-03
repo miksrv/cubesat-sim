@@ -2115,7 +2115,7 @@ is stopped, so the field states the whole intent and never a change to it; the s
 resolved when the file is read, and HOSTD receives a plain list of units.
 
 A profile may carry a `ttl_minutes`. On expiry the satellite falls back to `HOSTED`, which brings
-Wi-Fi and SSH back — one of four ways out of a mistyped `FLIGHT`, in order of preference:
+Wi-Fi and SSH back — one of three ways out of a mistyped `FLIGHT`, in order of preference:
 
 1. **Power cycle.** Boots into `HOSTED` on the home network, because the profile is not persisted.
    No tooling, no waiting — this is the whole reason not to persist it. The one exception proves
@@ -2128,8 +2128,20 @@ Wi-Fi and SSH back — one of four ways out of a mistyped `FLIGHT`, in order of 
    requested duration into an absolute deadline and publishes it as `ttl_expires_at`. OBC reads it
    back from the retained message, so `systemctl restart cubesat@obc` mid-flight recovers the
    deadline instead of silently discarding the safety net the profile was relying on.
-4. **Plugging into mains**, which `EPS` sees on the PLD pin and turns into a *request* to return to
-   `HOSTED` — deliberately a request through the normal path, so it shows up in the logs.
+
+**Plugging into mains is deliberately not one of them.** It reads as a fourth way out — the
+satellite is home, so let it come back — and it was described as one here until 2026-09-03, when
+implementing the resume made the asymmetry explicit. *No* mains is reliable evidence: a desk is
+always in a socket, so a satellite without it is demonstrably not on one. *Mains present* is not the
+converse. The X728 sees power on its own DC jack, and a power bank on a long trip looks exactly like
+a wall socket — so an automatic return would close the mission halfway through a walk, bring Wi-Fi
+up hunting a network that is not there, and lose the rest of the track. That is the silent loss the
+[resume](#resuming-an-interrupted-trip) exists to prevent, re-introduced by the act of feeding the
+satellite.
+
+Ending a trip is a person's decision, and the three ways above are all a person exercising it.
+`EPS` still reports `external_power`, and the power policy uses it — together with `charge_rate`,
+never the pin alone — to suppress the power-driven descents; it changes no profile anywhere.
 
 ### Environment variables
 

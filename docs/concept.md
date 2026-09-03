@@ -556,15 +556,26 @@ This also turns a power cycle into a **recovery path**: whatever profile the sat
 in, pulling power and putting it back brings it up on the home network with SSH reachable. That
 is a stronger safety net than any of the three layers below, and it costs nothing.
 
-`hostd` still records the last applied profile to `/var/lib/cubesat/last-profile`, but that file
-is **information, never instruction**: it is reported by `cubesat status` and logged at boot, so
-"what was it doing before it died?" has an answer. Nothing reads it to decide anything.
+`hostd` still records the last applied profile to `/var/lib/cubesat/last-profile`, and publishes
+what it said on `host_status` as `previous`. The file answers **what**, never **whether**: it is
+reported by `cubesat status`, logged at boot, and read by exactly one rule, which only consults it
+*after* a measurement has already decided the satellite is not on a desk.
 
-The cost is real and worth naming: an unexpected reset mid-trip — a brownout, a watchdog bite —
-drops the satellite out of `FLIGHT` into `HOSTED`, where it stops recording and starts hunting
-for a home network that is 5 km away. The trip's data ends there, silently. Mitigating that
-without giving up the property above needs a boot-reason signal rather than a stored profile —
-see [Open questions](#open-questions).
+That rule is the cost of this section, paid: an unexpected reset mid-trip — a brownout, a watchdog
+bite, the jolt of a landing — used to drop the satellite out of `FLIGHT` into `HOSTED`, where it
+stops recording and starts hunting for a home network 5 km away, and the trip's data ended there
+silently. Since 2026-09-03 `FLIGHT` resumes itself when there is no mains at boot, under four
+fences, and says so on the radio either way — `src/cubesat/obc/resume.py`, with the reasoning under
+[Open questions](#open-questions) and the field reference in
+[the README](../README.md#resuming-an-interrupted-trip).
+
+**The evidence only runs one way, and that is why plugging in does not end a trip.** No mains is
+reliable: a desk is always in a socket. Mains present is not the converse — the X728 sees power on
+its own DC jack, and a power bank on a long walk looks exactly like a wall socket. So the absence of
+mains is allowed to *resume* a profile, while its presence is never allowed to *leave* one: an
+automatic return to `HOSTED` would close the mission halfway through a trip and lose the rest of the
+track, which is the same silent loss in a new costume. Ending a trip stays a human decision, taken
+through `set_profile`, a TTL or a power cycle.
 
 ---
 

@@ -12,8 +12,11 @@ Three decisions this module exists to protect:
   only from the retained ``host_status``. Every boot therefore starts in
   ``HOSTED``, which is what makes a power cycle a recovery path from any profile
   — a satellite that hit ``CRITICAL`` on a trip and is plugged in at a desk
-  hours later must not come back up with Wi-Fi off and no SSH. HOSTD does write
-  ``last-profile``, as information; nothing reads it to decide anything.
+  hours later must not come back up with Wi-Fi off and no SSH. HOSTD writes
+  ``last-profile`` and publishes it; what that file names may be *requested*
+  again, but only by ``resume.py``, and only once the mains pin has said the
+  satellite is not on a desk. The file never restores anything by itself, and
+  this module still opens nothing.
 * **A mismatch is not an application.** If HOSTD reports a profile other than
   the one requested, that is logged and left visible, and the mission machine is
   not advanced to ``DEPLOY``. Pretending otherwise turns a debuggable failure

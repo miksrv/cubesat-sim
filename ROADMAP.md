@@ -31,8 +31,8 @@ code is worth writing.
 | [W2](#w2-import-belongs-in-the-client-not-in-the-satellite) | `[ ]` not started | Import belongs in the client, not in the satellite |
 | [W4](#w4-adcs-mounting-offset--requested-2026-09-01-to-be-done-on-the-running-satellite) | `[ ]` needs the satellite | The ADCS mounting offset, captured as data |
 | [W5](#w5-a-ships-log-not-mission-events--requested-2026-09-01) | `[ ]` needs a decision | A ship's log, not "Mission Events" |
-| [W6](#w6-the-mesh-preset-both-nodes-are-moved--2026-09-02) | `[ ]` bench | Audit both mesh nodes against each other |
 | [W10](#w10-the-walk-to-work-what-to-check-on-the-first-real-trip) | `[ ]` the trip itself | The walk to work, end to end |
+| [W11](#w11-flight-resumes-itself-after-an-unexpected-reset) | `[ ]` not started | `FLIGHT` resumes itself after an unexpected reset |
 | [V2](#v2-tel0157-knots-to-ms-factor) | `[ ]` bench | TEL0157 knots to m/s factor |
 | [V3](#v3-tel0157-altitude-triplet-high-byte) | `[ ]` bench | TEL0157 altitude triplet high byte |
 | [V5](#v5-bno055-calibration-save-and-restore) | `[ ]` not implemented | BNO055 calibration save and restore |
@@ -44,7 +44,6 @@ code is worth writing.
 | [V15](#v15-the-channel-index-a-received-packet-reports) | `[ ]` bench | The channel index a received packet reports — the uplink filter rests on it |
 | [V16](#v16-whether-payload-answers-inside-the-ack-window) | `[ ]` bench | Whether PAYLOAD answers inside the ack window — `!photo` says `err=noreply` if not |
 | [Q1](#q1-keep-the-bmp280-at-0x76-and-for-what) | `[ ]` open | Keep the BMP280 at `0x76`, and for what? |
-| [Q2](#q2-recovering-a-trip-after-an-unexpected-reset) | `[ ]` open | Recovering a trip after an unexpected reset |
 | [Q4](#q4-may-a-safe-satellite-be-shown-in-expo) | `[ ]` open | May a `SAFE` satellite be shown in `EXPO`? |
 
 ---
@@ -77,8 +76,9 @@ up, and `HOSTED` brought all of it back with no `SAFE` and no lost subsystem. **
 left is a bench check or a decision.** What can still be written without the satellite: the
 photographs missing from a mission export (which blocks the public demo), the export and import
 verbs the archive dialog still lacks, the `photo` ack's frame fields — the last line of the radio
-contract still unwritten — the chart line that should break on a gap, and an end-to-end test against
-the replay build. The one defect the hardware found in the logic, `restart_service` latching `SAFE`,
+contract still unwritten — the chart line that should break on a gap, an end-to-end test against
+the replay build, and, decided on 2026-09-03 and not yet written, the resume that keeps a reset from
+silently ending a trip ([W11](#w11-flight-resumes-itself-after-an-unexpected-reset)). The one defect the hardware found in the logic, `restart_service` latching `SAFE`,
 is fixed: `health.expect_restart` waives the departure OBC itself asked for, for one loss grace.
 
 ### P6: The autonomous logging profile
@@ -88,8 +88,8 @@ is fixed: `health.expect_restart` waives the departure OBC itself asked for, for
 The code landed piecemeal: `powersave` on entering `LOW_POWER` and in `FLIGHT`, the profile TTL
 armed by HOSTD and reported as `ttl_expires_at`, the radio duty-cycled by the beacon table, and the
 profile itself. What no test can settle is whether the GNSS track is right —
-[V2](#v2-tel0157-knots-to-ms-factor) and [V3](#v3-tel0157-altitude-triplet-high-byte) are that walk. Mains-as-signal recovery is deliberately still open as
-[Q2](#q2-recovering-a-trip-after-an-unexpected-reset).
+[V2](#v2-tel0157-knots-to-ms-factor) and [V3](#v3-tel0157-altitude-triplet-high-byte) are that walk. Mains-as-signal recovery stopped being an
+open question on 2026-09-03 and became work to write: [W11](#w11-flight-resumes-itself-after-an-unexpected-reset).
 
 ### Mission archive: what the dialog still does not do — 2026-09-02
 
@@ -178,36 +178,6 @@ the precedent: discrete events with their own timestamps, kept because a 30 s te
 stand for them. Until that decision is made, the four events above go into `observed.ts`; when the
 table exists, the widget reads it for history and keeps deriving live entries the same way.
 
-### W6: The mesh preset: both nodes are moved — 2026-09-02
-
-The satellite's Heltec now runs `MEDIUM_FAST` on frequency slot 45, `hop_limit 6`,
-`config_ok_to_mqtt true`, region `US` unchanged, channel 1 `CubeSat` and its PSK verified intact
-after the write. Why that is the physical layer rather than a preference, what the automatic
-frequency slot does when the preset name changes underneath it, and why the MQTT flag is what makes
-the node visible at all are recorded in
-[`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md) → Modem preset and the
-local mesh, with the commands.
-
-The personal node — the one node the satellite's radio has ever been tested against — was moved to
-the same settings the same day, so there is a ground link again: nodes on different presets do not
-demodulate each other at all.
-
-**What is left.**
-
-1. **Read both nodes back with `--info` and compare them to each other, not to a list.** Preset,
-   `channel_num`, `hop_limit`, region, and channel 1 `CubeSat` with its PSK on both. The personal
-   node has been configured by hand over several sessions and has never been audited against the
-   satellite; a setting that drifted there is indistinguishable from a satellite fault.
-2. ~~Watch `meshview.bayme.sh/nodelist` for `CSAT`.~~ **Done, same evening.** The node was there
-   within a minute, 72 gateways published its first broadcast, a stranger traceroutes it, and the
-   hop arithmetic behind `radio_log.hops` is measured rather than inferred — the numbers and what
-   they do and do not prove are in
-   [`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md) → Coverage. **The one
-   finding worth acting on: exactly one node hears the satellite directly** (W6SRR Sunol Ridge, a
-   bayme.sh router, −5.25 dB SNR / −94 dBm from indoors). The 72 are what the mesh does after that
-   single link, so the reading to repeat is the *direct* receivers from where `FLIGHT` actually
-   goes.
-
 ### W10: The walk to work: what to check on the first real trip
 
 The use case `FLIGHT` exists for, written down as a sequence because every piece of it is now built
@@ -244,6 +214,92 @@ What to watch for, in order of how likely it is to bite:
   script lives in the virtualenv the services use and nothing puts it on a login shell's path. On a
   trip that is a long command typed by hand; worth a symlink or a profile line before relying on it
   in a field.
+
+### W11: `FLIGHT` resumes itself after an unexpected reset
+
+**Decided 2026-09-03**, closing what was Q2. The reasoning — why a descent is not a walk to work,
+why safe behaviour depends on where the vehicle is, and why the decision is made from a measurement
+rather than from a memory of a command — is in
+[`docs/concept.md` → Open questions](docs/concept.md#open-questions). What follows is the rule to
+implement. **Q2 is closed by this being written, not by it being decided.**
+
+**The failure.** A reset mid-trip — a brownout, a watchdog bite, the jolt of a parachute opening —
+brings the satellite up in `HOSTED`: `DHS`, `ADCS` and `PAYLOAD` do not start, so the track, the
+telemetry and the photographs stop; orphan recovery closes the mission as `interrupted`; `wlan0`
+comes up hunting a home network that is not there; and the state is `STANDBY`, which has no row in
+the beacon table, so **nothing is said**. The satellite is answering `!sys` the whole time and
+volunteering nothing.
+
+**The rule.** Resume `FLIGHT`, and only `FLIGHT` — the one profile designed to run with nobody
+present. `EXPO` on battery without an operator is pointless and `DIAG` lives on a desk with mains,
+so neither needs to be in the rule at all. All of these must hold:
+
+| # | Condition | Why it is there |
+|---|---|---|
+| a | HOSTD still holds the default profile it applied at boot, and nothing has been requested since | Distinguishes a boot from a mid-trip `systemctl restart cubesat@obc`. A human who has already typed `profile hosted` has said what they want |
+| b | The first `eps_status` after start reports `external_power` **false** | The measurement the whole decision rests on: no mains means demonstrably not on a desk. This is what keeps the flat-satellite-plugged-in-at-a-desk case safe |
+| c | The profile recorded before the reset was `FLIGHT` | Answers *what*, never *whether* |
+| d | The absolute TTL from before the reset is still in the future | A trip whose strap had already run out does not restart |
+| e | Fewer than `resume.max_consecutive` (3) resumes in a row have been taken | Boot-loop fence — see below |
+
+**Withhold rather than guess** (b, restated): if no `eps_status` arrives within
+`resume.evidence_timeout_sec`, do **not** resume. A missing measurement is not a measurement of no
+mains, and EPS failing to start is itself a reason to stay somewhere an operator can reach.
+
+**Where the decision lives: OBC.** `HOSTD` keeps doing exactly what it does now — applying
+`default_profile` at boot, unconditionally, because it is the branch everything else sits on. It
+gains no policy. What it gains is publishing what it read: `host_status` carries `previous` (the
+file's contents as of this boot, captured *before* the file is overwritten by applying the default)
+and `boot` (true while the active profile is still the one applied at start). OBC reads those from
+the retained message, applies the table above, and resumes by sending the same `set_profile` a
+phone would. So there is exactly one path into a profile, and `HOSTD` still reads nothing as an
+instruction.
+
+**The file grows fields and stays information.** `/var/lib/cubesat/last-profile` becomes JSON:
+`profile`, `written_at`, `ttl_expires_at` (absolute — HOSTD already computes it in `_deadline_for`,
+so it survives a reset the way it already survives an OBC restart), `mission_label`, and
+`resume_count`. `cubesat status` reads the file and must be updated with it. The rule in
+`CLAUDE.md` and in `hostd/service.py`'s docstring — "written, never read back as instruction" —
+becomes: *the file never decides whether to restore a profile; it only says which one, and only
+after the physical evidence has already said yes.*
+
+**The boot-loop fence is a lifetime, not a counter.** `resume_count` increments on each resume and
+is cleared once a resumed session has lived `resume.settle_sec` (300 s) — long enough that this is a
+flight rather than a loop. Clearing it is a fifth HOSTD action, `clear_resume`, as narrow as
+`restart_service`: OBC decides *when*, HOSTD only writes the file. Three short-lived sessions in a
+row and the satellite stays in `HOSTED` and says so. The fence is deliberately not "one resume
+only": the parachute case is a burst of jolts, and a burst must not exhaust the budget the descent
+needs.
+
+**Continuity of the trip.** The resumed run inherits `mission_label`, so a trip that was reset reads
+as one journey in two parts rather than as "walk to work" followed by `2026-09-03 08:41`. The
+mission before the reset is closed by orphan recovery as `interrupted`, unchanged. The new one
+records **why it started**: `missions.start_reason` (`command` | `resume`), carried from OBC on
+`obc_status` beside `mission_label`, which is already there for exactly this kind of hand-off. When
+the events table of [W5](#w5-a-ships-log-not-mission-events--requested-2026-09-01) exists, the same
+transition writes a line into it; until then the mission row is the record.
+
+**One line on the radio, and it speaks either way.** `COMMS` composes it from `host_status` and
+sends it once on coming up, gated on `lora_listening` and **not** on `beacon_enabled` — the same
+gate and the same reasoning as `_going_down_beacon`, which is its exact counterpart: that one
+explains a disappearance, this one explains a reappearance. It says the previous profile, whether
+the resume was taken, and when it was not, why (mains present, TTL expired, boot loop). **A refusal
+that says nothing is the failure to avoid** — a satellite that silently declines to resume is
+indistinguishable from one that never woke up, which is the same silence the ack work closed on
+2026-09-03.
+
+**What this does not do.** It does not persist the profile: with mains present, every boot still
+lands in `HOSTED`, and a power cycle remains the recovery path from anywhere. It adds no radio verb
+— resuming is the satellite's own decision, and a human with a phone already has `profile flight`.
+It gives `HOSTD` no new judgement. And it does not make the satellite fit for the balloon flight
+that prompted it: −55 °C at the tropopause, the pack's behaviour on the cold, an independent
+tracker for a landing the Pi may not survive, and the regulatory side are all untouched by this
+item.
+
+**Numbers to settle in configuration, not in code:** `resume.max_consecutive` (3),
+`resume.settle_sec` (300), `resume.evidence_timeout_sec` — the last one bounded by how long EPS
+takes to publish its first reading after boot, which the first `FLIGHT` trip can measure.
+
 
 ### Bench checks the code is waiting on
 
@@ -408,15 +464,6 @@ Tracked in [`docs/concept.md` → Open questions](docs/concept.md#open-questions
 compare over a few sessions; `DIAG` is the natural place, now that it rehearses a real mission.
 
 **Blocks:** —
-
-#### Q2: Recovering a trip after an unexpected reset
-
-The profile is deliberately not persisted, so a brownout mid-trip silently ends the recording.
-Fixing it without a stored profile means acting on a **boot reason** — mains absent at boot means
-the satellite is demonstrably not on a desk. Deferred until `FLIGHT` has seen enough use to know
-whether spurious resets happen at all.
-
-**Blocks:** [P6](#p6-the-autonomous-logging-profile)
 
 #### Q4: May a `SAFE` satellite be shown in `EXPO`?
 

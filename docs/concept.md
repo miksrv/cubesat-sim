@@ -857,13 +857,40 @@ would be stamped from the epoch of the last boot.
 - **`BMP280` (`0x76`) duplicates the SEN0501 pressure reading.** Still undecided in the README's
   address map. `DIAG` is the natural place to settle it: log both and compare them over a few
   hours.
-- **Recovering a trip after an unexpected reset.** Not persisting the profile means a brownout or
-  a watchdog bite mid-trip silently ends the recording. Solving it without reintroducing a stored
-  profile means acting on a **boot reason** instead: if mains is absent at boot, the satellite is
-  demonstrably not on a desk, and re-entering the last active profile is the safe reading rather
-  than the dangerous one. `EPS` already has that signal on the X728 PLD pin. Deliberately deferred
-  until `FLIGHT` has been used enough to know whether spurious resets actually happen — designing
-  around a hypothetical failure is how the stored-profile trap got built in the first place.
+- ~~**Recovering a trip after an unexpected reset.**~~ **Answered 2026-09-03: `FLIGHT` resumes
+  itself, on physical evidence rather than on the stored command.** The deferral this replaces said
+  to wait until `FLIGHT` had been used enough to know whether spurious resets happen at all. What
+  settled it earlier is a use case rather than a statistic: a satellite carried under a
+  stratospheric balloon and reset by the jolt of a parachute opening at altitude. Three things are
+  true there that are not true on the walk to work — there is no second chance, the descent is the
+  most valuable data of the whole flight, and the operator is not in the loop at all. The failure is
+  then no longer "a trip loses its tail"; it is "the vehicle greets the one event it was launched
+  for by coming up as a desk toy".
+
+  **Safe behaviour depends on where the vehicle is, not on where it was built.** Freezing and
+  waiting for the ground is safe when there is time; on a descent it loses the mission. Real flight
+  projects protect critical phases explicitly — New Horizons went into autonomous safing ten days
+  before the Pluto encounter and spent three days recovering, and the encounter itself was flown on
+  a pre-loaded sequence with those autonomous responses deliberately curtailed, because safing
+  during those hours would have cost the science of a nine-year cruise. Landing sequences keep their
+  phase in non-volatile memory for the same reason: a reset must continue the sequence rather than
+  restart the vehicle's idea of the world.
+
+  **What keeps this from being the stored-profile trap is that the decision is made from a
+  measurement, not from a memory of a command.** The satellite does not ask "what was I told an hour
+  ago"; it asks "is there mains?". Absent mains at boot it is demonstrably not on a desk — the same
+  X728 `PLD` signal `EPS` already reads — and the dangerous case stays safe by construction: a
+  satellite brought home flat and plugged in *has* mains, so it comes up in `HOSTED` with SSH
+  exactly as before. The stored file answers only *what*, never *whether*, which is why
+  `last-profile` can grow fields without becoming an instruction.
+
+  The rule and its fences are [`ROADMAP.md` → W11](../ROADMAP.md#w11-flight-resumes-itself-after-an-unexpected-reset)
+  until it is written: resume `FLIGHT` alone — the only profile designed to run with nobody present
+  — only while HOSTD still holds the default profile it applied at boot, only with the absolute TTL
+  from before the reset still in the future, and only until three short-lived sessions in a row say
+  this is a boot loop rather than a flight. The resumed run says so on the radio and in its own
+  mission row, and so does a refusal to resume: a satellite that silently declines is
+  indistinguishable from one that never woke up.
 - ~~**`FLIGHT` timelapse.**~~ **Answered 2026-09-01: a mission photographs itself, and there is no
   timelapse.** Photos on a walk are the point of taking the satellite on one, so they are not an
   opt-in parameter and not a command: while a mission is open, a frame is taken every

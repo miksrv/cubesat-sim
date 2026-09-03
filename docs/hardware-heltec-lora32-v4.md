@@ -179,6 +179,14 @@ so the preset moves underneath it and nothing in `comms/` or `hal/rpi/meshtastic
 Verify it anyway after any preset change — a satellite on a channel the ground segment cannot read
 is a silent failure that looks like a dead radio.
 
+**Both nodes were audited against each other on 2026-09-03, and they agree.** The personal node had
+been configured by hand over several sessions and had never been compared to the satellite, so a
+setting that had drifted there would have been indistinguishable from a satellite fault. Read back
+with `--info` on both and compared field for field — preset, `channel_num`, `hop_limit`, region, and
+channel 1 `CubeSat` with its PSK — nothing differs. Confirmed on the air rather than only on paper:
+a message from the personal node reached `CubeSat` and the reply came back, so the ground link is
+proven in both directions on the new preset.
+
 ### Coverage, measured 2026-09-02
 
 The node appeared on `meshview.bayme.sh` within a minute of the preset change, and the packets it

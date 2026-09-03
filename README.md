@@ -453,7 +453,8 @@ trip".
 The only point of contact with the ground, in both directions — and, after the split above, *only* that. It no longer persists anything.
 
 - **LoRa** over a [Heltec WiFi LoRa 32 V4](docs/hardware-heltec-lora32-v4.md) running stock Meshtastic firmware, on `/dev/serial0` at 115200 via the `meshtastic` Python library. Meshtastic handles framing, CRC, retries and encryption, so the hand-rolled length+CRC framing of the old SC16IS752 driver is gone — and with it the register-level protocol that was never bench-verified.
-- **Uplink, unified** — a command arriving over LoRa is re-published verbatim onto `cubesat/command`. Nothing downstream needs to know which link it came in on, so a command relayed off the radio is handled exactly as one a laptop published on the LAN. This is what makes `FLIGHT` recoverable: `set_profile` arrives over the radio for free.
+- **Uplink, unified** — a command arriving over LoRa is canonicalised into JSON and published onto `cubesat/command`. Nothing downstream needs to know which link it came in on, so a command relayed off the radio is handled exactly as one a laptop published on the LAN. This is what makes `FLIGHT` recoverable: `profile hosted` typed into a phone arrives as `set_profile` for free.
+- **Uplink, compact spellings only** — narrowed on 2026-09-03. What the radio accepts is the table in [`compact.py`](src/cubesat/comms/compact.py) and nothing else; hand-composed JSON used to be relayed byte for byte and is not any more. One parser for the air instead of two, so nothing is left that can disagree with `compact.py` about what a command is — and one fewer shape to keep the 240-byte budget honest for. What goes with it is narrow and worth naming: `set_profile` over the radio takes a profile and nothing else (no `ttl_minutes`, no `mission_label`, no `request_id`), and `delete_mission` — which has no compact spelling on purpose — is now unreachable over the air entirely. Every recovery verb is compact, so the `FLIGHT` path above is untouched.
 - **Uplink, from one mesh channel** — and only from `config.LORA_CHANNEL_INDEX`, the private `CubeSat` channel. The node's primary channel is the stock public one, so since the mesh preset change of 2026-09-02 the community mesh's chat reaches this radio — and the command vocabulary is ordinary English (`ping`, `photo`, `safe`, `profile flight`). Anything on another channel, a direct message included, is dropped in `_collect_uplink` **before** the `cubesat/comms/radio` publish: it reaches neither the command parser nor the `radio_log` session log, so it is never shown in the dashboard's Radio Link Log, never written to the card in `FLIGHT`/`DIAG`, and never travels inside a mission export. The refusal is **silent** — one line in the service log carrying the sender, the channel, the SNR and a byte count but not the text, and nothing transmitted back, not even an `err=` for a `!` line. Listening is untouched: `lora_listening` remains the profile's call and the inbox is polled in full. The credential is the channel's key rather than a node id, deliberately — a key is portable, so an operator whose own node is flat loads the channel URL onto another one, where a node allowlist would be a locked door with the key on the far side of it.
 
 **The radio carries a beacon, not the telemetry.** A Meshtastic message holds at most 240 bytes and a full telemetry packet is several hundred, so the choice was a compact field set or chunking. It is a compact beacon, for three reasons: one message is one complete observation, where a lost chunk voids a whole packet; LoRa airtime is slow and duty-cycle limited, so three messages per cycle costs three times as much of it; and the radio's job here is *alive, and where* — the full record is in DHS and gets collected when the satellite is back on a network.
@@ -483,14 +484,34 @@ disappearance. If it fails, it is logged and stepped over: the recorder closing 
 matters more than the radio being heard, and a pack at 8 % is exactly where a transmit-current
 brownout is likeliest.
 
-**Radio replies.** The agreed contract is written, `restart` included since 2026-09-01. What a
-person can type is in [The command vocabulary](#the-command-vocabulary) and only there; what COMMS
-does with it is this: a compact line is canonicalised into JSON *before* the relay, so every handler
-downstream sees one format; every accepted command is answered by a single out-of-schedule beacon
-carrying `re=<command>` about ten seconds later; and the five query verbs are answered immediately
-from COMMS' own caches rather than relayed, because the data is already here. One field set is still
-outstanding: `photo`'s ack answers with the ordinary state fields rather than the frame number and
-the free megabytes the contract describes. The contract, with the reasoning, is
+**Radio replies.** The agreed contract is written, `restart` included since 2026-09-01 and the
+`photo` ack since 2026-09-03. What a person can type is in
+[The command vocabulary](#the-command-vocabulary) and only there; what COMMS does with it is this: a
+compact line is canonicalised into JSON *before* the relay, so every handler downstream sees one
+format; every accepted command is answered by a single out-of-schedule beacon carrying `re=<verb>`
+about ten seconds later; and the five query verbs are answered immediately from COMMS' own caches
+rather than relayed, because the data is already here.
+
+Four properties of that reply are worth stating here, because each one was a defect first:
+
+- **It goes out whether or not the beacon is on.** An answer is not a beacon — the gate is the
+  profile (`lora_listening`), so every profile that runs COMMS answers. See
+  [`cubesat/comms/status`](#cubesatcommsstatus).
+- **`re=` names the verb the operator typed**, not the canonical command it became. `beacon on` came
+  back as `re=set_comms_config` until 2026-09-03, which asks a person on a phone to translate our
+  vocabulary into theirs before they can believe the answer.
+- **`photo` answers about the photograph**: `ok=1 kb=<size> seq=<frame>` read from PAYLOAD's own
+  `payload_photo`, or `ok=0 err=state|nospace|camera` when the capture was refused — one word,
+  because a beacon field may not contain a space. Nothing published within the window is
+  `err=noreply` and deliberately no `ok=`: silence is an observation, and `ok=0` would be a verdict
+  on a capture COMMS never saw. A mission's own frames are excluded by `kind`, so a `!photo` is
+  never answered with a picture the mission took by itself.
+- **Replies queue rather than overwrite each other**, one per wake, oldest first, eight deep. Only
+  the state queries collapse into the latest — a fresh snapshot answers the older question too —
+  while anything with an effect keeps its own reply. A single slot used to lose the first of any two
+  commands sent inside ten seconds, silently.
+
+The contract, with the reasoning, is
 [`docs/concept.md` → The radio command contract](docs/concept.md#the-radio-command-contract).
 
 Two rules hold it honest. **It is never truncated** — if the line will not fit, whole optional fields are dropped in a documented priority order, because the pre-rewrite driver silently cut the payload to 28 bytes and transmitted rubbish, which is the bug this work exists to remove. And **absent values are omitted rather than sent as zero**: a position that does not exist must not arrive as `lat=0 lon=0`, which is a real place in the Gulf of Guinea and a fault this project has already been bitten by once.
@@ -987,9 +1008,16 @@ coming:
   "timestamp": 1741863600.0,
   "request_id": "req_001",
   "status": "ERROR",
-  "reason": "Photo capture not allowed: mission state is 'LOW_POWER'"
+  "reason": "Photo capture not allowed: mission state is 'LOW_POWER'",
+  "reason_code": "state"
 }
 ```
+
+**Two spellings of the same no, and both are needed.** `reason` is the sentence a person reads, with
+the numbers in it — which state refused, how many megabytes are left. `reason_code` is one word
+(`state`, `nospace`, `camera`, defined in `payload/camera.py`) and it exists because the sentence
+cannot cross the radio: a beacon field may not contain a space, so `!photo`'s ack carries the code
+as `err=nospace` while the dashboard carries the sentence. Added 2026-09-03 with that ack.
 
 `mission_id` is null and the path falls under `/run/cubesat/photo` when DHS has no mission open — a
 photo is taken and delivered, never refused over a bookkeeping detail, and the frame is deleted once
@@ -1031,6 +1059,7 @@ heartbeats, which prove a process started and nothing more.
 {
   "timestamp": 1741863600.0,
   "radio": {"present": true, "node": "!698204b0", "region": "US"},
+  "beacon_enabled": true,
   "lora_enabled": true,
   "lora_listening": true,
   "command_channel": 1,
@@ -1046,11 +1075,27 @@ from `cubesat beacon on` over SSH, or from the dashboard turns transmission back
 profile. Entering a profile resets transmission to that profile's own starting state, so "quiet in
 DEMO" stays true rather than being true only until the first time anybody turned the beacon on.
 
-**`lora_enabled` and `lora_listening` are different things, and the difference is the way home.**
-`lora_enabled` governs *transmission*; listening is governed by the profile alone. So a satellite
-told to stop talking is still reachable over the same radio that told it to — otherwise
-`set_comms_config {"lora_enabled": false}` sent over LoRa would be a one-way door, on the profile
+**`beacon_enabled` and `lora_listening` are different things, and the difference is the way home.**
+`beacon_enabled` governs the *scheduled* beacon; listening is governed by the profile alone. So a
+satellite told to stop talking is still reachable over the same radio that told it to — otherwise
+`set_comms_config {"beacon_enabled": false}` sent over LoRa would be a one-way door, on the profile
 where the radio is the only door there is.
+
+**And it is still reachable in the other direction: an answer is not a beacon** (2026-09-03). A
+reply to an accepted command is gated on `lora_listening`, not on this flag, so **every profile that
+runs COMMS answers the commands it accepts** — `beacon off` rations what the satellite says
+*unasked*, and nothing else. Three commands were obeyed and left unacknowledged in `DEMO` on
+2026-09-02 before that changed, including `beacon off` itself, whose confirmation was dropped by the
+flag it had just set: "the transmitter is off now" and "the command never arrived" are the same
+silence to the operator holding the phone.
+
+**`lora_enabled` is the name `beacon_enabled` had until 2026-09-03**, and it is still published here
+with the same value — deprecated, and only for the dashboard build deployed on 2026-09-02, which
+reads it. It goes when a groundstation build that reads `beacon_enabled` is deployed; nothing on the
+satellite consumes either key. It is also still accepted as a parameter of `set_comms_config`, for
+the same client and until the same day. The rename is not cosmetic: `beacon on|off` was itself
+renamed from `lora on|off` on 2026-09-01 because the old word said the wrong thing, and a flag that
+no longer decides whether LoRa transmits at all is that same lie one level down.
 
 **`command_channel` is the third member of that set**, and it is there because hearing a message and
 acting on one became different things when the uplink filter landed. It reports the mesh channel
@@ -1201,10 +1246,10 @@ not here, it does not exist.
 
 | Action | Radio & dashboard console | Shell | On the bus | Handler |
 |---|---|---|---|---|
-| Switch profile | `profile flight` | `cubesat profile flight [--ttl 8h] [--mission "walk to work"]` | `set_profile` `{profile, ttl_minutes?, mission_label?}` | OBC |
+| Switch profile | `profile flight` — the profile and nothing else | `cubesat profile flight [--ttl 8h] [--mission "walk to work"]` | `set_profile` `{profile, ttl_minutes?, mission_label?}` | OBC |
 | Latch `SAFE` / clear it | `safe` / `recover` | — | `safe_mode` / `recover` | OBC |
 | Take one photograph | `photo` | — | `take_photo` `{overlay?}` | PAYLOAD |
-| Start / stop transmitting | `beacon on` / `beacon off` | `cubesat beacon on\|off` | `set_comms_config` `{lora_enabled}` | COMMS |
+| Start / stop the scheduled beacon | `beacon on` / `beacon off` | `cubesat beacon on\|off` | `set_comms_config` `{beacon_enabled}` | COMMS |
 | Am I heard? | `ping` | — | `ping` | COMMS |
 | Where is it | `pos` | — | `get_position` | COMMS |
 | Host CPU, RAM, disk, uptime | `sys` | — | `get_system` | COMMS |
@@ -1229,6 +1274,18 @@ a field wondering why nothing happened; a bare line that does not parse is ordin
 left alone. The flip side, accepted knowingly: chat that is exactly a command line (`ping` on its
 own) is a command. `lora on|off` is still accepted as the name `beacon` had until 2026-09-01 —
 undocumented, and kept only so a command that worked last week does not answer "unknown".
+
+**The compact spelling is the whole of what the radio takes** (2026-09-03). The middle column above
+is the radio vocabulary exactly: an uplink is a compact line or it is not a command. JSON composed
+by hand used to be a second, verbatim path off the air, and removing it leaves one parser for the
+air rather than two. Concretely, over the radio `set_profile` carries a profile and nothing else —
+the TTL comes from the profile's own definition and an unlabelled mission is named after the minute
+it started, which is exactly what a walk-to-work `profile flight` relies on — and `delete_mission`,
+alone in having no short line, is now unreachable over the air at all. Every command still works
+identically over MQTT, where the dashboard, the CLI and any other broker client publish the full
+JSON in the fourth column. An uplink that is neither a compact line nor answerable gets one line in
+the service log and no airtime; it is behind the private-channel filter, so the likeliest sender is
+an operator reaching for last week's spelling, and that log line is the trace they will look for.
 
 ```json
 {"command": "set_profile", "params": {"profile": "EXPO"}, "request_id": "req_010"}
@@ -1259,11 +1316,14 @@ off. A restart nobody announced — `systemctl restart` by hand — is still a f
 either recoverable — a profile can be re-applied, a beacon re-enabled — or harmless to repeat; this
 one erases a recorded flight, and commands are still unauthenticated. Having no short line means it
 is not in the radio vocabulary and not in the Mission Console's, whose table mirrors it, so it cannot
-be reached by somebody exploring what the satellite understands. It is **not** unreachable over the
-air: COMMS relays a well-formed JSON command verbatim, and that property is worth more than a fence
-here would be — an operator who composes that JSON by hand is being deliberate, which is exactly the
-bar this verb needs. Since 2026-09-02 that reach is the private `CubeSat` channel alone, which
-strengthens this fence rather than weakening it: composing the JSON by hand now also takes the key.
+be reached by somebody exploring what the satellite understands. Since 2026-09-03 that is **absolute
+over the air**: JSON stopped being a command on the radio, so having no compact spelling now means
+having no radio path at all, where until then it meant a deliberately awkward one. The fence got
+stronger, not narrower — this verb erases a recorded flight and commands are still unauthenticated,
+and there is no version of "typed it carefully" that makes a 240-byte one-way link the right place
+to do it from. It stays fully reachable over MQTT: the dashboard's mission archive dialog, and any
+other broker client. That is the right home for it, because it is the one surface where whoever
+presses delete is looking at the mission being deleted.
 
 The fence that does refuse it is the profile: `EXPO`, where the satellite is its own open access
 point with an audience on it. That lives in DHS rather than in the broker's ACL, because `acl.conf`
@@ -1360,9 +1420,11 @@ Steps 2 and 3 are independent by design: the radio can be off while recording co
 ```
 1. Ground sends a message from another Meshtastic node
 
-2. COMMS receives it through the meshtastic library callback, decodes the JSON
+2. COMMS receives it through the meshtastic library callback and translates the
+   compact line into canonical JSON (a line the table does not know is not a
+   command: it is logged and dropped, never answered unless it began with `!`)
 
-3. COMMS re-publishes it verbatim  →  cubesat/command
+3. COMMS publishes the canonical JSON  →  cubesat/command
 
 4. OBC / PAYLOAD / COMMS handle it exactly as a locally published command
 ```
@@ -1810,8 +1872,8 @@ key (`psk: "AQ=="`, `name: ""` in `--info`) — the result is that same primary 
 
 **There is no key in this repository, and there must never be one.** That URL embeds the channel's
 pre-shared key, and since the uplink filter the key *is* the command credential: whoever holds it can
-read the telemetry and also send `safe`, `photo`, `profile flight` or a hand-composed
-`delete_mission`. A published default key would hand that to everyone who cloned the repo, which is
+read the telemetry and also send `safe`, `photo` or `profile flight` — every compact verb in the
+vocabulary. A published default key would hand that to everyone who cloned the repo, which is
 why yours is generated on your own node by `--ch-add` and belongs in a password manager or a personal
 note — never in `config.yaml`, never in a committed file, never in an issue. If it is ever exposed,
 regenerate and re-import on every node:

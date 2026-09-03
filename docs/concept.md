@@ -272,9 +272,11 @@ New ground command on the existing `cubesat/command`, handled by OBC:
 {"command": "set_profile", "params": {"profile": "EXPO"}, "request_id": "req_010"}
 ```
 
-Because COMMS already re-publishes anything it receives over LoRa onto `cubesat/command`
-verbatim, `set_profile` arrives over the radio for free — which is what
-makes `FLIGHT` recoverable at all (see [Safety and recovery](#safety-and-recovery)).
+Because COMMS canonicalises what it receives over LoRa onto `cubesat/command`, `set_profile`
+arrives over the radio for free — `profile expo` is what a person types — and that is what makes
+`FLIGHT` recoverable at all (see [Safety and recovery](#safety-and-recovery)). Over the radio it
+carries the profile alone: see the amendment of 2026-09-03 under
+[The radio command contract](#the-radio-command-contract) for what the compact spelling cannot say.
 
 OBC → hostd:
 
@@ -323,21 +325,22 @@ and is not tracked as work. It stays noted as a future option, mainly as a recov
 
 ### The radio command contract
 
-*Agreed 2026-08-24; written since, the compact spelling and the reply half included. One field set
-is still outstanding — `photo`'s ack, described below as carrying the frame number and the free
-megabytes, answers with the ordinary state fields instead — and it is tracked in
-[`ROADMAP.md`](../ROADMAP.md).*
+*Agreed 2026-08-24; written since, the compact spelling and the reply half included. The `photo`
+ack was the last outstanding piece and landed on 2026-09-03, with the amendment below saying which
+of its promised fields it actually carries and why.*
 
-The uplink already works: a command over LoRa is the same JSON as over MQTT, relayed verbatim
-onto `cubesat/command` — 55 bytes of `{"command":"set_profile","params":{"profile":"HOSTED"}}`
-in a 240-byte Meshtastic message. What is designed here is everything around it: how a person
-in a field, with a phone and no ground station, addresses the satellite comfortably and gets an
-answer.
+The uplink already works: a command over LoRa lands on `cubesat/command` exactly as one over MQTT
+does, and 55 bytes of `{"command":"set_profile","params":{"profile":"HOSTED"}}` fit inside a
+240-byte Meshtastic message with room to spare. What is designed here is everything around it: how a
+person in a field, with a phone and no ground station, addresses the satellite comfortably and gets
+an answer. *(That JSON is no longer what goes over the air — see the amendment below. It is quoted
+because it is what the compact line becomes on the bus.)*
 
 **A compact spelling, translated once at entry.** Typing quoted JSON on a phone keyboard in a
 field is where commands go to be mistyped, so COMMS additionally accepts a compact form and
-canonicalises it into JSON *before* the relay. One translation point, on the way in — the JSON
-path stays verbatim, so there is still no re-encoding step that can disagree with anyone.
+canonicalises it into JSON *before* the relay. One translation point, on the way in — and at the
+time this was written the JSON path stayed verbatim alongside it, so there was no re-encoding step
+that could disagree with anyone.
 
 *Amended 2026-08-31:* the compact spelling is a **bare verb** — `ping`, `profile FLIGHT` — the
 same lines the dashboard's Mission Console takes, so one command language covers every way of
@@ -346,6 +349,30 @@ intent. A `!` line that does not parse is answered with `err=unknown`; a bare li
 parse is ordinary mesh chat and is left alone — answering stray sentences on a shared channel
 would spend the transmission budget on other people's conversations. The flip side, accepted
 knowingly: chat that is exactly a command line (`ping` alone) is a command.
+
+*Amended 2026-09-03:* **the compact spelling is now the whole of it.** Hand-composed JSON off the
+air stopped being a command: an uplink is a compact line or it is nothing. What that buys is a
+parser count of one on the radio side — two parsers eventually disagree about what a command is, and
+then a command works over one spelling and not the other — and the removal of a shape check that
+existed only to guard a path nobody was asked to use. Every command still works identically over
+MQTT, which is where the dashboard, the CLI and any other broker client publish the JSON above; what
+narrowed is the air.
+
+The reason this was written down in the first place survives it whole: `profile hosted`, `safe`,
+`recover` and `restart <svc>` are all compact verbs, so a satellite in `FLIGHT` with Wi-Fi down and
+no SSH is still reachable from a phone. Two things do go. `set_profile` over the radio carries the
+profile and nothing else — `ttl_minutes` and `mission_label` have no room in a one-argument verb, so
+the TTL is the profile's own and an unlabelled mission is named after the minute it started, which
+is what a walk-to-work `profile flight` was always going to do anyway. And `delete_mission`, the one
+command deliberately without a compact spelling, is now unreachable over the air entirely rather
+than awkwardly reachable; it stays available over MQTT, which is the surface where whoever presses
+delete can see the mission they are deleting.
+
+A line that is neither a compact command nor a `!` gets one line in the service log and no airtime.
+Logged rather than dropped in silence, because this is behind the channel filter below: the sender
+holds the key, so the likeliest author of an unrecognised line is our own operator reaching for last
+week's spelling, and the log line is the trace that person goes looking for. Not answered, because a
+reply is exactly what `!` buys.
 
 *Amended 2026-09-03:* that flip side is now bounded by the channel. The mesh preset change of
 2026-09-02 put this node on a public primary channel shared with several hundred strangers whose
@@ -369,8 +396,8 @@ one that gets edited is the one somebody is looking at.
 
 An unrecognised `!` line is answered with `re=? ok=0 err=unknown` rather than dropped in
 silence: the sender is a person standing in a field wondering why nothing happened. A bare line
-that is not exactly a command, and not JSON, is still just chat — see the amendment above for
-where that boundary runs and why.
+that is not exactly a command is still just chat — see the amendments above for where that
+boundary runs and why.
 
 **One reply rule, not one per command.** Every accepted command schedules a single
 out-of-schedule beacon about ten seconds later — long enough for the effect to land — extended
@@ -378,12 +405,23 @@ with `re=<command>`::
 
     CSAT t=1741863600 re=set_profile st=DEPLOY pr=FLIGHT b=78.2 v=3.94 …
 
-The state fields *are* the verdict. COMMS relays commands verbatim and cannot honestly vouch
-for what OBC did with one, so the ack carries no fabricated `ok=1` for relayed commands — the
+The state fields *are* the verdict. COMMS relays a command without interpreting it and cannot
+honestly vouch for what OBC did with one, so the ack carries no fabricated `ok=1` for relayed commands — the
 reader sees `pr=` and `st=` and judges, the same withhold-rather-than-fabricate rule the rest
 of the telemetry follows. `ok=` and `err=` appear only where COMMS itself is the handler and
 actually knows: its own commands, and the compact-syntax errors above. `re=`, `ok=` and `err=`
 join `t=` and `down=` in the never-dropped core of the beacon format.
+
+*Amended 2026-09-03, twice.* First, `re=` names **the verb the operator typed**, not the canonical
+command it became: `beacon on` came back as `re=set_comms_config` (observed on the hardware), which
+asks a person on a phone to translate our vocabulary into theirs before they can believe the answer.
+The spelling now travels with the translation out of `compact.py`, and since the air takes nothing
+but compact lines there is no second case left to reconcile. Second, the general shape of a
+reply is that it reads the **handler's own** message where there is one to read — `take_photo` →
+`payload_photo`, `set_profile` → the `st=`/`pr=` it already carries, `safe`/`recover` → `st=`. Where
+a handler says nothing an ack can read, the honest answer stays the state line and nothing is
+invented; `restart_service` is that case today, because HOSTD reports on `host_status` and COMMS
+does not subscribe to it.
 
 Queries are the same mechanism with more fields and no ten-second wait. `!ping` answers with an
 ordinary beacon immediately — proof of life on demand. `!pos` adds `age=<seconds>` and may
@@ -392,12 +430,45 @@ room for an age and a coordinate without one is indistinguishable from a current
 the lost-satellite query. `!mission` answers `re=mission m= rows= dist=` from the DHS cache,
 and `!photo`'s ack carries the frame number and the free megabytes.
 
-**Replies cost airtime, so they are budgeted.** At most one event transmission per ten seconds;
-extras collapse into the latest. Replies are broadcast into the shared PSK-encrypted channel —
-the channel is the trust boundary, commands arrive on it, and everyone on it benefits from
-seeing the answer. Replies obey `lora_enabled` like every other transmission: a satellite told
-to be quiet is quiet in its answers too, and keeps listening. The going-down beacon remains the
-single exception, on both counts.
+*Amended 2026-09-03:* `!photo` now answers about the photograph, and the fields are not quite the
+ones promised above. It carries `ok=1 kb=<size> seq=<frame>` read from PAYLOAD's own `payload_photo`
+message — the size in kilobytes because that is what an operator asked for, the sequence because
+that is the frame number, and the mission id not at all because every beacon already carries `m=`.
+The **free megabytes are not there**: they live on `payload_status`, which COMMS does not subscribe
+to, and the case they were wanted for arrives instead as `err=nospace` from the refusal itself. A
+refusal is the other half of the answer and is named: `err=state` (the mission state forbids the
+camera), `err=nospace`, `err=camera`, one word each from `payload/camera.py`, because a beacon field
+may not contain a space and PAYLOAD's sentence cannot travel. Nothing published in the ten seconds
+is `err=noreply` with **no `ok=`** — silence is COMMS' own observation and worth reporting, while
+`ok=0` would be a verdict on a capture it never saw. A mission's own frames are excluded by `kind`:
+a mission photographs itself every 300 s against a ten-second window, so without that filter roughly
+one `!photo` in thirty would be answered with somebody else's picture.
+
+**Replies cost airtime, so they are budgeted.** *Amended 2026-09-03, because the old budget was
+made out of losing things:* it was one pending slot, so a second command inside ten seconds erased
+the first one's confirmation without a word — and for `!photo`, a command with a physical side
+effect, that is a photograph taken and never mentioned. The budget is now **at most one reply per
+wake** (a 30 s cadence in `NOMINAL`, 60 s in `SAFE`), drained from a short queue in arrival order,
+first *due* entry first — so a query asked while a photo ack is still ripening is answered now
+rather than made to wait out somebody else's ten seconds. What collapses is **only the state
+queries** — `ping`, `sys`, `env`, `pos`, `mission` — because a fresh snapshot answers the older
+question too and five near-identical telemetry lines are airtime spent saying one thing. Everything
+with an effect in the world keeps its own reply. The queue holds eight; beyond that the oldest is
+dropped and logged, which is the same judgement the bound is made of — at one reply per wake, an
+answer eight deep is four minutes late and describes a satellite that has moved on.
+
+Replies are broadcast into the shared PSK-encrypted channel — the channel is the trust boundary,
+commands arrive on it, and everyone on it benefits from seeing the answer. *Amended 2026-09-03:*
+replies no longer obey the runtime beacon flag. **An answer is not a beacon**: `beacon_enabled`
+(named `lora_enabled` until that day, for the same reason the command was renamed on 2026-09-01)
+rations the schedule, and a flag somebody set an hour ago must not swallow the answer to a question
+somebody just asked — least of all the confirmation of `beacon off` itself, whose success and whose
+total failure are the same silence from a phone. Replies are gated on `lora_listening` — the profile
+— exactly like the inbox and the going-down beacon, so **every profile that runs COMMS answers the
+commands it accepts**; a profile with `downlink.lora: false` still says nothing, which today is
+`MAINTENANCE` alone and it runs no COMMS. What this gives up, knowingly: "listen but transmit
+nothing under any circumstances" is no longer reachable at runtime. Since only holders of the
+`CubeSat` key can ask, silence is achieved by not asking.
 
 **`restart_service` is the one new capability.** It closes a real gap: `SAFE` in `FLIGHT`
 because a subsystem hung is unrecoverable over the radio today — re-applying the profile does

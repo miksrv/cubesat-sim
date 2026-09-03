@@ -157,12 +157,13 @@ would read as a button that does nothing. Three fences hold it: it is refused in
 access point with an audience on it, and commands are still unauthenticated — a profile-dependent
 rule, so it cannot live in the broker's ACL), it is refused for the mission currently being
 recorded, and it has **no compact spelling**, so it is in neither the radio vocabulary nor the
-console's mirror of it and cannot be met by somebody exploring what the satellite understands. (It
-is still reachable as hand-composed JSON over the radio, because COMMS relays a well-formed command
-verbatim — that property is deliberate and worth more than a fence here. Since 2026-09-02 it is
-verbatim *from the private `CubeSat` channel only*, which makes this fence stronger rather than
-weaker: composing that JSON by hand is deliberate, and now it also takes the channel key.) Do not
-give it a compact spelling, and do not add an HTTP `DELETE` to the dashboard: `archive.py` opens the
+console's mirror of it and cannot be met by somebody exploring what the satellite understands. Since
+2026-09-03 that fence is **absolute over the air**: JSON stopped being a command on the radio, so
+having no compact spelling now means having no radio path at all, where before it meant a
+deliberately awkward one. It stays fully reachable over MQTT — the dashboard's archive dialog, the
+CLI, any broker client — which is the right place for it, because that is where whoever presses
+delete can see the mission they are deleting. Do not give it a compact spelling, and do not add an
+HTTP `DELETE` to the dashboard: `archive.py` opens the
 file `mode=ro` precisely so there can only ever be one writer.
 
 Do not conflate the three uses of the word: a *mission state* is `NOMINAL`/`SAFE`/… on the OBC
@@ -203,12 +204,25 @@ external power is present *and* the charge rate is not still falling. Without th
 satellite brought home flat and plugged in powers itself off and the X728 never restores it,
 because mains never left. Without the second, one failed charger disables the protection forever.
 
-**Quiet is not deaf.** `lora_enabled` silences transmission only; listening is the profile's call.
-A profile also sets where transmission *starts*: `downlink: {lora: true, beacon: false}` in `DEMO`
-and `EXPO` means the satellite listens but says nothing until asked (`beacon on` over the radio, from
-`cubesat beacon on`, or from the dashboard), because there it is a metre from its operator and the
-mesh channel is shared. Entering a profile resets that flag to the profile's own default — otherwise
-"quiet in DEMO" would hold only until the first time anybody turned the beacon on.
+**Quiet is not deaf, and it is not mute either.** `beacon_enabled` rations the *schedule* only;
+listening is the profile's call, and so is answering. A profile sets where transmission starts:
+`downlink: {lora: true, beacon: false}` in `DEMO` and `EXPO` means the satellite listens and answers
+but volunteers nothing until asked (`beacon on` over the radio, from `cubesat beacon on`, or from the
+dashboard), because there it is a metre from its operator and the mesh channel is shared. Entering a
+profile resets that flag to the profile's own default — otherwise "quiet in DEMO" would hold only
+until the first time anybody turned the beacon on.
+
+**An answer is not a beacon** (2026-09-03). A reply to an accepted command is gated on
+`lora_listening` — the profile — exactly like the inbox and like the going-down beacon, so **every
+profile that runs COMMS answers the commands it accepts**, `beacon off` or not. The three cases that
+settled it were met inside five minutes on 2026-09-02 in `DEMO`: `!sys` answered from the caches and
+the answer dropped, `!photo` taken and never mentioned, and `!beacon off` silenced by the flag it had
+just set — which makes "the transmitter is off" and "the command never arrived" the same silence to
+the one person who cannot tell them apart. The satellite was answering typos (a `!` line that fails
+to parse has always been answered) and swallowing successes. The flag was called `lora_enabled` until
+that change and the rename is part of it: a flag that no longer decides whether LoRa transmits at all
+must not be named for it. The old spelling is accepted on the way in and mirrored on `comms_status`,
+deprecated, because the dashboard deployed on 2026-09-02 sends and reads it.
 `SAFE` wakes every 60 s to listen and beacons every 600 s. An earlier version silenced COMMS
 entirely in `SAFE` — and `SAFE` is reachable from `FLIGHT`, where the radio is the only way in, so
 the state that most needs a `recover` was the one state deaf to it. The same rule now covers
@@ -320,10 +334,19 @@ Ground commands share the one `cubesat/command` topic; the `command` field selec
 command in all three spellings (radio, shell, JSON). Do not restate it elsewhere: a second copy is
 a copy that disagrees after the first edit.
 
-**Every command works identically over MQTT and over LoRa** —
-`COMMS` re-publishes uplinked commands verbatim onto `cubesat/command`, so nothing downstream
-knows or cares which *link* a command arrived on. This is also the recovery path for `FLIGHT`,
-where Wi-Fi is down and there is no SSH. Preserve that property.
+**Over the radio the vocabulary is the compact spelling and nothing else** (narrowed 2026-09-03).
+`COMMS` canonicalises a compact line into JSON and publishes it onto `cubesat/command`, so nothing
+downstream knows or cares which *link* a command arrived on — but a command with no compact spelling
+now has no radio path at all. Hand-composed JSON over the air used to be relayed verbatim and is
+not any more: one parser for the air instead of two, and nothing left that can disagree with
+`compact.py` about what a command is.
+
+**The `FLIGHT` recovery path is intact, and it is why this is written down.** `profile hosted`,
+`safe`, `recover` and `restart <svc>` are all compact verbs, so a satellite with Wi-Fi down and no
+SSH is still reachable from a phone — preserve *that*, not the JSON. Two things the radio can no
+longer carry: `set_profile`'s `ttl_minutes` and `mission_label` (the profile's own TTL and a mission
+named after its start time are the defaults, which is what the field scenario already relies on),
+and `delete_mission`, which has no compact spelling on purpose.
 
 **On the radio side that is one mesh channel and no other.** An uplink counts only if it arrived on
 `config.LORA_CHANNEL_INDEX` — the private `CubeSat` channel with its own key. Everything else the

@@ -86,8 +86,14 @@ profiles:
     # The radio listens but does not beacon: the satellite is a metre away and
     # the dashboard is open, so a beacon every minute into a shared mesh channel
     # is noise. Listening still matters — an uplinked `set_profile` is how a trip
-    # begins, and `lora on` (radio, SSH or the dashboard console) is how the
-    # beacon comes back inside this profile.
+    # begins, and `beacon on` (radio, SSH or the dashboard console) is how the
+    # schedule comes back inside this profile.
+    #
+    # `beacon: false` rations the schedule and nothing else (2026-09-03). A
+    # command sent to this satellite is still answered over the radio, because
+    # replies are gated on `lora` — the envelope — and not on this flag. Three
+    # commands were obeyed and left unacknowledged here on 2026-09-02, which is
+    # what "quiet" used to mean and no longer does.
     downlink: { lora: true, beacon: false }
     power: { governor: ondemand, cadence_scale: 1.0 }
     ttl_minutes: null
@@ -106,7 +112,8 @@ profiles:
     dashboard: true
     persistence: none
     # Quiet by default, for the same reason as DEMO — and more so in a room full
-    # of people with radios.
+    # of people with radios. Quiet is the schedule only: a command from the
+    # `CubeSat` channel is still answered.
     downlink: { lora: true, beacon: false }
     power: { governor: ondemand, cadence_scale: 1.0 }
     ttl_minutes: null

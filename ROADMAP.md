@@ -33,8 +33,6 @@ code is worth writing.
 | [W4](#w4-adcs-mounting-offset--requested-2026-09-01-to-be-done-on-the-running-satellite) | `[ ]` needs the satellite | The ADCS mounting offset, captured as data |
 | [W5](#w5-a-ships-log-not-mission-events--requested-2026-09-01) | `[ ]` needs a decision | A ship's log, not "Mission Events" |
 | [W6](#w6-the-mesh-preset-both-nodes-are-moved--2026-09-02) | `[ ]` bench | Audit both mesh nodes against each other |
-| [W8](#w8-an-answer-is-not-a-beacon-beacon-must-ration-the-schedule-only--decided-2026-09-02) | `[ ]` not started | An answer is not a beacon: `beacon` rations the schedule only |
-| [W9](#w9-and-the-answer-has-to-say-what-happened--same-decision-2026-09-02) | `[ ]` not started | The ack must say what happened, and carry the `photo` fields |
 | [W10](#w10-the-walk-to-work-what-to-check-on-the-first-real-trip) | `[ ]` the trip itself | The walk to work, end to end |
 | [V2](#v2-tel0157-knots-to-ms-factor) | `[ ]` bench | TEL0157 knots to m/s factor |
 | [V3](#v3-tel0157-altitude-triplet-high-byte) | `[ ]` bench | TEL0157 altitude triplet high byte |
@@ -45,6 +43,7 @@ code is worth writing.
 | [V13](#v13-the-x728-charge-rate-on-mains) | `[ ]` bench | The X728 charge rate on mains |
 | [V14](#v14-bno055-low-byte-bit-7-flips-reach-the-record) | `[ ]` bench | BNO055 low-byte bit-7 flips reach the record |
 | [V15](#v15-the-channel-index-a-received-packet-reports) | `[ ]` bench | The channel index a received packet reports — the uplink filter rests on it |
+| [V16](#v16-whether-payload-answers-inside-the-ack-window) | `[ ]` bench | Whether PAYLOAD answers inside the ack window — `!photo` says `err=noreply` if not |
 | [Q1](#q1-keep-the-bmp280-at-0x76-and-for-what) | `[ ]` open | Keep the BMP280 at `0x76`, and for what? |
 | [Q2](#q2-recovering-a-trip-after-an-unexpected-reset) | `[ ]` open | Recovering a trip after an unexpected reset |
 | [Q4](#q4-may-a-safe-satellite-be-shown-in-expo) | `[ ]` open | May a `SAFE` satellite be shown in `EXPO`? |
@@ -61,10 +60,11 @@ Everything except `P6` is done and gone from this file. `P7` was retired on 2026
 sweep and self-test it promised are what `DEPLOY` does on every ascent); `P2` closed the same day
 with the `cubesat` CLI; `P8` closed with the test sweep that removed the last places a test asserted
 a shipped configuration value instead of computing from it. The radio command contract is written
-down to its last command — `restart_service` was that one — and what is outstanding is now the
-**acks**: whether they are transmitted at all, and whether they say what happened. That includes the
-`photo` field set the contract describes and has never had. Both live in [W8](#w8-an-answer-is-not-a-beacon-beacon-must-ration-the-schedule-only--decided-2026-09-02)
-and [W9](#w9-and-the-answer-has-to-say-what-happened--same-decision-2026-09-02).
+down to its last command — `restart_service` was that one — and the **acks** closed on 2026-09-03:
+a reply is gated on the profile rather than on the beacon flag, every command with an effect keeps
+its own answer instead of being erased by the next one, and `!photo` reports the frame it took. The
+`photo` field set the contract had described and never had is part of that. What the contract still
+cannot promise is that PAYLOAD answers inside the window — [V16](#v16-whether-payload-answers-inside-the-ack-window).
 
 **Where the rewrite stands.** All eight services exist, at 100 % line coverage with `ruff` and
 `mypy` clean, and all eight have now run on the satellite: `HOSTD`, `OBC`, `EPS` and `COMMS` in
@@ -219,109 +219,6 @@ demodulate each other at all.
    bayme.sh router, −5.25 dB SNR / −94 dBm from indoors). The 72 are what the mesh does after that
    single link, so the reading to repeat is the *direct* receivers from where `FLIGHT` actually
    goes.
-
-### W8: An answer is not a beacon: `beacon` must ration the schedule only — decided 2026-09-02
-
-**The rule.** COMMS answers a command whenever it is in a position to hear one. `beacon` governs one
-thing and one thing only: whether *state* goes out on a schedule, unasked. So `_maybe_ack` is gated
-on `lora_listening` — the profile's envelope — and not on `lora_enabled`.
-
-That is not a new principle, it is an existing one applied consistently. `_going_down_beacon` is
-already written this way, and its docstring says why: *"Gated on ``lora_listening`` — the profile —
-and **not** on ``lora_enabled``. Same reasoning as the inbox: a runtime flag somebody set an hour ago
-should not be able to silence the one message that explains a disappearance. A profile that forbids
-the radio still says nothing, because there the radio is not part of the mission at all."* Replace
-"the one message that explains a disappearance" with "the answer to a question somebody just asked"
-and the sentence still holds. The satellite currently has two rules for two transmissions that
-deserve the same one.
-
-**Three instances, all met inside five minutes on 2026-09-02**, with the satellite in `DEMO` (where
-`beacon: false` is the profile's own default) and the operator on a phone one room away:
-
-- `!sys` arrived, was answered from the caches, and the reply was dropped. The command worked; from
-  the phone it was indistinguishable from a satellite that is not listening.
-- `!beacon off` arrived and did its job — and its own confirmation was dropped *by the flag it had
-  just set*, so "the transmitter is now off" and "the command never arrived" look identical. This is
-  the worst of the three: the operator is left unable to tell whether the satellite is quiet or gone.
-- `!photo` arrived and PAYLOAD took the photograph. A command with a **physical side effect**, and
-  no way to learn from the radio that it happened.
-
-The `!` contract in `compact.py` already refuses this outcome for a line that fails to parse —
-answered *"because its sender meant to command and is standing in a field wondering why nothing
-happened"* — while a line that parses gets nothing. A satellite that answers typos and swallows
-successes has the priority backwards.
-
-**The flag has to be renamed with the change**, or the same fault is simply moved along one step:
-`beacon on|off` was itself renamed from `lora on|off` on 2026-09-01 *because the old name said the
-wrong thing*, and a flag named `lora_enabled` that no longer governs whether LoRa transmits at all
-is that same lie. It becomes `beacon_enabled`, in `set_comms_config` and in `comms_status`, with
-`lora_enabled` accepted as an alias on the way in — the dashboard build deployed on 2026-09-02 sends
-the old spelling, and the satellite must not stop answering its own console the day this lands.
-Everything that names it: `comms/compact.py` (the two `_beacon` builders), `comms/service.py`
-(`_set_config`, the `lora_enabled` property, `_publish_status`), `cli/main.py` and
-`cli/commands/status.py`, `README.md` (the payload schema at the COMMS section, the
-`lora_enabled`/`lora_listening` explanation, and the vocabulary table's `set_comms_config` row),
-`CLAUDE.md` → Quiet is not deaf, the `DEMO` and `EXPO` comments in `profiles.yaml`, and in the
-groundstation repo `QuickCommandsWidget`, `MissionConsoleWidget` and the `CommsStatus` type.
-
-**The order this depended on is satisfied.** The uplink channel filter landed on 2026-09-03, so
-only a holder of the `CubeSat` key can ask a question at all; until then "always answer a command"
-would have meant any stranger in the community chat could make this satellite transmit. That filter
-is what makes this rule safe rather than merely nicer, and it is now in place.
-
-**Where "always" stops, stated so it is not read as absolute.** The gate is `lora_listening`, so a
-profile with `downlink.lora: false` still says nothing — there the radio is not part of the mission
-and the inbox is not even polled. Today that is `MAINTENANCE` alone, which runs no COMMS at all, so
-in practice the rule reads: **every profile that runs COMMS answers commands.**
-
-**What this deliberately gives up.** "Listen, but transmit nothing under any circumstances" stops
-being reachable at runtime; the only route to it becomes a profile that also closes the way in. That
-is accepted rather than overlooked: once only channel members can ask, silence is achieved by not
-asking.
-
-#### W9: And the answer has to say what happened — same decision, 2026-09-02
-
-Transmitting the ack is half of it. **Every valid command uplinked over the radio is confirmed, and
-the confirmation names the outcome rather than merely proving something was received.** The delay
-exists for exactly this and its docstring already says so: *"by the time it goes out, ``st=`` and
-``pr=`` show what the command actually did, which is more honest than an ``ok=1`` COMMS cannot vouch
-for."* For a profile switch that is genuinely enough — `st=` and `pr=` *are* the outcome. For a
-command whose result is not a state field, it is not: `!photo` was answered with the ordinary
-telemetry line and nothing about the photograph (met on the hardware, 2026-09-02 — the frame was
-visible in the dashboard while the radio said nothing about it).
-
-This absorbs the `photo` field set that has been outstanding since the contract was written, and it
-is cheaper than it looks, because **nothing needs measuring — it is all already on the bus.**
-`payload_photo` carries `kind`, `file`, `size_bytes`, `mission_id` and `sequence`; the operator's
-request is the size in KB, and the contract in [`docs/concept.md` → The radio command
-contract](docs/concept.md#the-radio-command-contract) asks for the frame number and the free
-megabytes. All three are available. What is missing is only that **COMMS is not subscribed to
-`payload_photo`** — its `subscriptions` are `command`, `eps_status`, `adcs_status`, `payload_data`,
-`dhs_status`, plus `obc_status` from the base class — so today it cannot know a photograph happened
-even in principle.
-
-**The trap in that subscription, which must not be walked into:** `payload_photo` also carries
-`photo_base64` — the whole image — and COMMS keeps "the latest payload from each subsystem, kept
-whole". Subscribing the ordinary way would park a base64 copy of every frame in the link service's
-memory, for the sake of two integers. Keep the small fields, drop the image on arrival, and say so
-at the handler.
-
-Two smaller things belong in the same pass:
-
-- **`re=` must name the verb the operator typed.** `beacon on` came back as `re=set_comms_config`
-  (observed 2026-09-02). `compact.py` already states the intent for the queries — *"the short
-  ``re=`` name a phone reader sees — the verb they typed, not the canonical command it became"* —
-  and simply does not apply it to a relayed command, because `Compact` carries the canonical name
-  and not the spelling. The spelling has to travel with the translation.
-- **`ok=`/`err=` today appear "only where COMMS itself is the handler and actually knows"**, which
-  is right and does not need weakening: the general shape is that the ack reads the *handler's own*
-  message. `take_photo` → `payload_photo`; `set_profile` → the state fields it already carries;
-  `safe`/`recover` → `st=`; `restart_service` → what HOSTD reports. Where a handler says nothing an
-  ack can read, the honest answer stays the state line, and that is a gap to name per command rather
-  than to paper over with an invented `ok=1`.
-
-The 240-byte rule is unaffected: reply fields are already `protected` in `_fit`, so the routine
-telemetry gives way to them rather than the line being truncated.
 
 ### W10: The walk to work: what to check on the first real trip
 
@@ -492,6 +389,24 @@ uplink channel filter landed on 2026-09-03 resting its whole discrimination on i
 immediate, and recoverable, which is why the inference was written to fail in that direction rather
 than towards a public command channel. What would be silent is the reverse assumption, so it is not
 the one in the code.
+
+#### V16: Whether PAYLOAD answers inside the ack window
+
+**The check.** In `DEMO` on the Pi, send `photo` from the phone and read what comes back. Expected
+`re=photo ok=1 kb=<size> seq=…`; what would fail is `re=photo err=noreply` arriving while the
+photograph is visible in the dashboard. Worth repeating with the mission's own photography running
+(a 300 s series in `DIAG`), which is when the bus and the camera are busiest, and once from `SAFE`,
+where COMMS wakes every 60 s and PAYLOAD polls every 300 s.
+
+**Why it is not settled.** `!photo`'s ack reads PAYLOAD's own `payload_photo` message and reports
+`err=noreply` when nothing was published between the command and the transmission
+(`comms/service.py` → `_photo_fields`). Nothing measures how long that actually takes on the
+hardware: a cold capture was 0.97 s on 2026-09-01, but that was one process on an idle bus, and the
+window here is bounded by `ACK_DELAY_SEC` on one side and by the next COMMS wake on the other, with
+four processes sharing a 10 kHz bus behind an advisory lock. It is in this list rather than in the
+code because the failure is a plausible wrong answer: a photograph that worked, reported over the
+radio as one that was never confirmed. If it does bite, the fix is not a longer delay — it is
+holding the ack until the message it is waiting for arrives, with its own bound.
 
 ---
 

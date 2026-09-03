@@ -12,9 +12,42 @@ for anything electrical. This file tracks only the work outstanding.
 
 ---
 
-## Status Legend
+## Everything outstanding, at a glance
 
-`[ ]` not started · `[~]` in progress. There is no "done" — finished work leaves this file.
+Every item in this file has a number and a heading of its own; the numbers below link to them.
+`P` is a rewrite phase, `W` work that can be written, `V` a bench check the code is waiting on,
+`Q` a decision nobody has made yet. Numbers are stable identities, not a sequence — a gap means a
+finished item left the file, and a new item takes the next free number rather than reusing one.
+
+**Status.** `[ ]` not started · `[~]` in progress. There is no "done" — finished work leaves this
+file. The word beside the box names what the item is waiting on, which for most of what is left is
+not effort: *bench* wants the satellite or the radio, *needs a decision* wants an answer before any
+code is worth writing.
+
+| # | Status | What it is |
+|---|---|---|
+| [P6](#p6-the-autonomous-logging-profile) | `[~]` in progress | The autonomous logging profile — written, waiting on a walk |
+| [W1](#w1-mission-export-carries-no-photographs) | `[ ]` needs a decision | A mission export carries no photographs |
+| [W2](#w2-import-belongs-in-the-client-not-in-the-satellite) | `[ ]` not started | Import belongs in the client, not in the satellite |
+| [W3](#w3-photo-directories-collide-across-the-two-databases) | `[ ]` not started | Photo directories collide across the two databases — a live hazard |
+| [W4](#w4-adcs-mounting-offset--requested-2026-09-01-to-be-done-on-the-running-satellite) | `[ ]` needs the satellite | The ADCS mounting offset, captured as data |
+| [W5](#w5-a-ships-log-not-mission-events--requested-2026-09-01) | `[ ]` needs a decision | A ship's log, not "Mission Events" |
+| [W6](#w6-the-mesh-preset-both-nodes-are-moved--2026-09-02) | `[ ]` bench | Audit both mesh nodes against each other |
+| [W7](#w7-commands-must-come-from-the-private-channel-and-nothing-else--decided-2026-09-02) | `[ ]` not started | Commands must come from the private channel — **do this first** |
+| [W8](#w8-an-answer-is-not-a-beacon-beacon-must-ration-the-schedule-only--decided-2026-09-02) | `[ ]` not started | An answer is not a beacon: `beacon` rations the schedule only |
+| [W9](#w9-and-the-answer-has-to-say-what-happened--same-decision-2026-09-02) | `[ ]` not started | The ack must say what happened, and carry the `photo` fields |
+| [W10](#w10-the-walk-to-work-what-to-check-on-the-first-real-trip) | `[ ]` the trip itself | The walk to work, end to end |
+| [V2](#v2-tel0157-knots-to-ms-factor) | `[ ]` bench | TEL0157 knots to m/s factor |
+| [V3](#v3-tel0157-altitude-triplet-high-byte) | `[ ]` bench | TEL0157 altitude triplet high byte |
+| [V5](#v5-bno055-calibration-save-and-restore) | `[ ]` not implemented | BNO055 calibration save and restore |
+| [V6](#v6-networkmanager-client-mode) | `[ ]` bench | NetworkManager client mode — `EXPO` depends on it |
+| [V7](#v7-sen0501-board-revision) | `[ ]` bench | SEN0501 board revision — `uv_index` stays null until then |
+| [V10](#v10-whether-the-private-channel-is-relayed-at-all) | `[ ]` bench | Whether the private channel is relayed at all |
+| [V13](#v13-the-x728-charge-rate-on-mains) | `[ ]` bench | The X728 charge rate on mains |
+| [V14](#v14-bno055-low-byte-bit-7-flips-reach-the-record) | `[ ]` bench | BNO055 low-byte bit-7 flips reach the record |
+| [Q1](#q1-keep-the-bmp280-at-0x76-and-for-what) | `[ ]` open | Keep the BMP280 at `0x76`, and for what? |
+| [Q2](#q2-recovering-a-trip-after-an-unexpected-reset) | `[ ]` open | Recovering a trip after an unexpected reset |
+| [Q4](#q4-may-a-safe-satellite-be-shown-in-expo) | `[ ]` open | May a `SAFE` satellite be shown in `EXPO`? |
 
 ---
 
@@ -24,18 +57,14 @@ The hardware is finished and validated; the software is being rewritten against 
 concept. Phases are ordered so each one is independently useful and testable. Full scope and
 rationale per phase: [`docs/concept.md` → Implementation plan](docs/concept.md#implementation-plan).
 
-Everything except `P6` is done and gone from this table. `P7` was retired on 2026-09-01 (the I2C
+Everything except `P6` is done and gone from this file. `P7` was retired on 2026-09-01 (the I2C
 sweep and self-test it promised are what `DEPLOY` does on every ascent); `P2` closed the same day
 with the `cubesat` CLI; `P8` closed with the test sweep that removed the last places a test asserted
 a shipped configuration value instead of computing from it. The radio command contract is written
 down to its last command — `restart_service` was that one — and what is outstanding is now the
 **acks**: whether they are transmitted at all, and whether they say what happened. That includes the
-`photo` field set the contract describes and has never had. Both live in *An answer is not a beacon*
-below.
-
-| Phase | Scope | Delivers | Status |
-|---|---|---|---|
-| **P6** | **Written; what is left is a walk.** The code landed piecemeal: `powersave` on entering `LOW_POWER` and in `FLIGHT`, the profile TTL armed by HOSTD and reported as `ttl_expires_at`, the radio duty-cycled by the beacon table, and the profile itself. What no test can settle is whether the GNSS track is right — V2 and V3 below are that walk. Mains-as-signal recovery is deliberately still open as Q2 | The autonomous logging profile | `[~]` |
+`photo` field set the contract describes and has never had. Both live in [W8](#w8-an-answer-is-not-a-beacon-beacon-must-ration-the-schedule-only--decided-2026-09-02)
+and [W9](#w9-and-the-answer-has-to-say-what-happened--same-decision-2026-09-02).
 
 **Where the rewrite stands.** All eight services exist, at 100 % line coverage with `ruff` and
 `mypy` clean, and all eight have now run on the satellite: `HOSTD`, `OBC`, `EPS` and `COMMS` in
@@ -45,12 +74,23 @@ has therefore moved from services to **profiles**: `FLIGHT`, `EXPO` and `DIAG` h
 applied, and with them the access point (V6), a moving GNSS fix (V2, V3) and `diag.db` are untried.
 `MAINTENANCE` was applied for the first time on 2026-09-02 — to free `/dev/serial0` for the modem
 preset change — and did what it says: COMMS and the `external_units` stopped, `cubesat.local` stayed
-up, and `HOSTED` brought all of it back with no `SAFE` and no lost subsystem. **Almost everything left is a bench check or a decision.** What can still be written
-without the satellite: the photographs missing from a mission export (which blocks the public demo),
-the export and import verbs the archive dialog still lacks, the `photo` ack's frame fields — the last
-line of the radio contract still unwritten — the chart line that should break on a gap, and an
-end-to-end test against the replay build. The one defect the hardware found in the logic, `restart_service` latching `SAFE`, is fixed:
-`health.expect_restart` waives the departure OBC itself asked for, for one loss grace.
+up, and `HOSTED` brought all of it back with no `SAFE` and no lost subsystem. **Almost everything
+left is a bench check or a decision.** What can still be written without the satellite: the
+photographs missing from a mission export (which blocks the public demo), the export and import
+verbs the archive dialog still lacks, the `photo` ack's frame fields — the last line of the radio
+contract still unwritten — the chart line that should break on a gap, and an end-to-end test against
+the replay build. The one defect the hardware found in the logic, `restart_service` latching `SAFE`,
+is fixed: `health.expect_restart` waives the departure OBC itself asked for, for one loss grace.
+
+### P6: The autonomous logging profile
+
+**Status:** `[~]` — written; what is left is a walk.
+
+The code landed piecemeal: `powersave` on entering `LOW_POWER` and in `FLIGHT`, the profile TTL
+armed by HOSTD and reported as `ttl_expires_at`, the radio duty-cycled by the beacon table, and the
+profile itself. What no test can settle is whether the GNSS track is right —
+[V2](#v2-tel0157-knots-to-ms-factor) and [V3](#v3-tel0157-altitude-triplet-high-byte) are that walk. Mains-as-signal recovery is deliberately still open as
+[Q2](#q2-recovering-a-trip-after-an-unexpected-reset).
 
 ### Mission archive: what the dialog still does not do — 2026-09-02
 
@@ -60,6 +100,8 @@ performed by DHS, which owns the file — the row goes with its detail and its p
 `EXPO` and refused for the mission being recorded. Two verbs the original note wanted are still not
 there, and both are still blocked on something structural rather than on effort.
 
+#### W1: Mission export carries no photographs
+
 **Export is in the dialog only as far as the endpoint goes.** `GET /api/missions/<id>/export`
 returns `{mission, telemetry, attitude, radio}` as `mission-<id>.json`, and that body **carries no
 photographs** — the frames live under `photos/<mission_id>/` and are listed separately. So a dialog
@@ -68,6 +110,8 @@ backend-less demo build replays a trip the same way. Closing that means either e
 (a mission's worth of JPEGs inside one JSON) or exporting a container, and that is the decision
 nobody has made yet.
 
+#### W2: Import belongs in the client, not in the satellite
+
 **Import should probably not touch the satellite at all.** Writing a foreign mission into `comms.db`
 invents history the satellite never recorded and collides with its own mission ids. The cheaper and
 truer answer already exists in the client: the `replay` source, built for the backend-less public
@@ -75,6 +119,8 @@ demo, already renders a recorded mission through the same widgets as the live vi
 means "open this exported file as a replay source" — no write path, no ownership question, no id
 collision, and it works in a browser that is not talking to a satellite at all. If import into the
 archive is genuinely wanted later, it is a DHS command like delete, not an upload endpoint.
+
+#### W3: Photo directories collide across the two databases
 
 **A photo directory is named after a mission id, and there are two id spaces.** `comms.db` and
 `diag.db` each number their missions from 1, while photographs are filed in one
@@ -86,7 +132,7 @@ to file frames under the database as well as the mission — `photos/<db>/<missi
 migration of what is on the card, PAYLOAD's `path_for`, retention's fence and the dashboard's two
 photo routes. **Until then, do not delete a `DIAG` mission whose id also exists in `comms.db`.**
 
-### ADCS mounting offset — requested 2026-09-01, to be done on the running satellite
+### W4: ADCS mounting offset — requested 2026-09-01, to be done on the running satellite
 
 With the satellite level on a desk, `Roll (X)` reads 2.6° and `Pitch (Y)` −4.1°: the BNO055 is
 mounted a few degrees off the frame. Aligning it mechanically is the wrong tool — by eye it cannot
@@ -118,7 +164,7 @@ What to build:
 After any reassembly the capture is repeated and the new value recorded in
 `docs/hardware-bno055-bmp280-imu.md` beside the axis convention already written there.
 
-### A ship's log, not "Mission Events" — requested 2026-09-01
+### W5: A ship's log, not "Mission Events" — requested 2026-09-01
 
 The dashboard's `Mission Events` widget is built in the browser from transitions the page itself
 witnessed (`features/events/observed.ts` in the groundstation repo): mission state, profile applied
@@ -144,7 +190,7 @@ the precedent: discrete events with their own timestamps, kept because a 30 s te
 stand for them. Until that decision is made, the four events above go into `observed.ts`; when the
 table exists, the widget reads it for history and keeps deriving live entries the same way.
 
-### The mesh preset: both nodes are moved — 2026-09-02
+### W6: The mesh preset: both nodes are moved — 2026-09-02
 
 The satellite's Heltec now runs `MEDIUM_FAST` on frequency slot 45, `hop_limit 6`,
 `config_ok_to_mqtt true`, region `US` unchanged, channel 1 `CubeSat` and its PSK verified intact
@@ -174,7 +220,7 @@ demodulate each other at all.
    single link, so the reading to repeat is the *direct* receivers from where `FLIGHT` actually
    goes.
 
-### Commands must come from the private channel, and nothing else — decided 2026-09-02
+### W7: Commands must come from the private channel, and nothing else — decided 2026-09-02
 
 **There is no channel filter on the uplink today, and since this morning that is no longer
 theoretical.** Nothing between the radio and `cubesat/command` looks at which channel a message
@@ -215,22 +261,20 @@ What to build:
    * **On any other channel — and in a direct message — nothing reaches MQTT at all.** One line in
      the service log with the sender, the channel, the SNR and a byte count, and **not the text**.
 
-   `comms_radio` is not a private surface, which is what makes this more than tidiness. The
-   dashboard's live Radio Link Log renders it — **found on 2026-09-02 when a message typed into the
-   primary channel turned up in the widget** — `EXPO` puts that dashboard in front of a room, and in
-   `FLIGHT` and `DIAG` DHS writes those rows into `radio_log` on the card, from where they travel
-   inside a mission export. So publishing a stranger's chat means displaying it to an audience and
-   archiving it in our own flight record. The community mesh's conversation is not this satellite's
-   link, and the satellite has no business keeping it.
-3. **Refuse in silence.** No `err=`, no ack, nothing transmitted — not even for a `!` line. The `!`
-   contract exists so *the operator* is never left wondering why nothing happened; answering a
-   stranger instead spends airtime on a shared band and teaches a mesh of several hundred nodes that
-   this one talks back. A log line, and that is all.
-4. **Do not narrow listening.** `lora_listening` stays the profile's call alone. The filter is on
-   *acting*, not on hearing, and the inbox must keep being polled — for the reason written at
-   `lora_listening` itself.
-5. **Direct messages are not a command path** and are dropped by the same rule, being on no channel
-   of ours. Nothing needs building for that; it falls out of rule 2.
+`comms_radio` is not a private surface, which is what makes this more than tidiness. The dashboard's
+live Radio Link Log renders it — **found on 2026-09-02 when a message typed into the primary channel
+turned up in the widget** — `EXPO` puts that dashboard in front of a room, and in `FLIGHT` and
+`DIAG` DHS writes those rows into `radio_log` on the card, from where they travel inside a mission
+export. So publishing a stranger's chat means displaying it to an audience and archiving it in our
+own flight record. The community mesh's conversation is not this satellite's link, and the satellite
+has no business keeping it. 3. **Refuse in silence.** No `err=`, no ack, nothing transmitted — not
+even for a `!` line. The `!` contract exists so *the operator* is never left wondering why nothing
+happened; answering a stranger instead spends airtime on a shared band and teaches a mesh of several
+hundred nodes that this one talks back. A log line, and that is all. 4. **Do not narrow listening.**
+`lora_listening` stays the profile's call alone. The filter is on *acting*, not on hearing, and the
+inbox must keep being polled — for the reason written at `lora_listening` itself. 5. **Direct
+messages are not a command path** and are dropped by the same rule, being on no channel of ours.
+Nothing needs building for that; it falls out of rule 2.
 
 **An observation from the same evening, mechanism not established: relayed foreign chat arrived
 with no sender.** Two community-mesh messages reached the satellite with `sender: null` — the
@@ -255,7 +299,7 @@ When it lands, three documented statements change and must change with it: `CLAU
 radio"). That property survives for the operator and dies for everybody else, so the fence gets
 stronger — but the sentences describing it are wrong the moment the filter exists.
 
-### An answer is not a beacon: `beacon` must ration the schedule only — decided 2026-09-02
+### W8: An answer is not a beacon: `beacon` must ration the schedule only — decided 2026-09-02
 
 **The rule.** COMMS answers a command whenever it is in a position to hear one. `beacon` governs one
 thing and one thing only: whether *state* goes out on a schedule, unasked. So `_maybe_ack` is gated
@@ -313,7 +357,7 @@ being reachable at runtime; the only route to it becomes a profile that also clo
 is accepted rather than overlooked: once only channel members can ask, silence is achieved by not
 asking.
 
-#### And the answer has to say what happened — same decision, 2026-09-02
+#### W9: And the answer has to say what happened — same decision, 2026-09-02
 
 Transmitting the ack is half of it. **Every valid command uplinked over the radio is confirmed, and
 the confirmation names the outcome rather than merely proving something was received.** The delay
@@ -327,12 +371,12 @@ visible in the dashboard while the radio said nothing about it).
 This absorbs the `photo` field set that has been outstanding since the contract was written, and it
 is cheaper than it looks, because **nothing needs measuring — it is all already on the bus.**
 `payload_photo` carries `kind`, `file`, `size_bytes`, `mission_id` and `sequence`; the operator's
-request is the size in KB, and the contract in
-[`docs/concept.md` → The radio command contract](docs/concept.md#the-radio-command-contract) asks
-for the frame number and the free megabytes. All three are available. What is missing is only that
-**COMMS is not subscribed to `payload_photo`** — its `subscriptions` are `command`, `eps_status`,
-`adcs_status`, `payload_data`, `dhs_status`, plus `obc_status` from the base class — so today it
-cannot know a photograph happened even in principle.
+request is the size in KB, and the contract in [`docs/concept.md` → The radio command
+contract](docs/concept.md#the-radio-command-contract) asks for the frame number and the free
+megabytes. All three are available. What is missing is only that **COMMS is not subscribed to
+`payload_photo`** — its `subscriptions` are `command`, `eps_status`, `adcs_status`, `payload_data`,
+`dhs_status`, plus `obc_status` from the base class — so today it cannot know a photograph happened
+even in principle.
 
 **The trap in that subscription, which must not be walked into:** `payload_photo` also carries
 `photo_base64` — the whole image — and COMMS keeps "the latest payload from each subsystem, kept
@@ -357,7 +401,7 @@ Two smaller things belong in the same pass:
 The 240-byte rule is unaffected: reply fields are already `protected` in `_fit`, so the routine
 telemetry gives way to them rather than the line being truncated.
 
-### The walk to work: what to check on the first real trip
+### W10: The walk to work: what to check on the first real trip
 
 The use case `FLIGHT` exists for, written down as a sequence because every piece of it is now built
 and none of it has been done end to end. Everything below is code that exists and has never met a
@@ -399,21 +443,115 @@ What to watch for, in order of how likely it is to bite:
 Written from the drivers, which mark verified constants apart from inferred ones. Each of these
 produces plausible data rather than an error, which is why none of them can be settled by reading.
 
-Settled checks are removed from this table, and their findings live where the code that depends on
+Settled checks are removed from this file, and their findings live where the code that depends on
 them is: the BNO055 Euler swap and the accelerometer scale in `hal/rpi/bno055.py`, the residual
 bit-7 flips at 10 kHz in [`docs/hardware-bno055-bmp280-imu.md`](docs/hardware-bno055-bmp280-imu.md),
 and the mosquitto ACL that must not sit in `conf.d/` in `config/mosquitto/`.
 
-| # | Check | Why it is not settled |
-|---|---|---|
-| V2 | **TEL0157 knots → m/s factor.** One moving fix — a walk with the antenna out | The bench reading was 0.00 knots at rest, and zero converts to zero, so no measurement pins the factor |
-| V3 | **TEL0157 altitude triplet high byte.** The same walk, somewhere above 255 m | The bench altitude of 116.59 m fits in one byte, so the big-endian high byte has never been exercised |
-| V5 | **BNO055 calibration save/restore.** Deliberately not implemented: the profile register block is not in the verified docs, and writing unverified registers into the fusion engine on every boot is what produced the `SYS_ERR = 9` session already recorded there | Without it the magnetometer must be re-calibrated after every reset, so `yaw` is withheld for a while after each restart |
-| V6 | **NetworkManager client mode.** `nmcli connection down Hotspot` with a pinned `wlan0` | Written against the documentation, never run on the Pi. `EXPO` depends on it |
-| V7 | **SEN0501 board revision.** Read the silkscreen, or compare the pair of candidate values the driver logs against a known UV source | One raw register, two formulas: at raw 14 they give 0.00 and 84.35. `uv_index` stays null until this is settled |
-| V10 | **Whether the private channel is relayed at all** — *the hop arithmetic itself is settled.* `hops = hopStart − hopLimit` was measured on 2026-09-02: one NodeInfo broadcast reported by 72 bayme.sh gateways, `hopStart` fixed at 6 and `hopLimit` arriving as everything from 6 to 0 (see [`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md) → Coverage). The check that remains is on **channel 1**, and it is *not* "get far away and look for `hops ≥ 1`". **The operator's own node holds the `CubeSat` key, so it relays that channel like any other — and it was observed doing exactly that on the primary channel on 2026-09-02** (a chat message arriving with `hops: 3` at −23 dBm, the last relay being the personal node one room away). A hop counted through your own house proves nothing about strangers, and a passing hop count cannot tell the two apart. So the measurement is a **traceroute on channel 1**: the reply carries the route as a list of node ids — the same shape `Troy` produced when it trace-routed this satellite — and the question is whether a node that is *not* the operator's appears in it. It is answered by the firmware itself, so it needs no COMMS and works in any profile where the node is powered | All of that measurement is the *primary* channel, and telemetry and commands do not travel there. A foreign node rebroadcasts a packet it cannot decrypt only while its `rebroadcast_mode` is the default `ALL`; one set to `LOCAL_ONLY` drops `CubeSat` without a trace. So the satellite can sit in a public node list, relayed six hops, having proved nothing about the channel `FLIGHT` depends on |
-| V13 | **The X728 charges on mains, but at ~+3 %/h — a fraction of its rated 2.3–3.2 A.** Measured 2026-09-01 with `charge_rate` a real quantity (see `docs/hardware-x728-ups-hat.md`): CanaKit 3.5 A on USB-C, LEDs one steady one blinking, SOC 50.39 → 50.78 % in fifteen minutes, voltage +17 mV. Next check: a 5.1 V ≥ 4 A supply on the DC jack, the input Geekworm rates for full charging current; if the rate does not change, the cells or the charger stage are the question. The original observation follows for the record. Observed 2026-08-31 with the satellite plugged in all evening: 3.92 V, SOC ~66 %, `CRATE` one LSB from zero, and the board's own charge LEDs agreeing with roughly that level. The datasheet figures in `docs/hardware-x728-ups-hat.md` say the recharge threshold is **4.1 V** and cutoff 4.24 V — at 3.92 V the board is well past the point where it should have resumed, so "it deliberately holds a partial charge" does not explain this reading. The **`CHG Ctrl` jumper was checked on 2026-09-01 and is installed**, which per Geekworm means automatic charging whenever the adapter is connected — so a floating GPIO16 is ruled out. Two candidates remain. First, the **supply**: the X728 charges only from its own DC jack and wants 2.3–3.2 A for the pack on top of the Pi's load; `PLD` proves the jack sees power, not enough of it. Second, tired 18650s: capacity loss shows up as a cell that will not hold a charge, and the pack is unbranded. `vcgencmd get_throttled` reads `0x0`, so the 5 V supply is not sagging and can be ruled out. **The decisive check is now cheap, because `charge_rate` is a real measurement:** plug in and watch `voltage` and `charge_rate` for ten minutes — a charger delivering current lifts the terminal voltage within seconds and turns the rate positive after the five-minute window. (Opening the jumper on purpose stays an opportunity: GPIO16 would let EPS hold a partial charge on the desk and top up before a `FLIGHT`. A driver and a policy, later) | Nothing errors and nothing looks broken: the dashboard shows a plausible 66 %, the LEDs agree, and the satellite runs happily on mains. It is discovered at the worst possible moment — leaving for a trip with a pack that was never full — which is precisely the failure `FLIGHT` cannot afford. While charging is in doubt, the 2026-08-31 mains-day drift (SOC down while voltage rose) cannot be interpreted either — that drift is now this item's question, since the "70× disagreement" it was filed under turned out to be a comparison against a constant (see `docs/hardware-x728-ups-hat.md`, 2026-09-01) |
-| V14 | **BNO055 low-byte bit-7 flips reach the record.** Measured 2026-09-01 in `DEMO` at rest: about one published sample in twenty carries an undetectable +128 LSB step — `gyro_x` exactly 8.0 °/s between neighbours of 0.06, `acc_x` 0.07 → 0.20 g and back — while the detectable high-byte flips ran at one read in eleven, all caught. The plausibility check cannot see these by construction. The check the hardware doc has asked for since 2026-08-28: move the sensor to a bit-banged `i2c-gpio` bus, which honours clock stretching, and measure both rates again. Until then a median-of-three in the driver would hide the isolated ones at the cost of half a second of latency — a decision, not a fix | They are physically plausible values and DHS writes them into `attitude` as measured, so a replay shows an 8° twitch or a 0.13 g kick that never happened |
+#### V2: TEL0157 knots to m/s factor
+
+**The check.** One moving fix — a walk with the antenna out.
+
+**Why it is not settled.** The bench reading was 0.00 knots at rest, and zero converts to zero, so
+no measurement pins the factor.
+
+#### V3: TEL0157 altitude triplet high byte
+
+**The check.** The same walk, somewhere above 255 m.
+
+**Why it is not settled.** The bench altitude of 116.59 m fits in one byte, so the big-endian high
+byte has never been exercised.
+
+#### V5: BNO055 calibration save and restore
+
+**The check.** Deliberately not implemented: the profile register block is not
+in the verified docs, and writing unverified registers into the fusion engine on every boot is what
+produced the `SYS_ERR = 9` session already recorded there.
+
+**Why it is not settled.** Without it the magnetometer must be re-calibrated after every reset, so
+`yaw` is withheld for a while after each restart.
+
+#### V6: NetworkManager client mode
+
+**The check.** `nmcli connection down Hotspot` with a pinned `wlan0`.
+
+**Why it is not settled.** Written against the documentation, never run on the Pi. `EXPO` depends on
+it.
+
+#### V7: SEN0501 board revision
+
+**The check.** Read the silkscreen, or compare the pair of candidate values the driver
+logs against a known UV source.
+
+**Why it is not settled.** One raw register, two formulas: at raw 14 they give 0.00 and 84.35.
+`uv_index` stays null until this is settled.
+
+#### V10: Whether the private channel is relayed at all
+
+**The check.** *The hop arithmetic itself is settled.* `hops = hopStart − hopLimit` was measured on
+2026-09-02: one NodeInfo broadcast reported by 72 bayme.sh gateways, `hopStart` fixed at 6 and
+`hopLimit` arriving as everything from 6 to 0 (see
+[`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md) → Coverage). The check that
+remains is on **channel 1**, and it is *not* "get far away and look for `hops ≥ 1`". **The
+operator's own node holds the `CubeSat` key, so it relays that channel like any other — and it was
+observed doing exactly that on the primary channel on 2026-09-02** (a chat message arriving with
+`hops: 3` at −23 dBm, the last relay being the personal node one room away). A hop counted through
+your own house proves nothing about strangers, and a passing hop count cannot tell the two apart. So
+the measurement is a **traceroute on channel 1**: the reply carries the route as a list of node ids
+— the same shape `Troy` produced when it trace-routed this satellite — and the question is whether a
+node that is *not* the operator's appears in it. It is answered by the firmware itself, so it needs
+no COMMS and works in any profile where the node is powered.
+
+**Why it is not settled.** All of that measurement is the *primary* channel, and telemetry and
+commands do not travel there. A foreign node rebroadcasts a packet it cannot decrypt only while its
+`rebroadcast_mode` is the default `ALL`; one set to `LOCAL_ONLY` drops `CubeSat` without a trace. So
+the satellite can sit in a public node list, relayed six hops, having proved nothing about the
+channel `FLIGHT` depends on.
+
+#### V13: The X728 charge rate on mains
+
+**The X728 charges on mains, but at ~+3 %/h — a fraction of its rated 2.3–3.2 A.** Measured
+2026-09-01 with `charge_rate` a real quantity (see `docs/hardware-x728-ups-hat.md`): CanaKit 3.5 A
+on USB-C, LEDs one steady one blinking, SOC 50.39 → 50.78 % in fifteen minutes, voltage +17 mV. Next
+check: a 5.1 V ≥ 4 A supply on the DC jack, the input Geekworm rates for full charging current; if
+the rate does not change, the cells or the charger stage are the question. The original observation
+follows for the record. Observed 2026-08-31 with the satellite plugged in all evening: 3.92 V, SOC
+~66 %, `CRATE` one LSB from zero, and the board's own charge LEDs agreeing with roughly that level.
+The datasheet figures in `docs/hardware-x728-ups-hat.md` say the recharge threshold is **4.1 V** and
+cutoff 4.24 V — at 3.92 V the board is well past the point where it should have resumed, so "it
+deliberately holds a partial charge" does not explain this reading. The **`CHG Ctrl` jumper was
+checked on 2026-09-01 and is installed**, which per Geekworm means automatic charging whenever the
+adapter is connected — so a floating GPIO16 is ruled out. Two candidates remain. First, the
+**supply**: the X728 charges only from its own DC jack and wants 2.3–3.2 A for the pack on top of
+the Pi's load; `PLD` proves the jack sees power, not enough of it. Second, tired 18650s: capacity
+loss shows up as a cell that will not hold a charge, and the pack is unbranded.
+`vcgencmd get_throttled` reads `0x0`, so the 5 V supply is not sagging and can be ruled out. **The
+decisive check is now cheap, because `charge_rate` is a real measurement:** plug in and watch
+`voltage` and `charge_rate` for ten minutes — a charger delivering current lifts the terminal
+voltage within seconds and turns the rate positive after the five-minute window. (Opening the jumper
+on purpose stays an opportunity: GPIO16 would let EPS hold a partial charge on the desk and top up
+before a `FLIGHT`. A driver and a policy, later).
+
+**Why it is not settled.** Nothing errors and nothing looks broken: the dashboard shows a plausible
+66 %, the LEDs agree, and the satellite runs happily on mains. It is discovered at the worst
+possible moment — leaving for a trip with a pack that was never full — which is precisely the
+failure `FLIGHT` cannot afford. While charging is in doubt, the 2026-08-31 mains-day drift (SOC down
+while voltage rose) cannot be interpreted either — that drift is now this item's question, since the
+"70× disagreement" it was filed under turned out to be a comparison against a constant (see
+`docs/hardware-x728-ups-hat.md`, 2026-09-01).
+
+#### V14: BNO055 low-byte bit-7 flips reach the record
+
+**The check.** Measured 2026-09-01 in `DEMO` at rest: about one published sample in twenty carries
+an undetectable +128 LSB step — `gyro_x` exactly 8.0 °/s between neighbours of 0.06, `acc_x` 0.07 →
+0.20 g and back — while the detectable high-byte flips ran at one read in eleven, all caught. The
+plausibility check cannot see these by construction. The check the hardware doc has asked for since
+2026-08-28: move the sensor to a bit-banged `i2c-gpio` bus, which honours clock stretching, and
+measure both rates again. Until then a median-of-three in the driver would hide the isolated ones at
+the cost of half a second of latency — a decision, not a fix.
+
+**Why it is not settled.** They are physically plausible values and DHS writes them into `attitude`
+as measured, so a replay shows an 8° twitch or a 0.13 g kick that never happened.
 
 ---
 
@@ -421,11 +559,28 @@ and the mosquitto ACL that must not sit in `conf.d/` in `config/mosquitto/`.
 
 Tracked in [`docs/concept.md` → Open questions](docs/concept.md#open-questions):
 
-| # | Question | Blocks |
-|---|---|---|
-| Q1 | `BMP280` at `0x76` duplicates the SEN0501 pressure reading — keep it, and for what? Log both and compare over a few sessions; `DIAG` is the natural place, now that it rehearses a real mission | — |
-| Q2 | Recovering a trip after an unexpected reset. The profile is deliberately not persisted, so a brownout mid-trip silently ends the recording. Fixing it without a stored profile means acting on a **boot reason** — mains absent at boot means the satellite is demonstrably not on a desk. Deferred until `FLIGHT` has seen enough use to know whether spurious resets happen at all | P6 |
-| Q4 | May a human move a fault-latched (`SAFE`) satellite into `EXPO` to show it to an audience? Probably yes, with the fault displayed — but it needs deciding rather than falling out of the implementation | — |
+#### Q1: Keep the BMP280 at `0x76`, and for what?
+
+`BMP280` at `0x76` duplicates the SEN0501 pressure reading — keep it, and for what? Log both and
+compare over a few sessions; `DIAG` is the natural place, now that it rehearses a real mission.
+
+**Blocks:** —
+
+#### Q2: Recovering a trip after an unexpected reset
+
+The profile is deliberately not persisted, so a brownout mid-trip silently ends the recording.
+Fixing it without a stored profile means acting on a **boot reason** — mains absent at boot means
+the satellite is demonstrably not on a desk. Deferred until `FLIGHT` has seen enough use to know
+whether spurious resets happen at all.
+
+**Blocks:** [P6](#p6-the-autonomous-logging-profile)
+
+#### Q4: May a `SAFE` satellite be shown in `EXPO`?
+
+May a human move a fault-latched (`SAFE`) satellite into `EXPO` to show it to an audience? Probably
+yes, with the fault displayed — but it needs deciding rather than falling out of the implementation.
+
+**Blocks:** —
 
 ---
 

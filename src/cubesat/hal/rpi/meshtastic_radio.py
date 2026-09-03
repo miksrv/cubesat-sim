@@ -66,9 +66,8 @@ to lean on, and that ``pub.subscribe(..., "meshtastic.receive")`` delivers.
   is wrong the messages land on the public primary channel — visible to every
   node in range rather than lost, which is why it is worth naming here.
 * **``hopStart``/``hopLimit``.** The hop count in ``RadioMessage`` is their
-  difference, read from the library's documentation — see ``_hops``. The bench
-  check is a packet relayed through a third node reading 1; every packet so far
-  has been heard directly.
+  difference — **measured 2026-09-02**, see ``_hops``. It was the last inferred
+  constant in this driver.
 * **Reading the node id and the region back.** Both are cosmetic: they populate
   ``comms_status`` so an operator can see which node answered. Every accessor is
   best-effort and yields None rather than raising, because a status field is not
@@ -315,8 +314,12 @@ class MeshtasticRadio:
             message = RadioMessage(
                 text=text,
                 sender=packet.get("fromId"),
-                # rxRssi is absent on some packets; rxSnr is the one that is
-                # always there, and it is the better number for a link margin.
+                # Both are optional and **neither is always there** — this
+                # said "rxSnr is the one that is always there" until a relayed
+                # chat packet arrived on 2026-09-02 with rxSnr absent and
+                # rxRssi present (-72 dBm), the exact opposite. Publish what
+                # came and None for what did not; nothing downstream may
+                # assume either is populated.
                 snr=packet.get("rxSnr"),
                 rssi=packet.get("rxRssi"),
                 hops=_hops(packet),
@@ -334,12 +337,22 @@ class MeshtasticRadio:
 def _hops(packet: Any) -> int | None:
     """Mesh hops this packet took, or None when the fields are not both there.
 
-    Inferred, not bench-verified: the library documents ``hopStart`` as the
-    hop limit the sender transmitted with and ``hopLimit`` as what remains on
-    arrival, so their difference is the hops taken — 0 means heard directly.
-    The bench check that would confirm it is a packet relayed through a third
-    node showing 1 here. Until then the value is best-effort and None whenever
-    either field is missing or the difference is not a sane hop count.
+    ``hopStart`` is the hop limit the sender transmitted with and ``hopLimit``
+    is what remains on arrival, so their difference is the hops taken — 0 means
+    heard directly. That was read from the library's documentation until
+    **2026-09-02, when the pair was measured on the community mesh**: one
+    NodeInfo broadcast from this satellite was gatewayed to `bayme.sh` by 72
+    separate nodes, and across those reports ``hopStart`` stayed at the 6 this
+    node transmits with while ``hopLimit`` arrived as everything from 6 down to
+    0 — the difference giving the whole ladder 0…6, one value per relay the
+    packet had taken. meshview computes the same subtraction independently. The
+    reading is in ``docs/hardware-heltec-lora32-v4.md`` → Coverage.
+
+    What is still open is not the arithmetic: it is whether the private channel
+    is relayed at all (a foreign node rebroadcasts a packet it cannot decrypt
+    only while its ``rebroadcast_mode`` is ``ALL``), which is what is left of
+    V10. The value stays best-effort — None whenever either field is missing or
+    the difference is not a sane hop count.
     """
     start = packet.get("hopStart")
     limit = packet.get("hopLimit")

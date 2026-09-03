@@ -2,7 +2,7 @@
 
 LoRa ground link for **COMMS**, replacing the LoRa half of the [52Pi IoT Node(A)](hardware-iot-node-a-52pi.md). The board runs **stock Meshtastic firmware** and is a self-contained radio: the Raspberry Pi talks to it over UART using Meshtastic's Serial module in `PROTO` mode, and Meshtastic handles framing, CRC, retries, acknowledgements and encryption on its own. The custom `length + payload + CRC-16-CCITT` framing used against the 52Pi bridge is therefore obsolete here.
 
-> **Status:** the radio link is bench-verified end to end (Pi → UART → Heltec → air → second Meshtastic node, and back). The driver is `src/cubesat/hal/rpi/meshtastic_radio.py`, built on the `meshtastic` library — the old `smbus2`/SC16IS752 implementation is gone, and with it the hand-rolled framing and CRC that Meshtastic already provides. **It ran inside `COMMS` on the assembled satellite on 2026-08-31**, in `HOSTED`: the node was reachable, a beacon went out, and a ground command typed on a phone round-tripped onto `cubesat/command` and was answered. What has never been exercised is a packet relayed through a third node — everything heard so far arrived direct, which is why the hop arithmetic is still bench check V10.
+> **Status:** the radio link is bench-verified end to end (Pi → UART → Heltec → air → second Meshtastic node, and back). The driver is `src/cubesat/hal/rpi/meshtastic_radio.py`, built on the `meshtastic` library — the old `smbus2`/SC16IS752 implementation is gone, and with it the hand-rolled framing and CRC that Meshtastic already provides. **It ran inside `COMMS` on the assembled satellite on 2026-08-31**, in `HOSTED`: the node was reachable, a beacon went out, and a ground command typed on a phone round-tripped onto `cubesat/command` and was answered. On 2026-09-02 the node was moved onto the community mesh's modem preset and immediately measured there: 72 foreign gateways published its first broadcast, having relayed it up to five times, which settled the hop arithmetic — see [Coverage](#coverage-measured-2026-09-02). What is still unproven is whether any of that relaying happens on the **private channel** the satellite's own telemetry and commands travel on, which is what remains of bench check V10.
 
 - **Product:** [Heltec WiFi LoRa 32 V4](https://heltec.org/project/wifi-lora-32-v4/)
 - **Official docs:** [Heltec Wiki — WiFi LoRa 32 V4](https://wiki.heltec.org/docs/devices/open-source-hardware/esp32-series/lora-32/wifi-lora-32-v4/)
@@ -18,7 +18,7 @@ LoRa ground link for **COMMS**, replacing the LoRa half of the [52Pi IoT Node(A)
 | Flash / partitions | 16MB scheme: `nvs` `0x9000`, `otadata` `0xe000`, `app0` `0x10000`, `app1` `0x650000`, `spiffs` `0xc90000`, `coredump` `0xff0000` |
 | Firmware | Meshtastic **≥ 2.7.20** (earlier builds do not support V4); verified on `2.7.26.54e0d8d`, target `heltec-v4` |
 | Region | `US` — 915 MHz (region must match on every node) |
-| Modem preset | `LONG_FAST` (default) — must also match on receiving nodes |
+| Modem preset | `MEDIUM_FAST` on frequency slot **45** (set 2026-09-02; the factory default is `LONG_FAST` on slot 20). Preset *and* slot must match on receiving nodes — see [Modem preset and the local mesh](#modem-preset-and-the-local-mesh) |
 | Link to Raspberry Pi | UART `115200 8N1` on `GPIO43` (`U0TXD`) / `GPIO44` (`U0RXD`), via Meshtastic's Serial module in `PROTO` mode |
 | Max payload | **240 bytes per message** over the Serial module |
 | Power | 5V on header pin `J2-2`, or USB-C. Peak TX current on 915 MHz can brown out a Pi 5V rail |
@@ -99,7 +99,7 @@ meshtastic --port $PORT --sendtext "test from laptop"
 
   The write needs `/dev/serial0`, which `COMMS` holds whenever it is running. `MAINTENANCE` is the profile that frees it, but it also stops the `external_units` — on this satellite that means the unrelated home services — so for a single setting it is gentler to `sudo systemctl stop cubesat@comms`, make the change, and start it again. Expect `OBC` to enter `SAFE` while COMMS is gone (it is a watched subsystem, and its last will fires); `recover` clears it, because a fault-latched `SAFE` does not lift on its own.
 
-Confirm the test message arrives on a second Meshtastic node before going further. Receiving nodes must agree on region (`US`), modem preset (`LONG_FAST`) and channel PSK — the default `LongFast` channel with the default key converges by itself.
+Confirm the test message arrives on a second Meshtastic node before going further. Receiving nodes must agree on region (`US`), modem preset, **frequency slot** and channel PSK — two nodes fresh from the flasher converge by themselves on `LONG_FAST` and the default key, which is exactly why a mismatch is only ever met later, after somebody has changed a preset. See [Modem preset and the local mesh](#modem-preset-and-the-local-mesh): this satellite is on `MEDIUM_FAST` slot 45, not on the default.
 
 **Step 2 — enable the Serial module** (one batch: every `--set` triggers a save and a reboot):
 
@@ -120,6 +120,131 @@ Why this is required: the V4 has native USB, so the protobuf API lives on USB CD
 
 **Leave Bluetooth enabled for now** — it is the way back if the UART does not come up. Enabling the Serial module does not break the USB API (`override_console_serial_port` stays `false`), so a rollback is always possible.
 
+## Modem preset and the local mesh
+
+**A modem preset is the physical layer, not a preference.** It fixes bandwidth, spreading factor and
+coding rate together, and Meshtastic states the requirement without softening it: nodes in one mesh
+must share region *and* preset. Nodes on different presets do not hear each other badly — they do
+not demodulate each other at all.
+
+Both this satellite and the operator's personal node ran the factory `LONG_FAST` until 2026-09-02,
+and they talked to each other perfectly, which is why nothing on the bench ever hinted at the
+problem: **the Bay Area community mesh is not on LongFast.** It migrated to Medium Range Fast, and
+`https://meshview.bayme.sh/map` shows every node in the operator's own city on `MediumFast`. So the
+multi-hop coverage that is the whole reason `FLIGHT` uses LoRa was coverage this satellite could not
+reach — the routers that would relay it were on another waveform.
+
+Applied to the satellite's node on **2026-09-02** and read back after the reboot each write triggers:
+
+| Setting | Value | Why |
+|---|---|---|
+| `lora.modem_preset` | `MEDIUM_FAST` | What the local mesh runs. Read back as bandwidth 250 kHz, SF 9, CR 5 — `LONG_FAST` was SF 11 |
+| `lora.channel_num` | `45` | The slot bayme.sh names explicitly. **Not optional here** — see below |
+| `lora.hop_limit` | `6` | Their figure for a personal/chat node; the factory default is 3 |
+| `lora.config_ok_to_mqtt` | `true` | Makes the node visible on the community map at all — see below |
+| `lora.region` | `US` | Unchanged |
+
+```bash
+# /dev/serial0 must be free first: COMMS holds it whenever it runs.
+cubesat profile maintenance
+meshtastic --port /dev/serial0 \
+    --set lora.modem_preset MEDIUM_FAST \
+    --set lora.channel_num 45 \
+    --set lora.hop_limit 6 \
+    --set lora.config_ok_to_mqtt true
+cubesat profile hosted
+```
+
+**The frequency slot moves with the preset, and that is the easy half to miss.** With
+`lora.channel_num` at 0 the slot is derived from a hash of the *primary channel's name* — and this
+node's primary has an empty name, so the name used is the preset's own, which changed from
+`LongFast` to `MediumFast`. Changing the preset and leaving the slot on automatic therefore lands a
+pair of nodes on a private frequency, together and alone: they still hear each other, which looks
+exactly like success from the bench. Setting the slot explicitly is what makes the change mean
+anything.
+
+**`config_ok_to_mqtt` is what makes the node visible, and it defaults to `false`.** A foreign
+gateway checks the `OK_TO_MQTT` bit of the packet itself before publishing to a public broker
+(`DontMqttMeBro` in `MQTT::onSend`) and silently drops it when the bit is absent. Without the flag
+the satellite can be heard perfectly by the community mesh and still never appear on
+`meshview.bayme.sh` — which looks identical to having no coverage. It affects nothing else: not the
+link, not the beacon, not commands. What it costs is set out under
+[Why a secondary channel](#why-a-secondary-channel): the V4 has no GNSS and nothing here feeds it
+one, so no position is ever broadcast and a public map can place the node only as coarsely as the
+gateway that heard it. The flag can be cleared for a real trip without touching anything else.
+
+**Channel 1 `CubeSat` and its PSK are untouched by all of this**, and were verified byte-for-byte
+with `--info` after the change: a secondary channel is a key layered over the radio configuration,
+so the preset moves underneath it and nothing in `comms/` or `hal/rpi/meshtastic_radio.py` changes.
+Verify it anyway after any preset change — a satellite on a channel the ground segment cannot read
+is a silent failure that looks like a dead radio.
+
+### Coverage, measured 2026-09-02
+
+The node appeared on `meshview.bayme.sh` within a minute of the preset change, and the packets it
+had already exchanged were enough to measure the link rather than merely assert it. Everything below
+is read from meshview's own record (`/api/packets_seen/<packet id>`), which reports every gateway
+that published a copy of one packet, with the hop fields as that gateway received them.
+
+| Packet (2026-09-02) | Gateways that published it | Hops consumed |
+|---|---|---|
+| NodeInfo broadcast, 18:08:45 — the first after the change | **72** | 0 ×1, 1 ×21, 2 ×13, 3 ×23, 4 ×9, 5 ×5 |
+| Traceroute reply to `Troy`, 18:09:43 | 58 | 0 ×1, 1 ×20, 2 ×15, 3 ×6, 4 ×12, 5 ×4 |
+| NodeInfo to `KK6DAC-Actual-8647`, 18:19:03 | 46 | 0 ×1, 1 ×1, 2 ×5, 3 ×8, 4 ×5, 5 ×13, 6 ×13 |
+
+**One node hears this satellite directly, and everything else is that node relaying.** On all three
+packets exactly one gateway reported zero hops: `!2a9db163` — **W6SRR Sunol Ridge**, a bayme.sh
+`ROUTER` — at **−5.25 dB SNR / −94 dBm** (−7.00 dB on the later two). **The straight-line distance
+is 7.50 km** (measured on the map, 2026-09-02), with the satellite indoors on a desk and Sunol Ridge
+being what its name says. For scale: `MEDIUM_FAST` is SF 9, whose demodulation floor is around
+−12.5 dB SNR — a datasheet-class figure, not one measured here — so the link is working with roughly
+7 dB of margin rather than scraping in. It is also a single point of failure
+dressed up as broad coverage: 72 gateways is what the mesh does with a packet *after* Sunol Ridge
+has it, and if that one path drops there is no second neighbour behind it. Re-measuring the direct
+receivers from wherever `FLIGHT` actually goes is the useful reading, not the gateway count.
+
+A traceroute exchange with `Troy` (`!648f66da`, a `T_ECHO` client) completed in both directions
+unprompted — a stranger's node probing the new arrival. The recorded route names bayme.sh routers
+well north of the Bay Area (`Davis Home Base`, `Yuba Mesh - Bear`, `Sutter Buttes Router`,
+`Butte SAR`), which is what a mesh with ridge-top routers is for. Note the SNR fields inside a
+traceroute payload are **quarter-dB integers** — `snr_towards: 43` is 10.75 dB, `-32` is −8 dB — and
+not the same encoding as the `rx_snr` meshview reports beside them.
+
+**This settles the hop arithmetic (V10, primary channel).** `hops = hopStart − hopLimit` was read
+from the library's documentation and had never been exercised, because every packet heard on the
+bench arrived direct and reads 0 whichever interpretation is right. Here one packet is reported by
+72 receivers: `hopStart` stays at the 6 this node now transmits with, `hopLimit` arrives as
+everything from 6 down to 0, and the difference gives the whole ladder 0…6 — one value per relay
+the copy had taken. meshview computes the same subtraction independently. The satellite's own
+`hal/rpi/meshtastic_radio.py:_hops` reads those two fields from packets it receives, and its marker
+has been updated from inferred to measured.
+
+**And the receiving half was measured the same evening.** Everything above is this node's *outgoing*
+traffic counted by other people's gateways; the driver's own `_hops` had still only ever seen direct
+packets, all reading 0. At 2026-09-02 19:31 a chat message from the community mesh arrived on the
+primary channel with **`hops: 6`** (sender `!167ff893`, SNR 0.25 dB, RSSI −73 dBm, 89 bytes) — the
+first non-direct packet this satellite has received, and a plausible integer against the hop budgets
+in use here. `radio_log.hops`, the field the check exists for, has therefore now carried a relayed
+value produced by our own code path rather than by meshview's.
+
+**What is left of V10 is the private channel, not the arithmetic.** All of the above is the primary
+channel; see below.
+
+**What this does not settle.** Everything above happens on the primary channel, and reaching the
+community mesh there is necessary rather than sufficient. A foreign node relays a packet it *cannot*
+decrypt only while its `rebroadcast_mode` is the default `ALL`; one set to `LOCAL_ONLY` relays its
+own channels and drops `CubeSat` without a trace. So the satellite can sit happily in a public node
+list having proved nothing about the channel its telemetry and commands actually travel on. That
+second measurement is V10 in [`ROADMAP.md`](../ROADMAP.md), taken on channel 1.
+
+**And the internet bridge is not a way in.** A community MQTT gateway cannot uplink the private
+channel even in principle: the firmware gates the publish on that channel's own `uplink_enabled` and
+builds the topic out of the channel's *name*, neither of which a stranger's node has for `CubeSat`.
+bayme.sh separately tells its operators never to enable downlink, so there is no MQTT → RF path
+back. Internet reach, if it is ever wanted, means the operator's own gateway node and broker with
+`CubeSat` configured on both ends. PKI direct messages are the one exception — they bypass
+`uplink_enabled` and publish under a `PKI` topic — and they are outbound-only for the same reason.
+
 ## Node identity and channels
 
 Configured on 2026-08-23:
@@ -128,7 +253,7 @@ Configured on 2026-08-23:
 |---|---|
 | Long name | `CubeSat CTM-1` |
 | Short name | `CSAT` — 4 characters maximum, this is what appears on maps and in node lists |
-| Channel 0 (primary) | `LongFast`, default key — left untouched |
+| Channel 0 (primary) | stock, default key `AQ==`, empty name — left untouched. An empty name means the firmware uses the preset's own (`LongFast` until 2026-09-02, `MediumFast` since), which is what the automatic frequency slot is hashed from; this node sets the slot explicitly instead |
 | Channel 1 (secondary) | `CubeSat`, own randomly generated PSK |
 
 ```bash
@@ -139,9 +264,9 @@ A new node name propagates on the next node-info broadcast, which defaults to ev
 
 ### Why a secondary channel
 
-**All CubeSat traffic — telemetry and ground commands — goes on channel 1, not on the public primary channel.** Two reasons: bench tests would otherwise clutter the shared `LongFast` chat that every node in range reads, and the ground-command path needs to not be world-writable.
+**All CubeSat traffic — telemetry and ground commands — goes on channel 1, not on the public primary channel.** Two reasons: bench tests would otherwise clutter the shared primary chat that every node in range reads, and the ground-command path needs to not be world-writable.
 
-Be clear about what this does and does not hide. A secondary channel is a separate encryption key layered on the *same* radio configuration — same frequency, same modem preset. Neighbouring nodes still see that packets are being transmitted, and ordinary mesh housekeeping still goes out on the primary channel in the clear — the primary is stock `LongFast` with the well-known default key `AQ==`, so "encrypted" there means nothing. What they cannot do is read the contents of channel 1.
+Be clear about what this does and does not hide. A secondary channel is a separate encryption key layered on the *same* radio configuration — same frequency, same modem preset. Neighbouring nodes still see that packets are being transmitted, and ordinary mesh housekeeping still goes out on the primary channel in the clear — the primary is the stock public channel with the well-known default key `AQ==`, so "encrypted" there means nothing. What they cannot do is read the contents of channel 1.
 
 What that housekeeping actually contains, since it decides what a public map can show:
 
@@ -267,6 +392,7 @@ iface.close()
 | `--info` returns nothing at all, exit code 0, then works on a retry | Garbage at the start of the stream: before the Serial module initialises, the Heltec TX pin floats and the ROM bootloader writes its boot log to those same `GPIO43/44` | Retry. The CLI resynchronises on the frame header; **application code must handle this explicitly** |
 | `Resource busy` / `multiple access on port` | Another process holds the port — a browser tab with the web flasher or a serial monitor on the host; on the Pi, the kernel console | Close the tab; remove `console=serial0,115200` from `cmdline.txt` |
 | Board reboots during transmission (`rebootCount` climbing) | 915 MHz TX current peaks sagging the Pi 5V rail | Power over USB while debugging, or add a 100–470µF electrolytic across the Heltec supply. **Measured on the assembled satellite this did not occur:** powered from the Pi 5V rail with all four I2C sensors attached, `rebootCount` was 6 before and 6 after a transmission and `vcgencmd get_throttled` returned `0x0`. Watch for it rather than pre-empting it |
+| The second node stops hearing the satellite entirely — no packets, not even garbled ones — after a working session | The two nodes are on different modem presets or different frequency slots. They do not demodulate each other at all, so the symptom is silence rather than errors, and `--info` on either node looks perfectly healthy | Compare `lora.modem_preset` **and** `lora.channel_num` on both with `--info`, node against node rather than against a wiki page. The satellite has been on `MEDIUM_FAST` slot 45 since 2026-09-02 |
 | `airUtilTx` / `uptimeSeconds` look stale or zero | `deviceMetrics` come from the node database entry and only refresh when the node broadcasts telemetry (default: every 30 minutes) | Do not use them to check whether a transmit happened — confirm on another node, or watch the live log (`--listen`, `--noproto`) |
 
 ## Open items
@@ -280,7 +406,7 @@ The rewrite those items waited on has landed: the driver is `hal/rpi/meshtastic_
 
 What remains is bench work, not design — see the verification table in [`ROADMAP.md`](../ROADMAP.md):
 
-- **V10, the hop count.** `hops = hopStart − hopLimit` comes from the library's documentation, not from a bench run, and every direct packet reads 0 whichever interpretation is right. A packet relayed through a third node is the check; wrong arithmetic would put a plausible small integer in `radio_log.hops`.
+- **V10, now only the private channel.** The arithmetic `hops = hopStart − hopLimit` was measured on 2026-09-02 — see [Coverage](#coverage-measured-2026-09-02) — but on the primary channel, which carries none of this satellite's traffic. Whether a foreign node relays channel 1 at all depends on its `rebroadcast_mode`, and that reading still wants a packet reaching the personal node from beyond direct range.
 - A two-way ground link needs an SX1262 receiver attached to the ground station as well — a USB Meshtastic node, in the current plan for the ground segment.
 
 ## Further reading

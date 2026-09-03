@@ -17,9 +17,11 @@ way to go wrong here:
 - **First `DEMO`: 2026-09-01, 21:03.** `ADCS`, `PAYLOAD`, `DHS` and `DASHBOARD` ran for the first
   time — `DEPLOY` completed in 1.4 s into `NOMINAL`, the attitude widget and a photograph were
   watched live. So every service and every driver has now been exercised on the satellite.
-- **`FLIGHT`, `EXPO`, `DIAG` and `MAINTENANCE` have never been applied**, so what is untried is now
-  a set of *profiles* rather than a set of services: the field radio-only case, the access point
-  (V6), a moving GNSS fix (V2, V3), and the separate `diag.db`.
+- **`FLIGHT`, `EXPO` and `DIAG` have never been applied**, so what is untried is now a set of
+  *profiles* rather than a set of services: the field radio-only case, the access point (V6), a
+  moving GNSS fix (V2, V3), and the separate `diag.db`. `MAINTENANCE` came off that list on
+  2026-09-02, applied to free `/dev/serial0` for the Heltec's modem preset and returned to `HOSTED`
+  with nothing lost.
 
 Neither run was free of surprises, and none of them were surprises a test could have had. `HOSTED`
 cost three defects in the deployment rather than the logic, each now explained where it was fixed —

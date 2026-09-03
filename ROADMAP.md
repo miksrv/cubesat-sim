@@ -28,9 +28,10 @@ Everything except `P6` is done and gone from this table. `P7` was retired on 202
 sweep and self-test it promised are what `DEPLOY` does on every ascent); `P2` closed the same day
 with the `cubesat` CLI; `P8` closed with the test sweep that removed the last places a test asserted
 a shipped configuration value instead of computing from it. The radio command contract is written
-down to its last command — `restart_service` was that one — with a single field set outstanding:
-`photo`'s ack answers with the ordinary state fields instead of the frame number and the free
-megabytes the contract describes.
+down to its last command — `restart_service` was that one — and what is outstanding is now the
+**acks**: whether they are transmitted at all, and whether they say what happened. That includes the
+`photo` field set the contract describes and has never had. Both live in *An answer is not a beacon*
+below.
 
 | Phase | Scope | Delivers | Status |
 |---|---|---|---|
@@ -40,31 +41,16 @@ megabytes the contract describes.
 `mypy` clean, and all eight have now run on the satellite: `HOSTD`, `OBC`, `EPS` and `COMMS` in
 `HOSTED` on 2026-08-31, and `ADCS`, `PAYLOAD`, `DHS` and `DASHBOARD` in `DEMO` on 2026-09-01 —
 `DEPLOY` in 1.4 s, `NOMINAL`, the attitude widget and a photograph watched live. The standing caveat
-has therefore moved from services to **profiles**: `FLIGHT`, `EXPO`, `DIAG` and `MAINTENANCE` have
-never been applied, and with them the access point (V6), a moving GNSS fix (V2, V3) and `diag.db`
-are untried. **Almost everything left is a bench check or a decision.** What can still be written
+has therefore moved from services to **profiles**: `FLIGHT`, `EXPO` and `DIAG` have never been
+applied, and with them the access point (V6), a moving GNSS fix (V2, V3) and `diag.db` are untried.
+`MAINTENANCE` was applied for the first time on 2026-09-02 — to free `/dev/serial0` for the modem
+preset change — and did what it says: COMMS and the `external_units` stopped, `cubesat.local` stayed
+up, and `HOSTED` brought all of it back with no `SAFE` and no lost subsystem. **Almost everything left is a bench check or a decision.** What can still be written
 without the satellite: the photographs missing from a mission export (which blocks the public demo),
 the export and import verbs the archive dialog still lacks, the `photo` ack's frame fields — the last
 line of the radio contract still unwritten — the chart line that should break on a gap, and an
 end-to-end test against the replay build. The one defect the hardware found in the logic, `restart_service` latching `SAFE`, is fixed:
 `health.expect_restart` waives the departure OBC itself asked for, for one loss grace.
-
-### The dashboard still offers `science start` / `science stop` — 2026-09-02
-
-The `SCIENCE` mission state was removed from the satellite on 2026-09-02 (the reasoning is in
-[`docs/concept.md` → Mission states](docs/concept.md#mission-states): every cadence, the beacon,
-the camera permission and the recording rule were identical to `NOMINAL`, so the two commands
-changed a label and nothing a service could act on). The commands are gone from the vocabulary,
-from OBC, from the compact radio syntax and from `MissionState`.
-
-**The Quick Commands buttons live in the groundstation repo**, which this repository does not
-contain — the dashboard arrives as a built artifact. So until that client is edited and
-redeployed, those two buttons publish commands the satellite now ignores. Nothing breaks: an
-unrecognised command on `cubesat/command` belongs to another service by construction and is
-dropped without complaint (there is a test for exactly that). But a button that does nothing is
-worth removing, along with any `SCIENCE` case in the state colouring and in `observed.ts`, and any
-mission recorded before this date can still hold `SCIENCE` in `telemetry.obc_state` — a replay
-must not fall over on a state the enum no longer has.
 
 ### Mission archive: what the dialog still does not do — 2026-09-02
 
@@ -158,97 +144,224 @@ the precedent: discrete events with their own timestamps, kept because a 30 s te
 stand for them. Until that decision is made, the four events above go into `observed.ts`; when the
 table exists, the widget reads it for history and keeps deriving live entries the same way.
 
-### Both nodes are on the wrong modem preset — found 2026-09-02
+### The mesh preset: the satellite is moved, the personal node is not — 2026-09-02
 
-The satellite's Heltec and the operator's personal node both run `LONG_FAST`, the factory default
-recorded in [`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md). The Bay Area
-mesh does not: the community migrated off LongFast to **Medium Range Fast**, and
-`https://meshview.bayme.sh/map` shows every node in the operator's own city on `MediumFast`.
+The satellite's Heltec now runs `MEDIUM_FAST` on frequency slot 45, `hop_limit 6`,
+`config_ok_to_mqtt true`, region `US` unchanged, channel 1 `CubeSat` and its PSK verified intact
+after the write. Why that is the physical layer rather than a preference, what the automatic
+frequency slot does when the preset name changes underneath it, and why the MQTT flag is what makes
+the node visible at all are recorded in
+[`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md) → Modem preset and the
+local mesh, with the commands.
 
-**A modem preset is the physical layer, not a preference.** It fixes bandwidth, spreading factor and
-coding rate, and Meshtastic states the requirement without softening it — devices in one mesh must
-have identical region *and* modem preset. Nodes on different presets do not hear each other badly;
-they do not demodulate each other at all. So the multi-hop coverage that is the whole reason
-`FLIGHT` uses LoRa is, today, coverage the satellite cannot reach: the routers that would relay it
-are on another waveform. The two nodes still talk to each other, because they match — which is
-exactly why nothing on the bench has ever hinted at this.
+**What is left, and the first item is urgent in the practical sense: the two nodes cannot hear each
+other right now.**
 
-The frequency slot moves with the preset, and that is the easy half to miss. With `lora.channel_num`
-at 0 the slot is derived from a hash of the **primary channel's name**, and that name changes with
-the preset (`LongFast` → `MediumFast`). Changing the preset and leaving the slot on automatic lands
-the pair on a private frequency, together and alone — which looks like success from the bench.
+1. **Move the personal node to the same four settings.** It is still on the factory `LONG_FAST`, so
+   until it is moved there is no ground link at all — nodes on different presets do not demodulate
+   each other, and the satellite's radio will look dead from the phone. This is the one node the
+   satellite's radio has ever been tested against.
+2. **Read both nodes back with `--info` and compare them to each other, not to a list.** Preset,
+   `channel_num`, `hop_limit`, region, and channel 1 `CubeSat` with its PSK on both. The personal
+   node has been configured by hand over several sessions and has never been audited against the
+   satellite; a setting that drifted there is indistinguishable from a satellite fault.
+3. ~~Watch `meshview.bayme.sh/nodelist` for `CSAT`.~~ **Done, same evening.** The node was there
+   within a minute, 72 gateways published its first broadcast, a stranger traceroutes it, and the
+   hop arithmetic behind `radio_log.hops` is measured rather than inferred — the numbers and what
+   they do and do not prove are in
+   [`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md) → Coverage. **The one
+   finding worth acting on: exactly one node hears the satellite directly** (W6SRR Sunol Ridge, a
+   bayme.sh router, −5.25 dB SNR / −94 dBm from indoors). The 72 are what the mesh does after that
+   single link, so the reading to repeat is the *direct* receivers from where `FLIGHT` actually
+   goes.
+4. **Decide the privacy consequence rather than drifting into it.** bayme.sh asks operators to
+   enable `Ok to MQTT` for map visibility, and node info rides the primary channel regardless. In
+   `FLIGHT` that is the operator's walking route on a public map, as coarsely as the gateways that
+   heard it. The contents of channel 1 stay closed either way, and the flag can be cleared for a
+   real trip without touching anything else.
 
-What to set, on **both** nodes:
+### Commands must come from the private channel, and nothing else — decided 2026-09-02
 
-```
-lora.modem_preset      = MEDIUM_FAST
-lora.channel_num       = 45     # the slot bayme.sh names explicitly
-lora.hop_limit         = 6      # their figure for a personal/chat node
-lora.config_ok_to_mqtt = true   # default false — see below, it is not optional here
-lora.region            = US     # unchanged
-```
+**There is no channel filter on the uplink today, and since this morning that is no longer
+theoretical.** Nothing between the radio and `cubesat/command` looks at which channel a message
+arrived on: `hal/rpi/meshtastic_radio.py:_on_receive` filters on `portnum == TEXT_MESSAGE` alone and
+records `text`, `sender`, `snr`, `rssi`, `hops` — not the channel — and `CommsService._relay` then
+translates a bare verb or relays well-formed JSON whatever channel carried it. The node's primary
+channel is the stock public one, so **the community mesh's chat reaches the command parser**. The
+vocabulary is ordinary English: `ping`, `photo`, `mission`, `sys`, `env`, `pos`, `safe`, `recover`,
+`beacon on`. A stranger typing `profile flight` into the Bay Area chat takes this satellite's Wi-Fi
+down; `safe` latches it; a `!` line that does not parse spends airtime on an `err=unknown` for
+somebody else's typo. Until 2026-09-02 the node was alone with the operator's on a private frequency
+slot, which is why this never mattered before — the preset change is what put it in a room with
+everybody.
 
-**`config_ok_to_mqtt` is what makes the node visible at all, and it defaults to `false`.** A foreign
-gateway checks the `OK_TO_MQTT` bit of the packet itself before publishing to a public broker
-(`DontMqttMeBro` in `MQTT::onSend`) and silently drops it when the bit is absent. Without the flag
-the satellite can be heard perfectly by the community mesh and still never appear on
-`meshview.bayme.sh` — which looks exactly like having no coverage, and would send the whole
-investigation the wrong way. It affects nothing else: not the link, not the beacon, not commands.
+**The credential is the channel, not the node.** Anyone holding the `CubeSat` key may command the
+satellite, and that is the decision rather than an accident: a key is portable. When the operator's
+own node is flat, the recovery is to load the channel URL onto any other node and command from
+there — an allowlist of node ids would make a dead battery a locked door with the key on the far
+side, which is the same mistake as a `SAFE` that cannot hear a `recover`. PKI direct messages were
+considered and rejected for this: they authenticate the sender properly, but they bind the way in to
+one keypair — and the Heltec's keypair does not survive a reflash.
 
-What it costs is set out in [`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md)
-→ Why a secondary channel: the V4 has no GNSS and nothing here feeds it one, so no position is ever
-broadcast. A public map can place the node only as coarsely as the gateway that heard it. That is a
-neighbourhood and a timeline, not a track — cheap enough to leave on, and the flag can be cleared
-for a real trip without touching anything else.
+What to build:
 
-Channel 1 `CubeSat` and its PSK are **not** touched: the private channel is a key layered over the
-radio configuration, so the preset moves underneath it and nothing in `comms/` or
-`hal/rpi/meshtastic_radio.py` changes. Verify it anyway with `--info` after the change — a satellite
-on a channel the ground segment cannot read is a silent failure that looks like a dead radio.
+1. **Carry the channel on the message.** `RadioMessage` gains the received channel index, read in
+   `_on_receive`. The library exposes it as the packet's `channel` key, **absent on the primary
+   channel** (protobuf omits a zero), so absent must read as 0 rather than as unknown — that is
+   inferred from the library, so it wants a marker at the constant and a bench check: send one line
+   on each channel and log what arrives.
+2. **Drop anything not on `config.LORA_CHANNEL_INDEX`, in `_collect_uplink`** — and drop it
+   *before* the `comms_radio` publish, not after. The distinction matters and the first draft of
+   this item got it wrong:
 
-Order, because one of these two nodes is harder to recover than the other:
+   * **On our channel, everything stays on the record**, including a line that did not parse. That
+     is the existing reasoning at the publish ("before the relay, so gibberish is still on the
+     record"), and it holds: a malformed command from somebody holding the key is exactly what
+     wants debugging.
+   * **On any other channel — and in a direct message — nothing reaches MQTT at all.** One line in
+     the service log with the sender, the channel, the SNR and a byte count, and **not the text**.
 
-1. **The personal node first.** It keeps a known-good reference while the satellite is still on the
-   old setting, and it is the thing that will show whether the community mesh is really there.
-2. **Then the Heltec** — and `/dev/serial0` must be free first, or `COMMS` holds the port and the
-   CLI cannot open the node. That is what `MAINTENANCE` is for: `cubesat profile maintenance`.
-3. **Read both nodes back with `--info` and compare them to each other, not to this list.** Preset,
-   `channel_num`, `hop_limit`, region, and channel 1 `CubeSat` with its PSK intact on both. The
-   second node has been configured by hand over several sessions and has never been audited against
-   the satellite; a setting that drifted there is indistinguishable from a satellite fault, because
-   the only thing the satellite's radio is ever tested against *is* that node.
-4. **Then watch `meshview.bayme.sh/nodelist` for `CSAT`.** Appearing there is the cheapest form of
-   the coverage measurement: it proves a foreign gateway received the satellite over the air, and
-   meshview reports the hop count that packet arrived with, which is **V10** settled without a
-   second node or any manual metadata reading. It says nothing about channel 1 — see below.
+   `comms_radio` is not a private surface, which is what makes this more than tidiness. The
+   dashboard's live Radio Link Log renders it — **found on 2026-09-02 when a message typed into the
+   primary channel turned up in the widget** — `EXPO` puts that dashboard in front of a room, and in
+   `FLIGHT` and `DIAG` DHS writes those rows into `radio_log` on the card, from where they travel
+   inside a mission export. So publishing a stranger's chat means displaying it to an audience and
+   archiving it in our own flight record. The community mesh's conversation is not this satellite's
+   link, and the satellite has no business keeping it.
+3. **Refuse in silence.** No `err=`, no ack, nothing transmitted — not even for a `!` line. The `!`
+   contract exists so *the operator* is never left wondering why nothing happened; answering a
+   stranger instead spends airtime on a shared band and teaches a mesh of several hundred nodes that
+   this one talks back. A log line, and that is all.
+4. **Do not narrow listening.** `lora_listening` stays the profile's call alone. The filter is on
+   *acting*, not on hearing, and the inbox must keep being polled — for the reason written at
+   `lora_listening` itself.
+5. **Direct messages are not a command path** and are dropped by the same rule, being on no channel
+   of ours. Nothing needs building for that; it falls out of rule 2.
 
-**What this does not settle.** Everything above happens on the primary channel, and reaching the
-community mesh there is necessary rather than sufficient. A foreign node relays a packet it *cannot*
-decrypt only while its `rebroadcast_mode` is the default `ALL`; one set to `LOCAL_ONLY` relays its
-own channels and drops `CubeSat` without a trace. So the satellite can sit happily in the node list
-having proved nothing about the channel its telemetry and commands actually travel on. That second
-measurement needs a packet on **channel 1** arriving at the personal node from beyond direct range,
-with a hop consumed — the same reading as **V10** below, taken on the private channel rather than
-off meshview. Until it is made, the coverage assumption behind `FLIGHT` is untested.
+**An observation from the same evening, mechanism not established: relayed foreign chat arrived
+with no sender.** Two community-mesh messages reached the satellite with `sender: null` — the
+library gave no `fromId` — while every direct packet from the operator's own node carried
+`!698204b0`. Both of the null ones had `hops: 3`; one of them also had `snr: null` with `rssi`
+present, which is recorded at `_on_receive` where the opposite used to be asserted. Why `fromId` is
+missing has **not** been investigated: relaying, a sender absent from the node database, and a
+differently-shaped packet dict are all candidates, and this is written down as a measurement rather
+than a rule.
 
-**And the internet bridge is not a way in.** A community MQTT gateway cannot uplink the private
-channel even in principle: the firmware gates the publish on that channel's own `uplink_enabled` and
-builds the topic out of the channel's *name*, neither of which a stranger's node has for `CubeSat`.
-bayme.sh separately tells its operators never to enable downlink, so there is no MQTT → RF path
-back. Internet reach, if it is ever wanted, means the operator's own gateway node and broker with
-`CubeSat` configured on both ends — strangers stay a pure RF relay and the PSK never leaves the two
-nodes. PKI direct messages are the one exception (they bypass `uplink_enabled` and publish under a
-`PKI` topic), and they are outbound-only for the same downlink reason.
+Two things follow whichever way it goes. **Filtering by sender is not even available as a
+shortcut** — the field is empty on precisely the traffic that would have to be refused, so the
+channel is the only discriminator that is actually present on every packet. And the local log line
+in rule 2 has to render a missing sender honestly instead of implying an anonymous node was
+identified. If the pattern turns out to be real and general, it is worth knowing why: a null
+`fromId` on relayed traffic would mean `radio_log.sender` is silent for everything the satellite did
+not hear directly, which limits what a mission's radio log can say about a trip afterwards.
 
-One privacy consequence to decide rather than drift into: bayme.sh asks operators to enable
-`Ok to MQTT` for map visibility, and the satellite's node info and position ride the primary
-channel regardless. In `FLIGHT` that is the operator's walking route on a public map. The contents
-of channel 1 stay closed either way.
+When it lands, three documented statements change and must change with it: `CLAUDE.md` and
+`README.md` both say COMMS relays a command *verbatim from any channel* and call it deliberate, and
+`delete_mission`'s fence leans on it explicitly ("still reachable as hand-composed JSON over the
+radio"). That property survives for the operator and dies for everybody else, so the fence gets
+stronger — but the sentences describing it are wrong the moment the filter exists.
 
-When the preset is changed and the hop count measured, both belong in
-`docs/hardware-heltec-lora32-v4.md` — the Radio settings table records `LONG_FAST` as a validated
-value, and the "receiving nodes must agree on region, preset and PSK" line needs the frequency slot
-added to it.
+### An answer is not a beacon: `beacon` must ration the schedule only — decided 2026-09-02
+
+**The rule.** COMMS answers a command whenever it is in a position to hear one. `beacon` governs one
+thing and one thing only: whether *state* goes out on a schedule, unasked. So `_maybe_ack` is gated
+on `lora_listening` — the profile's envelope — and not on `lora_enabled`.
+
+That is not a new principle, it is an existing one applied consistently. `_going_down_beacon` is
+already written this way, and its docstring says why: *"Gated on ``lora_listening`` — the profile —
+and **not** on ``lora_enabled``. Same reasoning as the inbox: a runtime flag somebody set an hour ago
+should not be able to silence the one message that explains a disappearance. A profile that forbids
+the radio still says nothing, because there the radio is not part of the mission at all."* Replace
+"the one message that explains a disappearance" with "the answer to a question somebody just asked"
+and the sentence still holds. The satellite currently has two rules for two transmissions that
+deserve the same one.
+
+**Three instances, all met inside five minutes on 2026-09-02**, with the satellite in `DEMO` (where
+`beacon: false` is the profile's own default) and the operator on a phone one room away:
+
+- `!sys` arrived, was answered from the caches, and the reply was dropped. The command worked; from
+  the phone it was indistinguishable from a satellite that is not listening.
+- `!beacon off` arrived and did its job — and its own confirmation was dropped *by the flag it had
+  just set*, so "the transmitter is now off" and "the command never arrived" look identical. This is
+  the worst of the three: the operator is left unable to tell whether the satellite is quiet or gone.
+- `!photo` arrived and PAYLOAD took the photograph. A command with a **physical side effect**, and
+  no way to learn from the radio that it happened.
+
+The `!` contract in `compact.py` already refuses this outcome for a line that fails to parse —
+answered *"because its sender meant to command and is standing in a field wondering why nothing
+happened"* — while a line that parses gets nothing. A satellite that answers typos and swallows
+successes has the priority backwards.
+
+**The flag has to be renamed with the change**, or the same fault is simply moved along one step:
+`beacon on|off` was itself renamed from `lora on|off` on 2026-09-01 *because the old name said the
+wrong thing*, and a flag named `lora_enabled` that no longer governs whether LoRa transmits at all
+is that same lie. It becomes `beacon_enabled`, in `set_comms_config` and in `comms_status`, with
+`lora_enabled` accepted as an alias on the way in — the dashboard build deployed on 2026-09-02 sends
+the old spelling, and the satellite must not stop answering its own console the day this lands.
+Everything that names it: `comms/compact.py` (the two `_beacon` builders), `comms/service.py`
+(`_set_config`, the `lora_enabled` property, `_publish_status`), `cli/main.py` and
+`cli/commands/status.py`, `README.md` (the payload schema at the COMMS section, the
+`lora_enabled`/`lora_listening` explanation, and the vocabulary table's `set_comms_config` row),
+`CLAUDE.md` → Quiet is not deaf, the `DEMO` and `EXPO` comments in `profiles.yaml`, and in the
+groundstation repo `QuickCommandsWidget`, `MissionConsoleWidget` and the `CommsStatus` type.
+
+**Order: this lands after the channel filter above, or with it.** Until commands are restricted to
+the private channel, "always answer a command" means any stranger in the community chat can make
+this satellite transmit — the filter is what makes the rule safe rather than merely nicer.
+
+**Where "always" stops, stated so it is not read as absolute.** The gate is `lora_listening`, so a
+profile with `downlink.lora: false` still says nothing — there the radio is not part of the mission
+and the inbox is not even polled. Today that is `MAINTENANCE` alone, which runs no COMMS at all, so
+in practice the rule reads: **every profile that runs COMMS answers commands.**
+
+**What this deliberately gives up.** "Listen, but transmit nothing under any circumstances" stops
+being reachable at runtime; the only route to it becomes a profile that also closes the way in. That
+is accepted rather than overlooked: once only channel members can ask, silence is achieved by not
+asking.
+
+#### And the answer has to say what happened — same decision, 2026-09-02
+
+Transmitting the ack is half of it. **Every valid command uplinked over the radio is confirmed, and
+the confirmation names the outcome rather than merely proving something was received.** The delay
+exists for exactly this and its docstring already says so: *"by the time it goes out, ``st=`` and
+``pr=`` show what the command actually did, which is more honest than an ``ok=1`` COMMS cannot vouch
+for."* For a profile switch that is genuinely enough — `st=` and `pr=` *are* the outcome. For a
+command whose result is not a state field, it is not: `!photo` was answered with the ordinary
+telemetry line and nothing about the photograph (met on the hardware, 2026-09-02 — the frame was
+visible in the dashboard while the radio said nothing about it).
+
+This absorbs the `photo` field set that has been outstanding since the contract was written, and it
+is cheaper than it looks, because **nothing needs measuring — it is all already on the bus.**
+`payload_photo` carries `kind`, `file`, `size_bytes`, `mission_id` and `sequence`; the operator's
+request is the size in KB, and the contract in
+[`docs/concept.md` → The radio command contract](docs/concept.md#the-radio-command-contract) asks
+for the frame number and the free megabytes. All three are available. What is missing is only that
+**COMMS is not subscribed to `payload_photo`** — its `subscriptions` are `command`, `eps_status`,
+`adcs_status`, `payload_data`, `dhs_status`, plus `obc_status` from the base class — so today it
+cannot know a photograph happened even in principle.
+
+**The trap in that subscription, which must not be walked into:** `payload_photo` also carries
+`photo_base64` — the whole image — and COMMS keeps "the latest payload from each subsystem, kept
+whole". Subscribing the ordinary way would park a base64 copy of every frame in the link service's
+memory, for the sake of two integers. Keep the small fields, drop the image on arrival, and say so
+at the handler.
+
+Two smaller things belong in the same pass:
+
+- **`re=` must name the verb the operator typed.** `beacon on` came back as `re=set_comms_config`
+  (observed 2026-09-02). `compact.py` already states the intent for the queries — *"the short
+  ``re=`` name a phone reader sees — the verb they typed, not the canonical command it became"* —
+  and simply does not apply it to a relayed command, because `Compact` carries the canonical name
+  and not the spelling. The spelling has to travel with the translation.
+- **`ok=`/`err=` today appear "only where COMMS itself is the handler and actually knows"**, which
+  is right and does not need weakening: the general shape is that the ack reads the *handler's own*
+  message. `take_photo` → `payload_photo`; `set_profile` → the state fields it already carries;
+  `safe`/`recover` → `st=`; `restart_service` → what HOSTD reports. Where a handler says nothing an
+  ack can read, the honest answer stays the state line, and that is a gap to name per command rather
+  than to paper over with an invented `ok=1`.
+
+The 240-byte rule is unaffected: reply fields are already `protected` in `_fit`, so the routine
+telemetry gives way to them rather than the line being truncated.
 
 ### The walk to work: what to check on the first real trip
 
@@ -304,7 +417,7 @@ and the mosquitto ACL that must not sit in `conf.d/` in `config/mosquitto/`.
 | V5 | **BNO055 calibration save/restore.** Deliberately not implemented: the profile register block is not in the verified docs, and writing unverified registers into the fusion engine on every boot is what produced the `SYS_ERR = 9` session already recorded there | Without it the magnetometer must be re-calibrated after every reset, so `yaw` is withheld for a while after each restart |
 | V6 | **NetworkManager client mode.** `nmcli connection down Hotspot` with a pinned `wlan0` | Written against the documentation, never run on the Pi. `EXPO` depends on it |
 | V7 | **SEN0501 board revision.** Read the silkscreen, or compare the pair of candidate values the driver logs against a known UV source | One raw register, two formulas: at raw 14 they give 0.00 and 84.35. `uv_index` stays null until this is settled |
-| V10 | **Meshtastic hop count.** `hops = hopStart − hopLimit` is read from the library's documentation, not from a bench run. The check: a packet relayed through a third node should arrive with `hops = 1`; everything heard so far has been direct | Every direct packet reads 0 whichever interpretation is right, so no traffic to date can falsify it. Wrong arithmetic would put a plausible small integer in `radio_log.hops`. Take the reading on **channel 1**: meshview reports a hop count too, but only for the primary channel, which leaves open the question the preset change above raises — whether foreign nodes relay the private `CubeSat` channel at all, which they do only while their `rebroadcast_mode` is the default `ALL` |
+| V10 | **Whether the private channel is relayed at all** — *the hop arithmetic itself is settled.* `hops = hopStart − hopLimit` was measured on 2026-09-02: one NodeInfo broadcast reported by 72 bayme.sh gateways, `hopStart` fixed at 6 and `hopLimit` arriving as everything from 6 to 0 (see [`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md) → Coverage). The check that remains is on **channel 1**, and it is *not* "get far away and look for `hops ≥ 1`". **The operator's own node holds the `CubeSat` key, so it relays that channel like any other — and it was observed doing exactly that on the primary channel on 2026-09-02** (a chat message arriving with `hops: 3` at −23 dBm, the last relay being the personal node one room away). A hop counted through your own house proves nothing about strangers, and a passing hop count cannot tell the two apart. So the measurement is a **traceroute on channel 1**: the reply carries the route as a list of node ids — the same shape `Troy` produced when it trace-routed this satellite — and the question is whether a node that is *not* the operator's appears in it. It is answered by the firmware itself, so it needs no COMMS and works in any profile where the node is powered | All of that measurement is the *primary* channel, and telemetry and commands do not travel there. A foreign node rebroadcasts a packet it cannot decrypt only while its `rebroadcast_mode` is the default `ALL`; one set to `LOCAL_ONLY` drops `CubeSat` without a trace. So the satellite can sit in a public node list, relayed six hops, having proved nothing about the channel `FLIGHT` depends on |
 | V13 | **The X728 charges on mains, but at ~+3 %/h — a fraction of its rated 2.3–3.2 A.** Measured 2026-09-01 with `charge_rate` a real quantity (see `docs/hardware-x728-ups-hat.md`): CanaKit 3.5 A on USB-C, LEDs one steady one blinking, SOC 50.39 → 50.78 % in fifteen minutes, voltage +17 mV. Next check: a 5.1 V ≥ 4 A supply on the DC jack, the input Geekworm rates for full charging current; if the rate does not change, the cells or the charger stage are the question. The original observation follows for the record. Observed 2026-08-31 with the satellite plugged in all evening: 3.92 V, SOC ~66 %, `CRATE` one LSB from zero, and the board's own charge LEDs agreeing with roughly that level. The datasheet figures in `docs/hardware-x728-ups-hat.md` say the recharge threshold is **4.1 V** and cutoff 4.24 V — at 3.92 V the board is well past the point where it should have resumed, so "it deliberately holds a partial charge" does not explain this reading. The **`CHG Ctrl` jumper was checked on 2026-09-01 and is installed**, which per Geekworm means automatic charging whenever the adapter is connected — so a floating GPIO16 is ruled out. Two candidates remain. First, the **supply**: the X728 charges only from its own DC jack and wants 2.3–3.2 A for the pack on top of the Pi's load; `PLD` proves the jack sees power, not enough of it. Second, tired 18650s: capacity loss shows up as a cell that will not hold a charge, and the pack is unbranded. `vcgencmd get_throttled` reads `0x0`, so the 5 V supply is not sagging and can be ruled out. **The decisive check is now cheap, because `charge_rate` is a real measurement:** plug in and watch `voltage` and `charge_rate` for ten minutes — a charger delivering current lifts the terminal voltage within seconds and turns the rate positive after the five-minute window. (Opening the jumper on purpose stays an opportunity: GPIO16 would let EPS hold a partial charge on the desk and top up before a `FLIGHT`. A driver and a policy, later) | Nothing errors and nothing looks broken: the dashboard shows a plausible 66 %, the LEDs agree, and the satellite runs happily on mains. It is discovered at the worst possible moment — leaving for a trip with a pack that was never full — which is precisely the failure `FLIGHT` cannot afford. While charging is in doubt, the 2026-08-31 mains-day drift (SOC down while voltage rose) cannot be interpreted either — that drift is now this item's question, since the "70× disagreement" it was filed under turned out to be a comparison against a constant (see `docs/hardware-x728-ups-hat.md`, 2026-09-01) |
 | V14 | **BNO055 low-byte bit-7 flips reach the record.** Measured 2026-09-01 in `DEMO` at rest: about one published sample in twenty carries an undetectable +128 LSB step — `gyro_x` exactly 8.0 °/s between neighbours of 0.06, `acc_x` 0.07 → 0.20 g and back — while the detectable high-byte flips ran at one read in eleven, all caught. The plausibility check cannot see these by construction. The check the hardware doc has asked for since 2026-08-28: move the sensor to a bit-banged `i2c-gpio` bus, which honours clock stretching, and measure both rates again. Until then a median-of-three in the driver would hide the isolated ones at the cost of half a second of latency — a decision, not a fix | They are physically plausible values and DHS writes them into `attitude` as measured, so a replay shows an 8° twitch or a 0.13 g kick that never happened |
 

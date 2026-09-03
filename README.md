@@ -28,9 +28,12 @@ also been started on the Raspberry Pi:
   entered and cleared for real.
 - **2026-09-01, `DEMO`** — `ADCS`, `PAYLOAD`, `DHS` and `DASHBOARD` joined them. `DEPLOY` completed
   in 1.4 s into `NOMINAL`, and the attitude widget and a photograph were watched live in a browser.
-- **`FLIGHT`, `EXPO`, `DIAG` and `MAINTENANCE` have never been applied.** So what is untried is now
-  a set of profiles rather than a set of services: the field radio-only case, the access point, a
-  GNSS fix taken while moving, and the separate `diag.db`.
+- **2026-09-02, `MAINTENANCE`** — applied for the first time, to free `/dev/serial0` for the
+  Heltec's modem preset. It did what it says: `COMMS` and the external units stopped, `cubesat.local`
+  stayed up, and `HOSTED` brought everything back with no `SAFE` and no lost subsystem.
+- **`FLIGHT`, `EXPO` and `DIAG` have never been applied.** So what is untried is now a set of
+  profiles rather than a set of services: the field radio-only case, the access point, a GNSS fix
+  taken while moving, and the separate `diag.db`.
 
 Running for minutes on a desk and being validated are different kinds of confidence, and this README
 does not blur them:
@@ -46,9 +49,15 @@ trusted — the register maps come from the bench notes in `docs/hardware-*.md`,
 had to come from a datasheet instead, the driver says so at the constant.
 [`ROADMAP.md`](ROADMAP.md) carries the list of checks only the bench can settle — the ones that
 would otherwise produce plausible wrong data rather than an error, which is the class of fault this
-whole codebase is arranged around. The hardware has found exactly one defect in the logic so far
-(`restart_service` latched `SAFE`, 2026-09-01, fixed); everything else it found was in the
-deployment, which is the shape of surprise a mock HAL cannot produce.
+whole codebase is arranged around. What the hardware has found in the logic so far is short and all
+of it is fixed: `restart_service` latched `SAFE` (2026-09-01), and then a single evening on the mesh
+produced four — a command answered while the beacon was off went nowhere, `beacon off` swallowed
+its own confirmation, `!photo` was answered with the weather, and the uplink had no channel filter
+at all, which a stranger's chat appearing in the dashboard's Radio Link Log revealed
+(2026-09-02, all fixed 2026-09-03). Everything else it found was in the deployment or in the
+environment, which is the shape of surprise a mock HAL cannot produce: it can fail a sensor, but not
+a shared directory, a file lock, a fuel gauge that answers as the wrong part, or a modem preset that
+moves the satellite into a room with several hundred strangers.
 
 Read [docs/concept.md](docs/concept.md) for *why* the design looks like this; this README is the
 reference for *what* it is.
@@ -510,6 +519,25 @@ Four properties of that reply are worth stating here, because each one was a def
   the state queries collapse into the latest — a fresh snapshot answers the older question too —
   while anything with an effect keeps its own reply. A single slot used to lose the first of any two
   commands sent inside ten seconds, silently.
+
+**What each query answers with.** The spellings themselves stay in
+[The command vocabulary](#the-command-vocabulary); this is only what comes *back*. All five ride
+an ordinary beacon line, so `t=`, `st=`, `pr=` and the power fields are there too; these are the
+fields the verb adds. `age=` is whole seconds since the source subsystem published, which is what
+makes a stale answer honest — `env` still answers when PAYLOAD is stopped by the profile, with an
+age that says exactly how stale.
+
+| Verb | Adds | With nothing to say |
+|---|---|---|
+| `ping` | nothing — the transmission arriving *is* the answer | — |
+| `pos` | `lat= lon= fix= age=`, plus `alt=` and `sat=` when the fix carries them | `ok=0 err=nodata` |
+| `sys` | `cpu= ram= disk= up=`, plus `tc=` where the SoC reports one | never: local `psutil`, no cache |
+| `env` | `age= tc= rh= hpa= lux=` | `ok=0 err=nodata` |
+| `mission` | `m=` and `rows=` | `ok=0 err=nodata` — no mission is open |
+
+`pos` reports a stale or fixless position where the scheduled beacon reports none: this is the
+lost-satellite query, and `fix=` and `age=` are there to say precisely how much to trust it. The
+schedule has no room for an age, so it stays live-fix-only.
 
 The contract, with the reasoning, is
 [`docs/concept.md` → The radio command contract](docs/concept.md#the-radio-command-contract).

@@ -111,6 +111,28 @@ eps:
   # mains, or a flat pack just plugged in would look like one still draining.
   charge_rate_min_span_sec: 300
 
+# What happens after an unexpected reset — a brownout, a watchdog bite, the jolt
+# of a landing. FLIGHT is the only profile that resumes itself, because it is
+# the only one designed to run with nobody present, and it resumes only on
+# physical evidence: no mains at boot means the satellite is demonstrably not on
+# a desk. See ROADMAP W11 and docs/concept.md; the rule itself is in
+# obc/resume.py.
+resume:
+  # How many resumes in a row before this reads as a boot loop rather than a
+  # flight. Deliberately not 1: a parachute opening is a burst of jolts, and a
+  # burst must not exhaust the budget the descent needs. Cleared once a resumed
+  # session has lived settle_sec, so three means three *short* lives in a row.
+  max_consecutive: 3
+  # How long a resumed session must live before it counts as a flight rather
+  # than a loop. 300 s is long enough to be past the reset that caused it and
+  # short enough to still be inside the trip.
+  settle_sec: 300
+  # How long OBC waits for the first eps_status before giving up on resuming.
+  # A missing measurement is not a measurement of no mains: with no evidence the
+  # satellite stays where an operator can reach it. EPS publishes on its own
+  # cadence from its first poll, so this is seconds rather than minutes.
+  evidence_timeout_sec: 60
+
 dhs:
   # The floor on how often one attitude sample is recorded. ADCS publishes
   # orientation at 2 Hz in every active profile — no profile scales that any

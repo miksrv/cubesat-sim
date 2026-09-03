@@ -83,6 +83,7 @@ reference for *what* it is.
   - [Common Infrastructure](#common-infrastructure)
 - [Hardware Ownership](#hardware-ownership)
 - [Mission Sessions](#mission-sessions)
+  - [Resuming an interrupted trip](#resuming-an-interrupted-trip)
 - [MQTT Topic Reference](#mqtt-topic-reference)
 - [Message Payloads](#message-payloads)
 - [Data Flows](#data-flows)
@@ -156,7 +157,7 @@ including a reboot in the field, where an uplinked `set_profile` over LoRa is th
 without SSH. Transmission is still rationed by the per-state beacon table, which never names
 `STANDBY`: on the desk the radio hears everything and says nothing on its own.
 
-**A profile is never persisted across a reboot — every boot starts in `HOSTED`.** A profile is a statement about the current situation, and a boot means the situation is no longer known. The decisive case is the ordinary one: the satellite is carried on a trip in `FLIGHT`, the battery hits `CRITICAL`, it shuts itself down, and hours later it is plugged in at a desk — resuming `FLIGHT` there would leave Wi-Fi down and no SSH on a unit sitting on mains next to its operator. This also makes a power cycle the simplest recovery path there is: whatever profile the satellite is stuck in, pulling power brings it back on the home network. `HOSTD` records the last applied profile to `/var/lib/cubesat/last-profile` as *information* — reported by `cubesat status`, logged at boot — but nothing reads it to decide anything.
+**A profile is never persisted across a reboot — every boot starts in `HOSTED`.** A profile is a statement about the current situation, and a boot means the situation is no longer known. The decisive case is the ordinary one: the satellite is carried on a trip in `FLIGHT`, the battery hits `CRITICAL`, it shuts itself down, and hours later it is plugged in at a desk — resuming `FLIGHT` there would leave Wi-Fi down and no SSH on a unit sitting on mains next to its operator. This also makes a power cycle the simplest recovery path there is: whatever profile the satellite is stuck in, pulling power brings it back on the home network. `HOSTD` records the last applied profile to `/var/lib/cubesat/last-profile` and publishes it on `host_status`; it is *evidence*, never instruction — the file never decides whether to restore a profile, only which one, and only after a measurement has already said the satellite is not on a desk. That is the single exception, `FLIGHT` resuming itself after a reset, and it is set out under [Resuming an interrupted trip](#resuming-an-interrupted-trip).
 
 ### Mission States
 
@@ -308,7 +309,9 @@ The allowlist has a second job beyond preventing that: it is the **single readab
 |---|---|
 | `apply_profile` | Start/stop units, switch network mode, set the governor, note the profile in `/var/lib/cubesat/last-profile` |
 | `set_governor` | CPU frequency governor only — used by `LOW_POWER` without a full profile change |
+| `restart_service` | Restart one mission service by name, without re-applying a whole profile |
 | `poweroff` | Graceful shutdown, requested by `OBC` on `CRITICAL` |
+| `clear_resume` | Zero the consecutive-resume count in `last-profile`. Touches nothing else — see [Resuming an interrupted trip](#resuming-an-interrupted-trip) |
 
 `HOSTD` also listens on a root-owned Unix socket at `/run/cubesat/hostd.sock`. That is the break-glass path for when the broker itself is dead; it funnels through the same validation as an MQTT command.
 
@@ -636,6 +639,7 @@ the battery started sagging, here is where the satellite went quiet.
 | `profile` | Which profile recorded it |
 | `started_at`, `ended_at` | ISO-8601 UTC; `ended_at` is null while the mission is running |
 | `end_reason` | `profile_change` · `shutdown` · `battery_critical` · `interrupted` |
+| `start_reason` | `command` · `resume` — why the mission was opened. Null for missions recorded before 2026-09-03 |
 | `rows` | Telemetry row count, filled in on close |
 | `first_fix_at` | When GNSS first had a fix — null for an indoor session |
 | `distance_m` | Track length, computed on close |
@@ -659,10 +663,46 @@ its mission, so at startup `DHS` finds every mission with a null `ended_at`, set
 timestamp of that mission's last telemetry row, and marks `end_reason = interrupted`. Without this,
 one hard power loss leaves an open-ended mission that every later query has to work around.
 
-Because [the profile does not survive a reboot](#platform-profiles), a trip interrupted by a reset
-becomes **two** missions rather than one resumed session. That is the honest representation: there
+A trip interrupted by a reset becomes **two** missions rather than one resumed session, even when
+`FLIGHT` [resumes itself](#resuming-an-interrupted-trip). That is the honest representation: there
 is a real gap in the data, and stitching across it would draw a straight line on the map through
-territory where the satellite was switched off.
+territory where the satellite was switched off. What ties the halves together is that they share a
+label and the second carries `start_reason = resume`, while the first is closed as `interrupted`.
+
+### Resuming an interrupted trip
+
+**`FLIGHT` is the one profile that resumes itself after an unexpected reset**, and it resumes on a
+measurement rather than on a stored command. The failure it closes is specific: a brownout, a
+watchdog bite or the jolt of a landing brings the satellite up in `HOSTED`, where `DHS`, `ADCS` and
+`PAYLOAD` never start, so the track, the telemetry and the photographs stop — in the one profile
+with no dashboard, no Wi-Fi and nobody looking at it — and `STANDBY` has no beacon row, so nothing
+is said about it either.
+
+The rule lives in `src/cubesat/obc/resume.py`. Five conditions, all of which must hold:
+
+| Condition | Why it is there |
+|---|---|
+| HOSTD still holds the profile it applied at boot (`host_status.boot`) | Tells a boot from a `systemctl restart cubesat@obc`. A human who has already asked for a profile has said what they want |
+| The interrupted profile was `FLIGHT` | The only profile designed to run with nobody present. `EXPO` on battery without an operator is pointless, `DIAG` lives on a desk |
+| **No mains** — `eps_status.external_power` false | The measurement the whole decision rests on. It is also what keeps the dangerous case safe: a satellite brought home flat and plugged in *has* mains, so it comes up in `HOSTED` with SSH exactly as before |
+| The TTL from before the reset is still in the future | A trip whose strap ran out does not restart, and a resumed one serves out the **remainder** rather than a fresh full term |
+| Fewer than `resume.max_consecutive` (3) resumes in a row | The boot-loop fence. A lifetime rather than a counter: the count clears once a resumed session has lived `resume.settle_sec` (300 s), so three means three *short* lives in a row |
+
+With no `eps_status` at all inside `resume.evidence_timeout_sec` (60 s) nothing is resumed: a
+missing measurement is not a measurement of no mains, and an EPS that failed to start is itself a
+reason to stay somewhere an operator can reach.
+
+**Everything about it is said out loud.** The resumed run inherits the mission label, records
+`start_reason = resume`, publishes the verdict on `obc_status.boot`, and COMMS transmits one line
+(`boot=FLIGHT rs=1`, or `rs=0 why=…` for a refusal) gated on the profile rather than on
+`beacon_enabled` — the counterpart of the going-down beacon. A satellite that silently declines to
+resume is indistinguishable from one that never woke up.
+
+The decision is OBC's; `HOSTD` gains no judgement. It applies `default_profile` at boot exactly as
+it always has and publishes what the file said (`previous`) beside whether anything has asked for a
+profile since (`boot`). `last-profile` is JSON as of 2026-09-03 — profile, `written_at`, the
+absolute `ttl_expires_at`, `mission_label` and `resume_count` — and the older one-line spelling
+still parses, because a satellite upgraded in the field has that file on its card.
 
 Labels are for grouping, not identity — two runs labelled the same are still two missions. Photos
 are filed per mission (`/var/lib/cubesat/photos/<mission_id>/`), which PAYLOAD learns from the
@@ -812,6 +852,14 @@ Published retained after every profile application. `profile` versus `profile_re
   "units": {"cubesat@adcs.service": "active", "telegram-bot.service": "inactive"},
   "governor": "ondemand",
   "ttl_expires_at": 1741899600.0,
+  "boot": false,
+  "previous": {
+    "profile": "FLIGHT",
+    "written_at": 1741860000.0,
+    "ttl_expires_at": 1741896000.0,
+    "mission_label": "walk to work",
+    "resume_count": 0
+  },
   "errors": []
 }
 ```
@@ -819,6 +867,13 @@ Published retained after every profile application. `profile` versus `profile_re
 `network` carries `mode`, `ssid` and `clients` only; anything that went wrong applying the network
 mode is reported in the top-level `errors` list along with every other failure, so there is one
 place to look.
+
+`previous` is `/var/lib/cubesat/last-profile` as it read **before this boot overwrote it**, and
+`boot` is true while the active profile is still the one HOSTD applied at start — false the moment
+anything asks for a profile, a resume included. The pair is evidence, not instruction: HOSTD still
+applies `default_profile` on every boot and has no opinion about what either field means. What
+weighs them is OBC, against a measurement — see [Resuming an interrupted trip](#resuming-an-interrupted-trip).
+`previous` is null on a satellite that has never recorded a profile.
 
 ### `cubesat/obc/status`
 
@@ -832,6 +887,13 @@ Consumers read `status` for the mission state and `profile` for the platform pro
   "cadence_scale": 1.0,
   "persistence": "mission_db",
   "mission_label": "walk to work",
+  "mission_start_reason": "resume",
+  "boot": {
+    "at": 1741863000.0,
+    "previous": "FLIGHT",
+    "resumed": true,
+    "reason": null
+  },
   "subsystems": {
     "watched": ["adcs", "comms", "dhs", "eps", "payload"],
     "lost": []
@@ -839,10 +901,18 @@ Consumers read `status` for the mission state and `profile` for the platform pro
 }
 ```
 
-The last three scalar fields exist so that a subsystem needs no second channel to do its job from
-this one retained message: `cadence_scale` lets every service derive its own poll interval,
-and `persistence` plus `mission_label` are everything DHS needs to open a mission. `mission_label`
-is null unless the operator supplied one with the profile.
+The four scalar fields after `cadence_scale` exist so that a subsystem needs no second channel to do
+its job from this one retained message: `cadence_scale` lets every service derive its own poll
+interval, and `persistence`, `mission_label` and `mission_start_reason` are everything DHS needs to
+open a mission and record why it exists. `mission_label` is null unless the operator supplied one
+with the profile; `mission_start_reason` is `command` or `resume`.
+
+`boot` is OBC's verdict on how this run began — null until HOSTD's first status has been weighed,
+which is the honest answer rather than "an ordinary boot". `previous` names the interrupted profile
+when there was one worth resuming and is null otherwise; `resumed` says whether it was; `reason`
+carries `mains`, `ttl`, `loop`, `noeps` or `profile` on a refusal. COMMS transmits it once
+(`boot=FLIGHT rs=0 why=mains`) and only when `previous` is non-null, because a desk reboot is not
+news. See [Resuming an interrupted trip](#resuming-an-interrupted-trip).
 
 `subsystems` is OBC's own health verdict, for the ground segment. `watched` is the set of services
 the active profile expects to be running (the health monitor's watch list — always including
@@ -1393,12 +1463,17 @@ reasoning behind each of these.
 1. systemd starts mosquitto, then HOSTD.
 
 2. HOSTD applies the DEFAULT profile, HOSTED — it never restores what was active
-   before. It logs the contents of /var/lib/cubesat/last-profile for the record,
-   then overwrites it.
-   Publishes  →  cubesat/host/status  (retained)
+   before. It reads /var/lib/cubesat/last-profile first, publishes what it said as
+   `previous`, then overwrites it with this run.
+   Publishes  →  cubesat/host/status  (retained, boot: true)
 
 3. OBC starts, reads the retained host/status, and settles in STANDBY.
    EPS starts and begins publishing battery telemetry.
+
+3a. If `previous` was an unfinished FLIGHT, OBC waits for the first eps_status and
+    reads one thing: whether there is mains. With mains it stays here — the desk
+    case. Without it, the trip resumes, on the remainder of its own TTL and under
+    its own label. See "Resuming an interrupted trip".
 
 4. Nothing else runs. No sensors are polled, no rows are written, no dashboard,
    no access point — until a profile asks for it.
@@ -1426,7 +1501,8 @@ comes up idle and reachable, with the interrupted mission properly closed in the
    - switches the network from client to AP, brings up dnsmasq + mDNS
    - starts cubesat@adcs, cubesat@payload, cubesat@dhs, cubesat@comms, cubesat-dashboard
    - sets the CPU governor
-   - notes the profile in /var/lib/cubesat/last-profile (informational only)
+   - notes the profile, its deadline and the mission label in
+     /var/lib/cubesat/last-profile (evidence for the next boot, never instruction)
    Publishes the achieved state  →  cubesat/host/status  (retained)
 
 4. OBC reconciles achieved against requested.
@@ -1561,6 +1637,7 @@ cubesat-sim/
 │       │   ├── topics.py           #   the TOPICS dict and the payload envelope
 │       │   ├── mqtt.py             #   MQTTv5 factory, backoff, last will
 │       │   ├── cadence.py          #   mission state → poll interval
+│       │   ├── last_profile.py     #   the last-profile file: what the run before this one did
 │       │   ├── log.py              #   rotating file + console
 │       │   └── metrics.py          #   CPU / RAM / disk / temperature
 │       │
@@ -1584,6 +1661,7 @@ cubesat-sim/
 │       │   ├── profile_machine.py  #   request a profile, reconcile what HOSTD achieved
 │       │   ├── mission_machine.py  #   the legal moves between mission states
 │       │   ├── power_policy.py     #   what a battery percentage means, in one place
+│       │   ├── resume.py           #   may a reset put an interrupted FLIGHT back?
 │       │   ├── deploy.py           #   the bring-up self-test
 │       │   ├── health.py           #   who is still alive
 │       │   └── commands.py         #   parsing what the ground sent
@@ -1994,7 +2072,7 @@ Configuration is split three ways by how often it changes and how secret it is:
 
 | Where | What | Committed |
 |---|---|---|
-| [`config/config.yaml`](config/config.yaml) | Runtime defaults: broker, intervals, cadence per mission state, camera resolution | ✅ |
+| [`config/config.yaml`](config/config.yaml) | Runtime defaults: broker, intervals, cadence per mission state, camera resolution, the resume fences | ✅ |
 | `config/profiles.yaml` | Platform profile definitions and the external-unit registry | ✅ |
 | `.env` / environment | Per-deployment values and **all secrets** | ❌ never |
 
@@ -2040,7 +2118,10 @@ A profile may carry a `ttl_minutes`. On expiry the satellite falls back to `HOST
 Wi-Fi and SSH back — one of four ways out of a mistyped `FLIGHT`, in order of preference:
 
 1. **Power cycle.** Boots into `HOSTED` on the home network, because the profile is not persisted.
-   No tooling, no waiting — this is the whole reason not to persist it.
+   No tooling, no waiting — this is the whole reason not to persist it. The one exception proves
+   the rule rather than weakening it: an unfinished `FLIGHT` resumes itself only when the mains pin
+   says the satellite is *not* on a desk, so a power cycle at a desk still lands in `HOSTED` — see
+   [Resuming an interrupted trip](#resuming-an-interrupted-trip).
 2. **`set_profile` over the LoRa uplink**, which `COMMS` re-publishes like any other command.
 3. **TTL expiry**, as above. The split follows the rule that runs through this whole design:
    OBC decides what expiry *means*, while HOSTD — which holds the applied profile — turns the

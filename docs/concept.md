@@ -884,13 +884,15 @@ would be stamped from the epoch of the last boot.
   exactly as before. The stored file answers only *what*, never *whether*, which is why
   `last-profile` can grow fields without becoming an instruction.
 
-  The rule and its fences are [`ROADMAP.md` → W11](../ROADMAP.md#w11-flight-resumes-itself-after-an-unexpected-reset)
-  until it is written: resume `FLIGHT` alone — the only profile designed to run with nobody present
-  — only while HOSTD still holds the default profile it applied at boot, only with the absolute TTL
-  from before the reset still in the future, and only until three short-lived sessions in a row say
-  this is a boot loop rather than a flight. The resumed run says so on the radio and in its own
-  mission row, and so does a refusal to resume: a satellite that silently declines is
-  indistinguishable from one that never woke up.
+  The rule and its fences live in `src/cubesat/obc/resume.py`, with the field reference in
+  [`README.md` → Resuming an interrupted trip](../README.md#resuming-an-interrupted-trip): resume
+  `FLIGHT` alone — the only profile designed to run with nobody present — only while HOSTD still
+  holds the default profile it applied at boot, only with the absolute TTL from before the reset
+  still in the future, and only until three short-lived sessions in a row say this is a boot loop
+  rather than a flight. The resumed run says so on the radio and in its own mission row, and so does
+  a refusal to resume: a satellite that silently declines is indistinguishable from one that never
+  woke up. Written 2026-09-03; what it has never met is a real reset on a real trip, which is part
+  of the walk in `ROADMAP.md` → W10.
 - ~~**`FLIGHT` timelapse.**~~ **Answered 2026-09-01: a mission photographs itself, and there is no
   timelapse.** Photos on a walk are the point of taking the satellite on one, so they are not an
   opt-in parameter and not a command: while a mission is open, a frame is taken every

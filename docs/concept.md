@@ -208,13 +208,20 @@ it outright, no matter what the state wants.
 | `HOSTED` | idle, EPS watch | — | — | log + alert | poweroff |
 | `DEMO` | — | poll + stream + camera | throttled, dashboard kept | sensors only | poweroff |
 | `EXPO` | — | poll + stream + camera | throttled, AP + dashboard kept | sensors only, AP kept | poweroff |
-| `FLIGHT` | — | poll + log + track, a frame every 5 min | throttled, radio duty-cycled | log only, radio off | poweroff |
+| `FLIGHT` | — | poll + log + track, a frame every 5 min | throttled, radio duty-cycled | log only, still listening, beacon every 10 min | poweroff |
 | `DIAG` | — | as `FLIGHT`, separate DB | *not applicable* (mains) | report and stop | poweroff |
 | `MAINTENANCE` | services down | — | — | — | poweroff |
 
 The important reading: `LOW_POWER` and `SAFE` do **not** tear down the AP or the dashboard in
 `EXPO`. Losing the display in front of an audience because the battery hit 39 % would be the
 wrong behaviour, and the AP costs far less than the sensors it is throttling.
+
+**Nor does `SAFE` silence the radio** — the descent slows transmission down and never turns
+receiving off. COMMS keeps waking every 60 s to poll the inbox and beacons every 600 s
+(`config/config.yaml`, the `comms` cadence table and the `beacon` table beside it), because `SAFE`
+is reachable from `FLIGHT` through a subsystem fault: the state that most needs a `recover`
+would otherwise be the one state deaf to it, on the one profile where the radio is the only way
+in. Listening costs no airtime.
 
 ---
 
@@ -724,10 +731,16 @@ would be stamped from the epoch of the last boot.
   telemetry: one message is one complete observation, LoRa airtime is duty-cycle limited, and what
   the radio owes a satellite you cannot see is *alive, and where* — not the whole record, which is
   in DHS. It is never truncated; it drops whole optional fields in priority order instead.
-- **The Heltec cannot actually be powered down.** It is fed from the Pi's 5 V pin. "Radio off"
-  in `SAFE`/`LOW_POWER` can currently only mean "stop talking to it" (and possibly Meshtastic's
-  own power-saving config) — real power-off needs a switch on that 5 V line: a MOSFET driven
-  from a spare pin on the IO Expansion HAT. Worth deciding before claiming a radio-off state.
+- **The Heltec cannot be powered down, and that is the right way round.** It is fed from the Pi's
+  5 V pin, so "radio off" can only ever mean "stop talking to it". Cutting that rail — a MOSFET on
+  it, driven from a spare pin on the IO Expansion HAT — was considered and **rejected on
+  2026-09-02**: the radio is the one subsystem the satellite cannot afford to lose. It is the only
+  way into `FLIGHT`, where there is no Wi-Fi and no SSH, and it is the recovery path out of `SAFE`,
+  which is reachable from there. A switch on that line would put "the satellite can no longer be
+  commanded" one GPIO fault, one wrong policy or one brownout away, and no power saving is worth
+  that. So the modem stays powered in every state and every profile, and what the state machine
+  rations is transmission — `beacon` and the duty cycle — never the hardware. This is the same rule
+  as *Quiet is not deaf*, one layer down.
 - **SD card wear in `FLIGHT`.** Continuous SQLite writes plus journald on a card, unattended,
   on battery. The database half is done — `dhs/schema.py` opens WAL with `synchronous = NORMAL`,
   which also lets DASHBOARD read the file while DHS writes it — and narrowing persistence to

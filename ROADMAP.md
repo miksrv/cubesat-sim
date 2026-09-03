@@ -144,7 +144,7 @@ the precedent: discrete events with their own timestamps, kept because a 30 s te
 stand for them. Until that decision is made, the four events above go into `observed.ts`; when the
 table exists, the widget reads it for history and keeps deriving live entries the same way.
 
-### The mesh preset: the satellite is moved, the personal node is not — 2026-09-02
+### The mesh preset: both nodes are moved — 2026-09-02
 
 The satellite's Heltec now runs `MEDIUM_FAST` on frequency slot 45, `hop_limit 6`,
 `config_ok_to_mqtt true`, region `US` unchanged, channel 1 `CubeSat` and its PSK verified intact
@@ -154,18 +154,17 @@ the node visible at all are recorded in
 [`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md) → Modem preset and the
 local mesh, with the commands.
 
-**What is left, and the first item is urgent in the practical sense: the two nodes cannot hear each
-other right now.**
+The personal node — the one node the satellite's radio has ever been tested against — was moved to
+the same settings the same day, so there is a ground link again: nodes on different presets do not
+demodulate each other at all.
 
-1. **Move the personal node to the same four settings.** It is still on the factory `LONG_FAST`, so
-   until it is moved there is no ground link at all — nodes on different presets do not demodulate
-   each other, and the satellite's radio will look dead from the phone. This is the one node the
-   satellite's radio has ever been tested against.
-2. **Read both nodes back with `--info` and compare them to each other, not to a list.** Preset,
+**What is left.**
+
+1. **Read both nodes back with `--info` and compare them to each other, not to a list.** Preset,
    `channel_num`, `hop_limit`, region, and channel 1 `CubeSat` with its PSK on both. The personal
    node has been configured by hand over several sessions and has never been audited against the
    satellite; a setting that drifted there is indistinguishable from a satellite fault.
-3. ~~Watch `meshview.bayme.sh/nodelist` for `CSAT`.~~ **Done, same evening.** The node was there
+2. ~~Watch `meshview.bayme.sh/nodelist` for `CSAT`.~~ **Done, same evening.** The node was there
    within a minute, 72 gateways published its first broadcast, a stranger traceroutes it, and the
    hop arithmetic behind `radio_log.hops` is measured rather than inferred — the numbers and what
    they do and do not prove are in
@@ -174,11 +173,6 @@ other right now.**
    bayme.sh router, −5.25 dB SNR / −94 dBm from indoors). The 72 are what the mesh does after that
    single link, so the reading to repeat is the *direct* receivers from where `FLIGHT` actually
    goes.
-4. **Decide the privacy consequence rather than drifting into it.** bayme.sh asks operators to
-   enable `Ok to MQTT` for map visibility, and node info rides the primary channel regardless. In
-   `FLIGHT` that is the operator's walking route on a public map, as coarsely as the gateways that
-   heard it. The contents of channel 1 stay closed either way, and the flag can be cleared for a
-   real trip without touching anything else.
 
 ### Commands must come from the private channel, and nothing else — decided 2026-09-02
 
@@ -432,25 +426,16 @@ Tracked in [`docs/concept.md` → Open questions](docs/concept.md#open-questions
 | Q1 | `BMP280` at `0x76` duplicates the SEN0501 pressure reading — keep it, and for what? Log both and compare over a few sessions; `DIAG` is the natural place, now that it rehearses a real mission | — |
 | Q2 | Recovering a trip after an unexpected reset. The profile is deliberately not persisted, so a brownout mid-trip silently ends the recording. Fixing it without a stored profile means acting on a **boot reason** — mains absent at boot means the satellite is demonstrably not on a desk. Deferred until `FLIGHT` has seen enough use to know whether spurious resets happen at all | P6 |
 | Q4 | May a human move a fault-latched (`SAFE`) satellite into `EXPO` to show it to an audience? Probably yes, with the fault displayed — but it needs deciding rather than falling out of the implementation | — |
-| Q5 | The Heltec cannot actually be powered down — it is fed from the Pi's 5 V pin, so "radio off" can only mean "stop talking to it". Real power-off needs a MOSFET on that rail, driven from a spare HAT pin | P6 |
-
----
-
-## Still to do on the satellite itself
-
-Not code — the box in the corner.
-
-- **Re-aim the camera.** The first test frame was mostly two of the satellite's own frame struts.
 
 ---
 
 ## Notes
 
-- The phase order in **The Rewrite** is a dependency order, not a preference: `P2` and `P6` are what
-  is left of it.
+- The phase order in **The Rewrite** is a dependency order, not a preference: `P6` is what is left
+  of it.
 - **This file holds only what is outstanding.** The pre-rewrite bug, configuration and refactoring
   logs that used to live here are gone: the code they describe no longer exists, and
-  `docs/code_smells.md`, `docs/refactoring_plan.md` and `docs/architecture.md` keep the detailed
-  write-ups as the historical record they are. Closed decisions are in
+  `docs/code_smells.md` and `docs/architecture.md` keep the detailed write-ups as the historical
+  record they are. Closed decisions are in
   [`docs/concept.md`](docs/concept.md); settled hardware findings are in the relevant
   `docs/hardware-*.md` and at the constants they justify.

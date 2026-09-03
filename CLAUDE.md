@@ -51,7 +51,7 @@ side.
 | `docs/hardware-*.md` | The real hardware, per component. The authority for every register and pin |
 | `ROADMAP.md` | What is **left**, and the bench checks the code is waiting on. Finished work is deleted from it rather than ticked off — closed decisions live in `docs/concept.md`, settled hardware findings in `docs/hardware-*.md` and at the constants they justify |
 | `PLAN.md` | Working document (Russian) for the LoRa migration; all stages closed |
-| `docs/architecture.md`, `docs/code_smells.md`, `docs/refactoring_plan.md` | Pre-rewrite record only — historical |
+| `docs/architecture.md`, `docs/code_smells.md` | Pre-rewrite record only — historical |
 
 ## Project Overview
 

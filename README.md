@@ -1373,7 +1373,8 @@ This is the recovery path for `FLIGHT`, where Wi-Fi is down and there is no SSH.
    OBC asks HOSTD for the powersave governor.
    Under EXPO the AP and the dashboard stay up.
 
-3. 18 % → SAFE: sensors only, radio off, no camera.
+3. 18 % → SAFE: sensors only, no camera; the radio keeps listening and
+   beacons every 10 min instead of every minute.
 
 4. 9 %  → CRITICAL: OBC tells DHS to flush and close the mission
    (end_reason = battery_critical), then asks HOSTD to power off.
@@ -1928,7 +1929,6 @@ journald on an SD card, unattended and on battery, is the wear scenario worth av
 | [docs/hardware-*.md](docs) | One file per component in the [Hardware](#hardware) table: specs, Pi setup, bench-validation notes, gotchas |
 | [PLAN.md](PLAN.md) | Working document (in Russian): the LoRa migration from the 52Pi IoT Node(A) to Heltec V4 + Meshtastic. Closed — all stages done, and the link has run on the satellite |
 | [docs/code_smells.md](docs/code_smells.md) | Historical audit of the pre-rewrite code |
-| [docs/refactoring_plan.md](docs/refactoring_plan.md) | Pre-rewrite refactoring plan; historical — its HAL items (H1–H7) are what `src/cubesat/hal/` became |
 | [ROADMAP.md](ROADMAP.md) | What is **left**: the bench checks the code is waiting on, the decisions still open, and the work that can be written without the satellite. Finished work is deleted from it rather than ticked off |
 
 ---

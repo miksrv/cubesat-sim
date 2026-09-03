@@ -33,7 +33,6 @@ code is worth writing.
 | [W4](#w4-adcs-mounting-offset--requested-2026-09-01-to-be-done-on-the-running-satellite) | `[ ]` needs the satellite | The ADCS mounting offset, captured as data |
 | [W5](#w5-a-ships-log-not-mission-events--requested-2026-09-01) | `[ ]` needs a decision | A ship's log, not "Mission Events" |
 | [W6](#w6-the-mesh-preset-both-nodes-are-moved--2026-09-02) | `[ ]` bench | Audit both mesh nodes against each other |
-| [W7](#w7-commands-must-come-from-the-private-channel-and-nothing-else--decided-2026-09-02) | `[ ]` not started | Commands must come from the private channel — **do this first** |
 | [W8](#w8-an-answer-is-not-a-beacon-beacon-must-ration-the-schedule-only--decided-2026-09-02) | `[ ]` not started | An answer is not a beacon: `beacon` rations the schedule only |
 | [W9](#w9-and-the-answer-has-to-say-what-happened--same-decision-2026-09-02) | `[ ]` not started | The ack must say what happened, and carry the `photo` fields |
 | [W10](#w10-the-walk-to-work-what-to-check-on-the-first-real-trip) | `[ ]` the trip itself | The walk to work, end to end |
@@ -45,6 +44,7 @@ code is worth writing.
 | [V10](#v10-whether-the-private-channel-is-relayed-at-all) | `[ ]` bench | Whether the private channel is relayed at all |
 | [V13](#v13-the-x728-charge-rate-on-mains) | `[ ]` bench | The X728 charge rate on mains |
 | [V14](#v14-bno055-low-byte-bit-7-flips-reach-the-record) | `[ ]` bench | BNO055 low-byte bit-7 flips reach the record |
+| [V15](#v15-the-channel-index-a-received-packet-reports) | `[ ]` bench | The channel index a received packet reports — the uplink filter rests on it |
 | [Q1](#q1-keep-the-bmp280-at-0x76-and-for-what) | `[ ]` open | Keep the BMP280 at `0x76`, and for what? |
 | [Q2](#q2-recovering-a-trip-after-an-unexpected-reset) | `[ ]` open | Recovering a trip after an unexpected reset |
 | [Q4](#q4-may-a-safe-satellite-be-shown-in-expo) | `[ ]` open | May a `SAFE` satellite be shown in `EXPO`? |
@@ -220,85 +220,6 @@ demodulate each other at all.
    single link, so the reading to repeat is the *direct* receivers from where `FLIGHT` actually
    goes.
 
-### W7: Commands must come from the private channel, and nothing else — decided 2026-09-02
-
-**There is no channel filter on the uplink today, and since this morning that is no longer
-theoretical.** Nothing between the radio and `cubesat/command` looks at which channel a message
-arrived on: `hal/rpi/meshtastic_radio.py:_on_receive` filters on `portnum == TEXT_MESSAGE` alone and
-records `text`, `sender`, `snr`, `rssi`, `hops` — not the channel — and `CommsService._relay` then
-translates a bare verb or relays well-formed JSON whatever channel carried it. The node's primary
-channel is the stock public one, so **the community mesh's chat reaches the command parser**. The
-vocabulary is ordinary English: `ping`, `photo`, `mission`, `sys`, `env`, `pos`, `safe`, `recover`,
-`beacon on`. A stranger typing `profile flight` into the Bay Area chat takes this satellite's Wi-Fi
-down; `safe` latches it; a `!` line that does not parse spends airtime on an `err=unknown` for
-somebody else's typo. Until 2026-09-02 the node was alone with the operator's on a private frequency
-slot, which is why this never mattered before — the preset change is what put it in a room with
-everybody.
-
-**The credential is the channel, not the node.** Anyone holding the `CubeSat` key may command the
-satellite, and that is the decision rather than an accident: a key is portable. When the operator's
-own node is flat, the recovery is to load the channel URL onto any other node and command from
-there — an allowlist of node ids would make a dead battery a locked door with the key on the far
-side, which is the same mistake as a `SAFE` that cannot hear a `recover`. PKI direct messages were
-considered and rejected for this: they authenticate the sender properly, but they bind the way in to
-one keypair — and the Heltec's keypair does not survive a reflash.
-
-What to build:
-
-1. **Carry the channel on the message.** `RadioMessage` gains the received channel index, read in
-   `_on_receive`. The library exposes it as the packet's `channel` key, **absent on the primary
-   channel** (protobuf omits a zero), so absent must read as 0 rather than as unknown — that is
-   inferred from the library, so it wants a marker at the constant and a bench check: send one line
-   on each channel and log what arrives.
-2. **Drop anything not on `config.LORA_CHANNEL_INDEX`, in `_collect_uplink`** — and drop it
-   *before* the `comms_radio` publish, not after. The distinction matters and the first draft of
-   this item got it wrong:
-
-   * **On our channel, everything stays on the record**, including a line that did not parse. That
-     is the existing reasoning at the publish ("before the relay, so gibberish is still on the
-     record"), and it holds: a malformed command from somebody holding the key is exactly what
-     wants debugging.
-   * **On any other channel — and in a direct message — nothing reaches MQTT at all.** One line in
-     the service log with the sender, the channel, the SNR and a byte count, and **not the text**.
-
-`comms_radio` is not a private surface, which is what makes this more than tidiness. The dashboard's
-live Radio Link Log renders it — **found on 2026-09-02 when a message typed into the primary channel
-turned up in the widget** — `EXPO` puts that dashboard in front of a room, and in `FLIGHT` and
-`DIAG` DHS writes those rows into `radio_log` on the card, from where they travel inside a mission
-export. So publishing a stranger's chat means displaying it to an audience and archiving it in our
-own flight record. The community mesh's conversation is not this satellite's link, and the satellite
-has no business keeping it. 3. **Refuse in silence.** No `err=`, no ack, nothing transmitted — not
-even for a `!` line. The `!` contract exists so *the operator* is never left wondering why nothing
-happened; answering a stranger instead spends airtime on a shared band and teaches a mesh of several
-hundred nodes that this one talks back. A log line, and that is all. 4. **Do not narrow listening.**
-`lora_listening` stays the profile's call alone. The filter is on *acting*, not on hearing, and the
-inbox must keep being polled — for the reason written at `lora_listening` itself. 5. **Direct
-messages are not a command path** and are dropped by the same rule, being on no channel of ours.
-Nothing needs building for that; it falls out of rule 2.
-
-**An observation from the same evening, mechanism not established: relayed foreign chat arrived
-with no sender.** Two community-mesh messages reached the satellite with `sender: null` — the
-library gave no `fromId` — while every direct packet from the operator's own node carried
-`!698204b0`. Both of the null ones had `hops: 3`; one of them also had `snr: null` with `rssi`
-present, which is recorded at `_on_receive` where the opposite used to be asserted. Why `fromId` is
-missing has **not** been investigated: relaying, a sender absent from the node database, and a
-differently-shaped packet dict are all candidates, and this is written down as a measurement rather
-than a rule.
-
-Two things follow whichever way it goes. **Filtering by sender is not even available as a
-shortcut** — the field is empty on precisely the traffic that would have to be refused, so the
-channel is the only discriminator that is actually present on every packet. And the local log line
-in rule 2 has to render a missing sender honestly instead of implying an anonymous node was
-identified. If the pattern turns out to be real and general, it is worth knowing why: a null
-`fromId` on relayed traffic would mean `radio_log.sender` is silent for everything the satellite did
-not hear directly, which limits what a mission's radio log can say about a trip afterwards.
-
-When it lands, three documented statements change and must change with it: `CLAUDE.md` and
-`README.md` both say COMMS relays a command *verbatim from any channel* and call it deliberate, and
-`delete_mission`'s fence leans on it explicitly ("still reachable as hand-composed JSON over the
-radio"). That property survives for the operator and dies for everybody else, so the fence gets
-stronger — but the sentences describing it are wrong the moment the filter exists.
-
 ### W8: An answer is not a beacon: `beacon` must ration the schedule only — decided 2026-09-02
 
 **The rule.** COMMS answers a command whenever it is in a position to hear one. `beacon` governs one
@@ -343,9 +264,10 @@ Everything that names it: `comms/compact.py` (the two `_beacon` builders), `comm
 `CLAUDE.md` → Quiet is not deaf, the `DEMO` and `EXPO` comments in `profiles.yaml`, and in the
 groundstation repo `QuickCommandsWidget`, `MissionConsoleWidget` and the `CommsStatus` type.
 
-**Order: this lands after the channel filter above, or with it.** Until commands are restricted to
-the private channel, "always answer a command" means any stranger in the community chat can make
-this satellite transmit — the filter is what makes the rule safe rather than merely nicer.
+**The order this depended on is satisfied.** The uplink channel filter landed on 2026-09-03, so
+only a holder of the `CubeSat` key can ask a question at all; until then "always answer a command"
+would have meant any stranger in the community chat could make this satellite transmit. That filter
+is what makes this rule safe rather than merely nicer, and it is now in place.
 
 **Where "always" stops, stated so it is not read as absolute.** The gate is `lora_listening`, so a
 profile with `downlink.lora: false` still says nothing — there the radio is not part of the mission
@@ -552,6 +474,24 @@ the cost of half a second of latency — a decision, not a fix.
 
 **Why it is not settled.** They are physically plausible values and DHS writes them into `attitude`
 as measured, so a replay shows an 8° twitch or a 0.13 g kick that never happened.
+
+#### V15: The channel index a received packet reports
+
+**The check.** Send one line to the satellite on the primary channel and one on channel 1
+`CubeSat` — from the operator's node or the phone app — and log the packet dict each arrives as.
+What is being read is the `channel` key: expected present as `1` on the private channel and
+**absent**, not `0`, on the primary. A direct message is worth a third line, since it is refused by
+the same rule and nobody has looked at what it carries either.
+
+**Why it is not settled.** The absence is inferred from protobuf omitting a zero field, not from a
+packet anyone has read — the marker is at `CHANNEL_KEY` in `hal/rpi/meshtastic_radio.py`, and the
+uplink channel filter landed on 2026-09-03 resting its whole discrimination on it
+(`comms/service.py` → `_refuse_uplink`). The two ways it can be wrong are not symmetric. If the key is present as
+`0` on the primary, nothing changes: `0` is not the command channel either way. If it is absent on
+*both*, every message reads as the primary and the satellite goes deaf to its own uplink — loud,
+immediate, and recoverable, which is why the inference was written to fail in that direction rather
+than towards a public command channel. What would be silent is the reverse assumption, so it is not
+the one in the code.
 
 ---
 

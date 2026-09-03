@@ -19,13 +19,24 @@ recording, and with the recorder living inside the link service, turning the
 link off meant losing the recording. Do not move persistence back here.
 
 **The second job is the load-bearing one.** Nothing downstream knows or cares
-which channel a command arrived on — OBC, PAYLOAD and COMMS itself handle a
+which *link* a command arrived on — OBC, PAYLOAD and COMMS itself handle a
 command relayed off the radio exactly as they handle one a laptop published on
 the LAN. That is what makes ``FLIGHT`` recoverable: Wi-Fi is down, there is no
 SSH, and ``set_profile`` typed into a Meshtastic phone app is the way back.
 COMMS does not interpret what it relays; it checks the shape and puts it on the
 bus, and if the command was addressed to COMMS it comes back around the loop as
 an ordinary MQTT message and is handled there.
+
+**On the radio side that is one mesh channel and no other.** An uplink counts
+only if it arrived on ``config.LORA_CHANNEL_INDEX`` — the private ``CubeSat``
+channel with its own key. Everything else the node hears, the public primary
+channel and direct messages included, is dropped in ``_collect_uplink`` before
+it reaches ``cubesat/command`` *or* ``cubesat/comms/radio``, with one log line
+and nothing transmitted in reply. Until 2026-09-02 this node sat alone with the
+operator's on a private frequency slot; the mesh preset that gave it a ground
+link again also put it in a room with several hundred strangers, whose ordinary
+English chat — ``ping``, ``photo``, ``safe``, ``profile flight`` — is this
+satellite's command vocabulary. See ``_refuse_uplink``.
 
 **The profile is the envelope; the runtime flag lives inside it.** The active
 profile's ``downlink`` block decides whether the radio may run at all, and
@@ -102,7 +113,7 @@ from cubesat.common.topics import TOPICS
 from cubesat.comms import beacon, compact, mesh
 from cubesat.comms.mesh import MeshChannel
 from cubesat.hal import registry
-from cubesat.hal.interfaces import Radio
+from cubesat.hal.interfaces import Radio, RadioMessage
 
 GET_TELEMETRY = "get_telemetry"
 SET_COMMS_CONFIG = "set_comms_config"
@@ -167,6 +178,7 @@ class CommsService(Service):
         radio: Radio | None = None,
         profiles: ProfileConfig | None = None,
         *,
+        channel: int | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__()
@@ -175,6 +187,12 @@ class CommsService(Service):
         #: question — "when was this observed" rather than "how long since we
         #: last spent airtime" — and a clock adjustment must not answer both.
         self._clock = clock
+        #: The one mesh channel a command may arrive on — the same index the
+        #: driver transmits on, because a satellite that answers where it does
+        #: not listen is a satellite nobody can hold a conversation with. Read
+        #: once here rather than per message, and injectable so a test can name
+        #: a channel without depending on which one is shipped.
+        self._command_channel = channel if channel is not None else config.LORA_CHANNEL_INDEX
         self._mesh = MeshChannel(radio if radio is not None else registry.radio(), self.log)
         self._profiles = profiles if profiles is not None else profiles_module.load()
 
@@ -486,11 +504,27 @@ class CommsService(Service):
 
         Gated on ``lora_listening`` — the profile — and not on the runtime
         flag. This is the line that makes turning the transmitter off over the
-        radio survivable.
+        radio survivable. Note that the channel filter below narrows what is
+        *acted on*, never what is heard: the inbox is polled in full, for the
+        reason written at ``lora_listening`` itself.
+
+        **The credential is the channel, not the node.** Anyone holding the
+        ``CubeSat`` key may command this satellite, and that is the decision
+        rather than an accident — a key is portable, so an operator whose own
+        node is flat loads the channel URL onto another one and carries on. An
+        allowlist of node ids would make a dead battery a locked door with the
+        key on the far side of it, which is the same mistake as a ``SAFE`` that
+        cannot hear a ``recover``. It is also not even available: the two
+        relayed chat packets seen on 2026-09-02 arrived with no ``fromId`` at
+        all, so the sender field is empty on precisely the traffic that has to
+        be refused.
         """
         if not self.lora_listening:
             return
         for message in self._mesh.receive():
+            if message.channel != self._command_channel:
+                self._refuse_uplink(message)
+                continue
             self.log.info(
                 "LoRa message from %s (snr %s)", message.sender or "an unknown node", message.snr
             )
@@ -510,6 +544,44 @@ class CommsService(Service):
                 hops=message.hops,
             )
             self._relay("lora", message.text)
+
+    def _refuse_uplink(self, message: RadioMessage) -> None:
+        """Drop a message that arrived on somebody else's channel, in silence.
+
+        **Silence outward and nothing onto MQTT.** No ack, no ``err=``, nothing
+        transmitted — not even for a ``!`` line, whose contract exists so that
+        *the operator* is never left wondering why nothing happened. Answering a
+        stranger instead spends airtime on a shared band and teaches a mesh of
+        several hundred nodes that this one talks back.
+
+        **Refused before the ``comms_radio`` publish, not after**, and that
+        order is the whole point of this method existing rather than a check
+        further down. ``comms_radio`` is not a private surface: the dashboard's
+        live Radio Link Log renders it — found on 2026-09-02, when a line typed
+        into the public primary channel turned up in the widget — ``EXPO`` puts
+        that dashboard in front of a room, and in ``FLIGHT`` and ``DIAG`` DHS
+        writes those rows into ``radio_log`` on the card, from where they travel
+        inside a mission export. Publishing a stranger's chat would mean
+        displaying it to an audience and archiving it in our own flight record.
+        On *our* channel the opposite rule holds and everything stays on the
+        record, gibberish included: a malformed command from somebody holding
+        the key is exactly what wants debugging.
+
+        So the only trace is this line, and it carries the link facts without
+        the text. A missing sender is rendered as missing — the null ``fromId``
+        on relayed traffic is an unexplained observation, and a log that wrote
+        "from None" or invented a name would read as an identification that
+        never happened.
+        """
+        self.log.warning(
+            "refused a LoRa message on channel %d: commands are taken from channel %d only "
+            "(sender %s, snr %s, %d bytes; the text is not recorded)",
+            message.channel,
+            self._command_channel,
+            message.sender if message.sender else "not reported",
+            message.snr if message.snr is not None else "not reported",
+            len(message.text.encode("utf-8")),
+        )
 
     def _relay(self, source: str, text: str) -> None:
         """Put one uplinked command on the bus, byte for byte as it arrived.
@@ -824,11 +896,22 @@ class CommsService(Service):
         "deaf" are now genuinely different states, and this topic is the only
         place that difference is visible. Collapsing them would turn a
         debuggable radio into a mystery.
+
+        ``command_channel`` is the third of that set and exists for the same
+        reason. Since the uplink filter landed, hearing a message and acting on
+        one are different things too, and the index is what separates them —
+        a satellite whose ground station is one channel out transmits and
+        receives perfectly and simply never meets it, which is the hardest kind
+        of radio fault to diagnose from the outside. It is on the status topic
+        so the answer is one retained message rather than an SSH session, and
+        it is the field that would show bench check V15 having gone the wrong
+        way: every uplink refused, with the reported channel reading 0.
         """
         snapshot: dict[str, Any] = {
             "radio": self._mesh.describe(),
             "lora_enabled": self.lora_enabled,
             "lora_listening": self.lora_listening,
+            "command_channel": self._command_channel,
             "last_uplink": self._last_uplink,
         }
         if snapshot == self._published and not force:

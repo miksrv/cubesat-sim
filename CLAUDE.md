@@ -159,7 +159,9 @@ rule, so it cannot live in the broker's ACL), it is refused for the mission curr
 recorded, and it has **no compact spelling**, so it is in neither the radio vocabulary nor the
 console's mirror of it and cannot be met by somebody exploring what the satellite understands. (It
 is still reachable as hand-composed JSON over the radio, because COMMS relays a well-formed command
-verbatim from any channel — that property is deliberate and worth more than a fence here.) Do not
+verbatim — that property is deliberate and worth more than a fence here. Since 2026-09-02 it is
+verbatim *from the private `CubeSat` channel only*, which makes this fence stronger rather than
+weaker: composing that JSON by hand is deliberate, and now it also takes the channel key.) Do not
 give it a compact spelling, and do not add an HTTP `DELETE` to the dashboard: `archive.py` opens the
 file `mode=ro` precisely so there can only ever be one writer.
 
@@ -320,8 +322,23 @@ a copy that disagrees after the first edit.
 
 **Every command works identically over MQTT and over LoRa** —
 `COMMS` re-publishes uplinked commands verbatim onto `cubesat/command`, so nothing downstream
-knows or cares which channel a command arrived on. This is also the recovery path for `FLIGHT`,
+knows or cares which *link* a command arrived on. This is also the recovery path for `FLIGHT`,
 where Wi-Fi is down and there is no SSH. Preserve that property.
+
+**On the radio side that is one mesh channel and no other.** An uplink counts only if it arrived on
+`config.LORA_CHANNEL_INDEX` — the private `CubeSat` channel with its own key. Everything else the
+node hears, the public primary channel and direct messages included, is dropped in
+`comms/service.py` → `_collect_uplink` **before** the `cubesat/comms/radio` publish, so a stranger's
+chat reaches neither the command parser, nor the dashboard's live Radio Link Log, nor `radio_log` on
+the card and the mission export it travels inside. One log line — sender, channel, SNR, byte count,
+never the text — and **nothing is transmitted back, not even an `err=` for a `!` line**: answering
+spends airtime on a shared band and teaches a mesh of several hundred nodes that this node talks
+back. The filter is on *acting*, never on hearing: `lora_listening` stays the profile's call and the
+inbox is still polled in full. The credential is deliberately the channel's key and not the node id
+— a key is portable, so a flat operator node is recovered by loading the channel URL onto another
+one, whereas a node allowlist would be a locked door with the key on the far side. It is not even
+available as a shortcut: relayed foreign chat arrives with `sender: null`, which is precisely the
+traffic that has to be refused.
 
 See `README.md` for full payload schemas and the SQLite table layout.
 

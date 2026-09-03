@@ -10,9 +10,15 @@ on a bad packet has removed the recovery path it exists to provide.
 ``uplink_command`` is the other half, and it is deliberately not a mesh-only
 function. **Every command works identically over MQTT and over LoRa**, because
 COMMS re-publishes an uplink verbatim onto ``cubesat/command`` and nothing
-downstream knows or cares which channel it arrived on. One validator, applied to
-both channels, is what keeps that true — two would eventually disagree about what
+downstream knows or cares which link it arrived on. One validator, applied to
+both links, is what keeps that true — two would eventually disagree about what
 a command is, and then a command would work over one link and not the other.
+
+Nothing here looks at the *mesh* channel, and that is the right place for that
+rule not to be: which channel may carry a command is COMMS' policy and lives in
+``service.py`` → ``_refuse_uplink``, ahead of this function. By the time a line
+reaches ``uplink_command`` it has already been established as coming from the
+private channel, and what is left to decide is only whether it is a command.
 
 **Commands arrive as JSON text.** Not a compact binary encoding, for the same
 reason the beacon going out is readable: a person can type

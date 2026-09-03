@@ -1294,3 +1294,162 @@ def test_a_failed_transmission_is_on_the_record_as_unsent(comms):
     event = [e for e in radio_events(client) if e["direction"] == "tx"][-1]
     assert event["sent"] is False
     assert event["kind"] == "beacon"
+
+
+# ── the command channel ──────────────────────────────────────────────────────
+#
+# The credential is the channel, not the node. Since the mesh preset changed on
+# 2026-09-02 this satellite shares a public primary channel with several hundred
+# strangers whose ordinary English — `ping`, `photo`, `safe`, `profile flight` —
+# is its command vocabulary, so anything that did not arrive on the private
+# channel must reach neither `cubesat/command` nor `cubesat/comms/radio`, and
+# must be answered with nothing at all.
+#
+# Both indices below are named here rather than read from the configuration: the
+# rule is "the channel this service was told to accept", and a test that read the
+# shipped value would stop testing it the day that value legitimately changes.
+
+#: What the service under test is told to accept.
+OUR_CHANNEL = 7
+#: A secondary channel that is not ours — somebody else's private traffic.
+ANOTHER_CHANNEL = 3
+#: The primary. On this node it is the stock public one, and it is also where a
+#: direct message lands: a DM is on no channel of ours either way.
+PRIMARY_CHANNEL = 0
+
+
+def test_a_command_on_our_channel_is_relayed_as_it_always_was(comms):
+    service, client = comms(channel=OUR_CHANNEL)
+    obc(client)
+    service._mesh._radio.inject(RECOVER, channel=OUR_CHANNEL)
+    service.tick()
+
+    assert relayed(client) == [{"command": "recover"}]
+
+
+def test_on_our_channel_a_line_that_did_not_parse_still_stays_on_the_record(comms):
+    # The other half of the rule, and the reason the filter had to go *before*
+    # the publish rather than after: on our own channel everything is recorded,
+    # because a malformed command from somebody holding the key is exactly the
+    # traffic worth debugging.
+    service, client = comms(channel=OUR_CHANNEL)
+    obc(client)
+    service._mesh._radio.inject("not even json", channel=OUR_CHANNEL)
+    service.tick()
+
+    received = [e for e in radio_events(client) if e["direction"] == "rx"]
+    assert [e["text"] for e in received] == ["not even json"]
+
+
+def test_a_command_on_another_channel_reaches_the_bus_not_at_all(comms):
+    service, client = comms(channel=OUR_CHANNEL)
+    obc(client)
+    service._mesh._radio.inject(RECOVER, channel=ANOTHER_CHANNEL)
+    service.tick()
+
+    assert relayed(client) == []
+    assert status(client)["last_uplink"] is None
+
+
+def test_a_refused_message_never_reaches_the_radio_log(comms):
+    # The order is the point. `comms_radio` is rendered by the dashboard's live
+    # Radio Link Log, which `EXPO` puts in front of a room, and DHS writes those
+    # rows into `radio_log` on the card in `FLIGHT` and `DIAG`, from where they
+    # travel inside a mission export. A stranger's chat must not be displayed to
+    # an audience or archived in our own flight record — so it is dropped ahead
+    # of the publish, and the text appears in nothing this service says.
+    service, client = comms(channel=OUR_CHANNEL)
+    obc(client)
+    service._mesh._radio.inject("hello mesh, anyone near Sunol?", channel=PRIMARY_CHANNEL)
+    service.tick()
+
+    assert [e for e in radio_events(client) if e["direction"] == "rx"] == []
+    assert all("Sunol" not in published.payload for published in client.published)
+
+
+def test_a_direct_message_is_not_a_command_path(comms):
+    # Nothing is built for this: a DM is on no channel of ours, so it falls out
+    # of the same rule. PKI direct messages were considered as the credential
+    # and rejected — they bind the way in to one keypair, and the Heltec's does
+    # not survive a reflash.
+    service, client = comms(channel=OUR_CHANNEL)
+    obc(client)
+    service._mesh._radio.inject(RECOVER, channel=PRIMARY_CHANNEL)
+    service.tick()
+
+    assert relayed(client) == []
+    assert [e for e in radio_events(client) if e["direction"] == "rx"] == []
+
+
+def test_a_stranger_gets_no_answer_not_even_an_error(comms):
+    # `!launch` earns an `err=unknown` from somebody holding the key, because
+    # the `!` contract exists so the operator is never left wondering. Off our
+    # channel it earns nothing: answering spends airtime on a shared band and
+    # teaches a mesh of several hundred nodes that this one talks back.
+    clock = Clock()
+    service, client = comms(channel=OUR_CHANNEL, clock=clock)
+    obc(client)
+    service._mesh._radio.inject("!launch", channel=ANOTHER_CHANNEL)
+    service.tick()
+    clock.advance(10.1)
+    service.tick()
+
+    assert sent_replies(service) == []
+
+
+def test_the_refusal_is_logged_with_the_link_facts_and_never_the_text(comms, caplog):
+    service, client = comms(channel=OUR_CHANNEL)
+    obc(client)
+    service._mesh._radio.inject(
+        "meet you at the ridge", sender="!167ff893", snr=0.25, channel=ANOTHER_CHANNEL
+    )
+    with caplog.at_level(logging.WARNING):
+        service.tick()
+
+    assert f"channel {ANOTHER_CHANNEL}" in caplog.text
+    assert f"channel {OUR_CHANNEL}" in caplog.text
+    assert "!167ff893" in caplog.text
+    assert "0.25" in caplog.text
+    assert str(len(b"meet you at the ridge")) in caplog.text
+    assert "meet you at the ridge" not in caplog.text
+
+
+def test_a_sender_the_library_did_not_give_is_reported_as_missing(comms, caplog):
+    # Both community-mesh messages seen on 2026-09-02 arrived with no `fromId`,
+    # mechanism unestablished — and one with no `rxSnr` either. The log has to
+    # say so rather than imply an anonymous node was identified, and this is
+    # also why filtering by sender is not even available as a shortcut: the
+    # field is empty on precisely the traffic that has to be refused.
+    service, client = comms(channel=OUR_CHANNEL)
+    obc(client)
+    service._mesh._radio.inject("relayed chatter", sender=None, snr=None, channel=PRIMARY_CHANNEL)
+    with caplog.at_level(logging.WARNING):
+        service.tick()
+
+    assert "sender not reported" in caplog.text
+    assert "snr not reported" in caplog.text
+    assert "None" not in caplog.text
+
+
+def test_the_inbox_is_still_polled_in_full(comms):
+    # The filter is on acting, not on hearing: a message that is refused must
+    # not stop the one behind it on our own channel from landing.
+    service, client = comms(channel=OUR_CHANNEL)
+    obc(client)
+    service._mesh._radio.inject("chatter", channel=PRIMARY_CHANNEL)
+    service._mesh._radio.inject(RECOVER, channel=OUR_CHANNEL)
+    service.tick()
+
+    assert relayed(client) == [{"command": "recover"}]
+
+
+def test_the_status_says_which_channel_commands_are_taken_from(comms):
+    # Hearing and acting are different things now, and nothing else on the wire
+    # separates them. A ground station one channel out from the satellite meets
+    # perfect transmission, perfect reception and no conversation; this is the
+    # one retained field that says which index would have worked.
+    service, client = comms(channel=OUR_CHANNEL)
+    obc(client)
+    service.tick()
+
+    assert status(client)["command_channel"] == OUR_CHANNEL

@@ -2,6 +2,7 @@ import time
 
 import pytest
 
+from cubesat.common import config
 from cubesat.hal.interfaces import Attitude, Environment, Position, Power
 from cubesat.hal.mock.camera import MockCamera
 from cubesat.hal.mock.environment import MockEnvironment
@@ -186,6 +187,23 @@ def test_radio_delivers_injected_messages_once():
     assert received[0].text == '{"command":"set_profile"}'
     assert received[0].sender and received[0].snr
     assert radio.poll() == []
+
+
+def test_an_injected_message_arrives_on_the_command_channel_by_default(monkeypatch):
+    # The mock stands in for this satellite's own node, which sits on the
+    # private channel — so the ordinary case needs no ceremony and the
+    # interesting one, a message from anywhere else, has to be asked for.
+    monkeypatch.setattr(config, "LORA_CHANNEL_INDEX", 4)
+    radio = MockRadio()
+    radio.inject("hello")
+    assert radio.poll()[0].channel == 4
+
+
+def test_an_injected_message_can_name_any_channel(monkeypatch):
+    monkeypatch.setattr(config, "LORA_CHANNEL_INDEX", 4)
+    radio = MockRadio()
+    radio.inject("hello", channel=0)
+    assert radio.poll()[0].channel == 0
 
 
 def test_radio_close_is_harmless():

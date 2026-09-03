@@ -162,9 +162,14 @@ class RadioMessage:
 
     Every link field is optional and None when the node did not report it —
     withheld rather than substituted, like every other reading in this project.
-    ``snr`` is the field the bench showed to be always present; ``rssi`` is
-    sometimes absent, and ``hops`` is derived from packet fields the bench has
-    not exercised yet (see the driver), so both lean on None freely.
+    **None of them is guaranteed**: ``rssi`` was long the sometimes-absent one
+    and ``snr`` the reliable one, until a relayed chat packet on 2026-09-02
+    arrived with ``rxSnr`` missing and ``rxRssi`` present — the exact opposite —
+    and two others arrived with no ``fromId`` at all. Nothing downstream may
+    assume any of the four is populated.
+
+    ``channel`` is the exception and is not optional, because it is the one
+    thing the uplink filter has to decide on. See its comment.
     """
 
     text: str
@@ -173,6 +178,16 @@ class RadioMessage:
     rssi: float | None = None
     #: Mesh hops this packet took to arrive: 0 means heard directly.
     hops: int | None = None
+    #: The Meshtastic channel index the message arrived on. 0 is the primary,
+    #: which on this node is the stock public one; the private ``CubeSat``
+    #: channel is ``config.LORA_CHANNEL_INDEX``, and COMMS accepts commands from
+    #: that channel and no other (``comms/service.py`` → ``_collect_uplink``).
+    #:
+    #: Deliberately an int with a default rather than ``int | None``: a driver
+    #: that cannot establish the channel reports the primary, so an
+    #: unestablished channel is refused like any other foreign one instead of
+    #: becoming a third case somebody has to remember to handle.
+    channel: int = 0
 
 
 @runtime_checkable

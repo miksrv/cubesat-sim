@@ -24,6 +24,8 @@ from cubesat.common import config
 from cubesat.hal.interfaces import MAX_RADIO_MESSAGE_BYTES, Device
 from cubesat.hal.rpi import meshtastic_radio
 from cubesat.hal.rpi.meshtastic_radio import (
+    CHANNEL_KEY,
+    PRIMARY_CHANNEL_INDEX,
     RECEIVE_TOPIC,
     TEXT_PORTNUM,
     MeshtasticRadio,
@@ -368,6 +370,35 @@ def test_an_implausible_hop_arithmetic_is_withheld_rather_than_recorded(bench, r
     radio.probe()
     bench.pub.deliver(text_packet("hello", hopStart=1, hopLimit=5))
     assert radio.poll()[0].hops is None
+
+
+def test_the_channel_a_message_arrived_on_rides_with_it(bench, radio):
+    # COMMS takes commands from one channel and refuses every other, so the
+    # index has to survive the driver: filtering here would put the service's
+    # policy inside the hardware.
+    radio.probe()
+    bench.pub.deliver(text_packet("hello", **{CHANNEL_KEY: 1}))
+    assert radio.poll()[0].channel == 1
+
+
+def test_a_packet_with_no_channel_key_reads_as_the_primary(bench, radio):
+    # Inferred, not measured: protobuf omits a zero field, so a message on the
+    # primary channel is expected to carry no `channel` key at all. Absent
+    # therefore means the public channel rather than "unknown", which is the
+    # reading that keeps the command parser closed. Bench check V15.
+    radio.probe()
+    bench.pub.deliver(text_packet("hello"))
+    assert radio.poll()[0].channel == PRIMARY_CHANNEL_INDEX
+
+
+@pytest.mark.parametrize("value", ["1", 1.0, None, True])
+def test_a_channel_that_is_not_a_plain_integer_reads_as_the_primary(bench, radio, value):
+    # A channel that could not be established is not our channel. `True` is the
+    # one worth naming: it is an int in Python and would otherwise compare equal
+    # to channel 1, which is exactly the index commands are taken from.
+    radio.probe()
+    bench.pub.deliver(text_packet("hello", **{CHANNEL_KEY: value}))
+    assert radio.poll()[0].channel == PRIMARY_CHANNEL_INDEX
 
 
 @pytest.mark.parametrize(

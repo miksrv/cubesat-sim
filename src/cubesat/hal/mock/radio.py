@@ -7,6 +7,7 @@ exercised without a second Meshtastic node on the desk.
 
 from __future__ import annotations
 
+from cubesat.common import config
 from cubesat.hal.interfaces import MAX_RADIO_MESSAGE_BYTES, RadioMessage
 
 #: Kept as an alias for the tests that name it. The number itself lives beside
@@ -40,14 +41,30 @@ class MockRadio:
     def inject(
         self,
         text: str,
-        sender: str = "!test0001",
-        snr: float = 6.0,
+        sender: str | None = "!test0001",
+        snr: float | None = 6.0,
         rssi: float | None = -96.0,
         hops: int | None = 0,
+        channel: int | None = None,
     ) -> None:
-        """Test seam: pretend a message arrived over the air."""
+        """Test seam: pretend a message arrived over the air.
+
+        ``channel`` defaults to the configured command channel because that is
+        what this node is: a loopback of the satellite's own radio, sitting on
+        the private ``CubeSat`` channel. Anything else — the public primary, a
+        direct message — is a case a test has to ask for by name, which is the
+        right way round: the interesting traffic is the traffic that must be
+        refused, and it should be visible in the test that exercises it.
+        """
         self._inbox.append(
-            RadioMessage(text=text, sender=sender, snr=snr, rssi=rssi, hops=hops)
+            RadioMessage(
+                text=text,
+                sender=sender,
+                snr=snr,
+                rssi=rssi,
+                hops=hops,
+                channel=channel if channel is not None else config.LORA_CHANNEL_INDEX,
+            )
         )
 
     def close(self) -> None:

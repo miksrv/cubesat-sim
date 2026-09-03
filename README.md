@@ -422,9 +422,11 @@ A sample is written only when there is orientation to write. Nine nulls would lo
 Timestamps are trustworthy offline: the DS1307 RTC on the X728 is enabled, so a track recorded with no network is not stamped from the last boot epoch.
 
 **Table `radio_log` — the radio's session log.** One row per radio transaction during a mission:
-every message received on the channel and every transmission attempted, observed by `COMMS` on
-`cubesat/comms/radio` and recorded here — `COMMS` itself persists nothing, exactly as with every
-sensor.
+every message received **on the satellite's own channel** and every transmission attempted, observed
+by `COMMS` on `cubesat/comms/radio` and recorded here — `COMMS` itself persists nothing, exactly as
+with every sensor. Traffic on any other mesh channel never reaches this topic at all (see
+[COMMS](#comms)), so what is on the record is this link's own conversation, gibberish included, and
+not the community mesh's.
 
 | Column group | Fields |
 |---|---|
@@ -451,7 +453,8 @@ trip".
 The only point of contact with the ground, in both directions — and, after the split above, *only* that. It no longer persists anything.
 
 - **LoRa** over a [Heltec WiFi LoRa 32 V4](docs/hardware-heltec-lora32-v4.md) running stock Meshtastic firmware, on `/dev/serial0` at 115200 via the `meshtastic` Python library. Meshtastic handles framing, CRC, retries and encryption, so the hand-rolled length+CRC framing of the old SC16IS752 driver is gone — and with it the register-level protocol that was never bench-verified.
-- **Uplink, unified** — a command arriving over LoRa is re-published verbatim onto `cubesat/command`. Nothing downstream needs to know which physical channel it came in on, so a command relayed off the radio is handled exactly as one a laptop published on the LAN. This is what makes `FLIGHT` recoverable: `set_profile` arrives over the radio for free.
+- **Uplink, unified** — a command arriving over LoRa is re-published verbatim onto `cubesat/command`. Nothing downstream needs to know which link it came in on, so a command relayed off the radio is handled exactly as one a laptop published on the LAN. This is what makes `FLIGHT` recoverable: `set_profile` arrives over the radio for free.
+- **Uplink, from one mesh channel** — and only from `config.LORA_CHANNEL_INDEX`, the private `CubeSat` channel. The node's primary channel is the stock public one, so since the mesh preset change of 2026-09-02 the community mesh's chat reaches this radio — and the command vocabulary is ordinary English (`ping`, `photo`, `safe`, `profile flight`). Anything on another channel, a direct message included, is dropped in `_collect_uplink` **before** the `cubesat/comms/radio` publish: it reaches neither the command parser nor the `radio_log` session log, so it is never shown in the dashboard's Radio Link Log, never written to the card in `FLIGHT`/`DIAG`, and never travels inside a mission export. The refusal is **silent** — one line in the service log carrying the sender, the channel, the SNR and a byte count but not the text, and nothing transmitted back, not even an `err=` for a `!` line. Listening is untouched: `lora_listening` remains the profile's call and the inbox is polled in full. The credential is the channel's key rather than a node id, deliberately — a key is portable, so an operator whose own node is flat loads the channel URL onto another one, where a node allowlist would be a locked door with the key on the far side of it.
 
 **The radio carries a beacon, not the telemetry.** A Meshtastic message holds at most 240 bytes and a full telemetry packet is several hundred, so the choice was a compact field set or chunking. It is a compact beacon, for three reasons: one message is one complete observation, where a lost chunk voids a whole packet; LoRa airtime is slow and duty-cycle limited, so three messages per cycle costs three times as much of it; and the radio's job here is *alive, and where* — the full record is in DHS and gets collected when the satellite is back on a network.
 
@@ -1030,6 +1033,7 @@ heartbeats, which prove a process started and nothing more.
   "radio": {"present": true, "node": "!698204b0", "region": "US"},
   "lora_enabled": true,
   "lora_listening": true,
+  "command_channel": 1,
   "last_uplink": 1741863400.0
 }
 ```
@@ -1048,6 +1052,14 @@ told to stop talking is still reachable over the same radio that told it to — 
 `set_comms_config {"lora_enabled": false}` sent over LoRa would be a one-way door, on the profile
 where the radio is the only door there is.
 
+**`command_channel` is the third member of that set**, and it is there because hearing a message and
+acting on one became different things when the uplink filter landed. It reports the mesh channel
+index an uplink must arrive on — `1`, the private `CubeSat` channel, unless `LORA_CHANNEL_INDEX`
+says otherwise. A ground station one index out from the satellite transmits perfectly, receives
+perfectly and never holds a conversation, which is the hardest radio fault there is to diagnose from
+the outside; this field is what makes it a five-second check instead. See
+[Setting up the command channel](#setting-up-the-command-channel).
+
 The same reasoning shapes what `SAFE` does. An earlier version silenced COMMS entirely there, which
 silenced *receiving* too — and `SAFE` is reachable from `FLIGHT` through a subsystem fault, so the
 state that most needs a `recover` command would have been the one state deaf to it. COMMS now wakes
@@ -1064,6 +1076,10 @@ nobody can help; safe mode exists to stay contactable, not to hide.
 One event per radio transaction, published as it happens — a received message, or a transmission
 attempt with whether it left. Not retained: this is a log line, not a state. DHS records these
 into `radio_log` while a mission is open; the dashboard renders them live.
+
+An `rx` event only ever describes a message on the satellite's own mesh channel. Traffic on any
+other channel is refused ahead of this publish and appears nowhere here — see
+[COMMS](#comms) for why the order matters.
 
 ```json
 {
@@ -1178,7 +1194,8 @@ put in one message so they can be compared without an ssh session.
 
 **One table, and it is the only one.** Every way of reaching the satellite ends at the same JSON on
 `cubesat/command`: the radio (COMMS canonicalises the compact spelling *before* relaying, so nothing
-downstream knows which channel a command arrived on), the dashboard's Mission Console, its Quick
+downstream knows which *link* a command arrived on — the mesh channel it must have arrived on is a
+separate rule, and COMMS applies it before any of this), the dashboard's Mission Console, its Quick
 Commands buttons, the `cubesat` CLI, and anything else that can publish to a broker. If a command is
 not here, it does not exist.
 
@@ -1243,9 +1260,10 @@ either recoverable — a profile can be re-applied, a beacon re-enabled — or h
 one erases a recorded flight, and commands are still unauthenticated. Having no short line means it
 is not in the radio vocabulary and not in the Mission Console's, whose table mirrors it, so it cannot
 be reached by somebody exploring what the satellite understands. It is **not** unreachable over the
-air: COMMS relays a well-formed JSON command verbatim whatever channel it arrived on, and that
-property is worth more than a fence here would be — an operator who composes that JSON by hand is
-being deliberate, which is exactly the bar this verb needs.
+air: COMMS relays a well-formed JSON command verbatim, and that property is worth more than a fence
+here would be — an operator who composes that JSON by hand is being deliberate, which is exactly the
+bar this verb needs. Since 2026-09-02 that reach is the private `CubeSat` channel alone, which
+strengthens this fence rather than weakening it: composing the JSON by hand now also takes the key.
 
 The fence that does refuse it is the profile: `EXPO`, where the satellite is its own open access
 point with an audience on it. That lives in DHS rather than in the broker's ACL, because `acl.conf`
@@ -1732,6 +1750,82 @@ applied — not by hand. Nothing in the code ever calls `mkdir` on a system path
 Log out and back in after installing: the group membership that lets you deploy the dashboard build
 does not apply to a session that already exists.
 
+### Setting up the command channel
+
+The satellite's radio traffic — the beacon out, every command in — travels on **one Meshtastic
+channel, and it is not the public primary one.** Getting a second node onto that channel is the last
+install step, and it is the one that decides whether your ground station can talk to the satellite at
+all.
+
+The setting is split in two on purpose, because the two halves live in different places:
+
+| Half | Where it lives | Default |
+|---|---|---|
+| **Which channel** — the index | This repository, `LORA_CHANNEL_INDEX` | `1` |
+| **What that channel is** — its name and its key | The Heltec node's own firmware, written with the `meshtastic` CLI | name `CubeSat`, key generated on your node |
+
+**The software addresses the channel by index and never by name.** `COMMS` transmits on
+`LORA_CHANNEL_INDEX` and accepts a command only from it; nothing in this repository reads or sets
+the channel's name or its key, which is why neither is a configuration value here. The name is a
+convention so that two people reading these documents mean the same channel — call yours something
+else and only this table is wrong.
+
+**Channel 0 is left stock.** It is the public primary with Meshtastic's well-known default key
+`AQ==`, shared with every node in range; "encrypted" there means nothing, and since the mesh preset
+change of 2026-09-02 this node sits on it alongside several hundred strangers. That is exactly why
+commands are taken from channel 1 and nowhere else — see [COMMS](#comms).
+
+#### Create it on the satellite's node
+
+`COMMS` holds `/dev/serial0` whenever it is running, so stop it first. Expect `OBC` to enter `SAFE`
+while COMMS is gone — it is a watched subsystem and its last will fires — and clear it with
+`recover` afterwards, because a fault-latched `SAFE` does not lift on its own.
+
+```bash
+sudo systemctl stop cubesat@comms
+
+meshtastic --port /dev/serial0 --ch-add CubeSat     # creates channel 1 with a random PSK
+meshtastic --port /dev/serial0 --info               # verify: index, name and psk
+
+sudo systemctl start cubesat@comms
+
+# `recover` has no shell spelling — publish it, or use the dashboard's Mission Console
+mosquitto_pub -t cubesat/command -m '{"command": "recover"}'
+```
+
+Then check the satellite agrees, without an SSH session — the retained
+[`cubesat/comms/status`](#cubesatcommsstatus) carries `command_channel`, and if it does not read `1`
+the two halves of the table above have drifted apart.
+
+#### Add it to your own mesh
+
+```bash
+meshtastic --port /dev/serial0 --qr-all             # "Complete URL (includes all channels)"
+```
+
+Open that URL on the phone or node you want to command from. It contains **both** channels, so a
+phone that already has the stock primary reports `Channel already exists` if you choose *Add*;
+choosing *Replace* is safe as long as the primary in the URL is still the stock one with the default
+key (`psk: "AQ=="`, `name: ""` in `--info`) — the result is that same primary plus the new secondary.
+
+**There is no key in this repository, and there must never be one.** That URL embeds the channel's
+pre-shared key, and since the uplink filter the key *is* the command credential: whoever holds it can
+read the telemetry and also send `safe`, `photo`, `profile flight` or a hand-composed
+`delete_mission`. A published default key would hand that to everyone who cloned the repo, which is
+why yours is generated on your own node by `--ch-add` and belongs in a password manager or a personal
+note — never in `config.yaml`, never in a committed file, never in an issue. If it is ever exposed,
+regenerate and re-import on every node:
+
+```bash
+meshtastic --port /dev/serial0 --ch-set psk random --ch-index 1
+```
+
+Two nodes must also agree on **region, modem preset and frequency slot** before a shared key means
+anything — nodes on different presets do not demodulate each other at all, and this satellite is
+deliberately not on the flasher's defaults. That, the node identity, and what still goes out in the
+clear on the primary channel are in
+[`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md).
+
 ### Operating it
 
 What the CLI can say is in [The command vocabulary](#the-command-vocabulary) with everything else;
@@ -1854,6 +1948,7 @@ MQTT_PORT=1883
 # LoRa radio (Heltec V4 / Meshtastic over the PL011 UART)
 LORA_PORT=/dev/serial0
 LORA_BAUDRATE=115200
+LORA_CHANNEL_INDEX=1
 
 # Development
 CUBESAT_MOCK_HARDWARE=0
@@ -1865,6 +1960,7 @@ CUBESAT_MOCK_HARDWARE=0
 | `MQTT_PORT` | `1883` | Broker port |
 | `LORA_PORT` | `/dev/serial0` | Serial device the Meshtastic node is on |
 | `LORA_BAUDRATE` | `115200` | Not optional — the Meshtastic Python library opens the port hard-coded at this rate |
+| `LORA_CHANNEL_INDEX` | `1` | The mesh channel telemetry goes out on **and the only one a command is accepted from**. See [Setting up the command channel](#setting-up-the-command-channel) |
 | `DASHBOARD_PORT` | `8080` | Port the local dashboard listens on |
 | `DHS_RETENTION_DAYS` | `30` (from `retention.days`) | Telemetry rows and attitude samples older than this are purged, and their missions' photos with them |
 | `DHS_ATTITUDE_MIN_INTERVAL_SEC` | `1.0` (from `dhs.attitude_min_interval_sec`) | Floor on how often one attitude sample is recorded. One ceiling across every profile. Costs card writes, never bus time |

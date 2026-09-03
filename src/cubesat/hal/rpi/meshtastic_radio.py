@@ -66,8 +66,13 @@ to lean on, and that ``pub.subscribe(..., "meshtastic.receive")`` delivers.
   is wrong the messages land on the public primary channel — visible to every
   node in range rather than lost, which is why it is worth naming here.
 * **``hopStart``/``hopLimit``.** The hop count in ``RadioMessage`` is their
-  difference — **measured 2026-09-02**, see ``_hops``. It was the last inferred
-  constant in this driver.
+  difference — **measured 2026-09-02**, see ``_hops``.
+* **The received channel index, and what its absence means.** Read from the
+  packet's ``channel`` key, taken to be *absent* rather than zero on the primary
+  channel because protobuf omits a zero field. That is read from the library,
+  not from a packet anybody has looked at — see ``CHANNEL_KEY`` and bench check
+  V15. It is the constant the uplink filter rests on, so it is the one worth
+  being loudest about.
 * **Reading the node id and the region back.** Both are cosmetic: they populate
   ``comms_status`` so an operator can see which node answered. Every accessor is
   best-effort and yields None rather than raising, because a status field is not
@@ -91,6 +96,23 @@ logger = logging.getLogger(__name__)
 #: that marks one as human-readable text. Both bench-verified.
 RECEIVE_TOPIC = "meshtastic.receive"
 TEXT_PORTNUM = "TEXT_MESSAGE_APP"
+
+#: The packet key carrying the index of the channel a message arrived on, and
+#: the index the primary channel has.
+#:
+#: **Inferred from the library, not from the bench** — bench check V15 sends one
+#: line on each channel and records what arrives. A Meshtastic packet is a
+#: protobuf, and protobuf omits a field whose value is zero, so a message on the
+#: primary channel is expected to arrive with no ``channel`` key at all rather
+#: than with ``channel: 0``. **Absent therefore reads as the primary, never as
+#: unknown.** That direction is deliberate: COMMS takes commands from
+#: ``config.LORA_CHANNEL_INDEX`` alone, so treating an absent key as unknown and
+#: letting it through would hand the public channel back to the command parser,
+#: which is the whole thing the filter exists to stop. If the inference is wrong
+#: the other way — the key absent on *both* channels — the satellite goes deaf
+#: to its own uplink, which is loud, local and recoverable with a power cycle.
+CHANNEL_KEY = "channel"
+PRIMARY_CHANNEL_INDEX = 0
 
 #: What the Meshtastic Python library hard-codes. See the module docstring.
 LIBRARY_BAUDRATE = 115200
@@ -323,6 +345,11 @@ class MeshtasticRadio:
                 snr=packet.get("rxSnr"),
                 rssi=packet.get("rxRssi"),
                 hops=_hops(packet),
+                # Carried on the message rather than filtered here: this
+                # callback is the driver, and which channel commands may arrive
+                # on is the service's rule. The driver reports what the radio
+                # heard; COMMS decides what to do about it.
+                channel=_channel(packet),
             )
         except Exception:
             # A packet shaped differently from anything seen on the bench must
@@ -332,6 +359,26 @@ class MeshtasticRadio:
             return
         with self._lock:
             self._inbox.append(message)
+
+
+def _channel(packet: Any) -> int:
+    """The channel index this packet arrived on; the primary when unreadable.
+
+    Absent means the primary — the reasoning, and the bench check that would
+    confirm it, are at ``CHANNEL_KEY``. A value that is not a plain integer is
+    treated the same way: the channel could not be established, and the reading
+    that fails safe is the public one, because the channel commands are taken
+    from is a *secondary* channel with a key on it. Nothing is guessed upward.
+
+    Note ``bool`` is excluded explicitly. ``True`` is an ``int`` in Python and
+    would compare equal to channel 1, which is exactly the configured command
+    channel on this satellite — a packet carrying ``channel: true`` would
+    otherwise be promoted straight onto the uplink.
+    """
+    channel = packet.get(CHANNEL_KEY, PRIMARY_CHANNEL_INDEX)
+    if isinstance(channel, bool) or not isinstance(channel, int):
+        return PRIMARY_CHANNEL_INDEX
+    return channel
 
 
 def _hops(packet: Any) -> int | None:

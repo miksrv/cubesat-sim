@@ -347,6 +347,21 @@ parse is ordinary mesh chat and is left alone — answering stray sentences on a
 would spend the transmission budget on other people's conversations. The flip side, accepted
 knowingly: chat that is exactly a command line (`ping` alone) is a command.
 
+*Amended 2026-09-03:* that flip side is now bounded by the channel. The mesh preset change of
+2026-09-02 put this node on a public primary channel shared with several hundred strangers whose
+ordinary English is the command vocabulary, so an uplink counts only if it arrived on
+`config.LORA_CHANNEL_INDEX` — the private `CubeSat` channel, whose key is the credential. Anything
+else the node hears, a direct message included, is dropped in `comms/service.py` → `_collect_uplink`
+*before* the `cubesat/comms/radio` publish, so it reaches neither the parser nor the dashboard's
+Radio Link Log nor `radio_log` on the card, and is refused in silence — not even an `err=` for a `!`
+line, because the `!` contract exists so *the operator* is never left wondering, and answering a
+stranger teaches a mesh of several hundred nodes that this one talks back. "The channel is the trust
+boundary" below is therefore enforced rather than merely intended. The filter is on *acting*, never
+on hearing: `lora_listening` stays the profile's call and the inbox is polled in full. The
+credential is the channel's key and not a node id deliberately — a key is portable, so a flat
+operator node is recovered by loading the channel URL onto another one, where a node allowlist would
+be a locked door with the key on the far side.
+
 **The vocabulary itself is in [`README.md`](../README.md) → The command vocabulary** — one table,
 listing every command in all three spellings (radio, shell, and the JSON on the bus). It is not
 repeated here: two tables of the same thing disagree the first time one of them is edited, and the

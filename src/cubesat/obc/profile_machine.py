@@ -33,6 +33,7 @@ from typing import Any
 
 from cubesat.common.profiles import ProfileConfig, ProfileError, ProfileSpec
 from cubesat.common.states import MissionMode, Profile
+from cubesat.obc import resume as resume_rule
 
 #: How long after a profile request the platform is considered to be settling —
 #: units stopping and starting on OBC's own instruction. Matches the
@@ -68,7 +69,7 @@ class ProfileMachine:
     def __init__(
         self,
         config: ProfileConfig,
-        apply: Callable[[Profile, str | None, int | None], None],
+        apply: Callable[[Profile, str | None, float | None, str | None, bool], None],
         *,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
@@ -86,10 +87,15 @@ class ProfileMachine:
         self.spec: ProfileSpec | None = None
         #: Operator-supplied name for the mission this profile will record.
         self.label: str | None = None
+        #: Why this profile is active: a command, or the satellite putting
+        #: itself back where a reset found it. Published on ``obc_status`` and
+        #: recorded in the mission row — see ``resume.py``.
+        self.start_reason: str = resume_rule.START_COMMAND
 
         self._requested: Profile | None = None
         self._requested_label: str | None = None
-        self._requested_ttl: int | None = None
+        self._requested_ttl: float | None = None
+        self._requested_resume = False
         self._requested_at: float | None = None
         self._deadline: float | None = None
 
@@ -121,15 +127,22 @@ class ProfileMachine:
         self,
         profile: Profile | str,
         *,
-        ttl_minutes: int | None = None,
+        ttl_minutes: float | None = None,
         mission_label: str | None = None,
         request_id: str | None = None,
+        resume: bool = False,
     ) -> bool:
         """Validate a profile and ask HOSTD for it. Returns whether it was sent.
 
         Validation happens here and not in HOSTD because HOSTD has no decision
         logic at all — it is the hands, and a profile that does not exist is a
         decision to refuse.
+
+        ``resume`` says this request is the satellite putting itself back where
+        a reset found it (W11). It travels to HOSTD, which counts consecutive
+        resumes in ``last-profile``, and it becomes this session's
+        ``start_reason`` — so the mission row records why it started rather than
+        leaving a trip in two halves looking like two trips.
         """
         try:
             spec = self._config.get(profile)
@@ -140,16 +153,20 @@ class ProfileMachine:
         self._requested = spec.name
         self._requested_label = mission_label
         self._requested_ttl = ttl_minutes if ttl_minutes is not None else spec.ttl_minutes
+        self._requested_resume = resume
         self._requested_at = self._clock()
         self.log.info(
-            "requesting profile %s (ttl=%s, label=%r)",
+            "requesting profile %s (ttl=%s, label=%r%s)",
             spec.name.value,
             self._requested_ttl,
             mission_label,
+            ", resuming" if resume else "",
         )
         # The TTL travels with the request: HOSTD turns it into an absolute
         # deadline and publishes that, so the expiry outlives an OBC restart.
-        self._apply(spec.name, request_id, self._requested_ttl)
+        # The label travels too, because HOSTD writes it into `last-profile` and
+        # that is what lets a resumed trip keep the name it was given.
+        self._apply(spec.name, request_id, self._requested_ttl, mission_label, resume)
         return True
 
     # ── reconciling ─────────────────────────────────────────────────────────
@@ -209,10 +226,16 @@ class ProfileMachine:
             # rename as a mission boundary would split one walk into two.
             if changed or self._requested is not None:
                 self.label = self._requested_label
+                self.start_reason = (
+                    resume_rule.START_RESUME
+                    if self._requested_resume
+                    else resume_rule.START_COMMAND
+                )
                 self._arm_ttl(spec, payload)
             self._requested = None
             self._requested_label = None
             self._requested_ttl = None
+            self._requested_resume = False
             self._requested_at = None
 
         return ProfileUpdate(

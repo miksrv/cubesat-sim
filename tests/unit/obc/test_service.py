@@ -2,7 +2,7 @@ import dataclasses
 
 import pytest
 
-from cubesat.common import profiles
+from cubesat.common import config, profiles
 from cubesat.common.states import MissionState, Persistence, Profile
 from cubesat.common.topics import TOPICS
 from cubesat.obc import deploy, power_policy
@@ -89,11 +89,18 @@ def obc(service_factory, clock):
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
-def host_status(client, profile, requested=None, ttl_expires_at=None):
+def host_status(
+    client, profile, requested=None, ttl_expires_at=None, boot=False, previous=None
+):
     """A retained host_status as HOSTD publishes it.
 
     ``ttl_expires_at`` is absolute, because HOSTD holds the applied profile and
     therefore owns the deadline; OBC only decides what reaching it means.
+
+    ``boot`` and ``previous`` are the two facts the resume rule weighs: whether
+    anybody has asked for a profile since the machine came up, and what the run
+    before it was doing. Both default to "an ordinary running satellite", so
+    every test that is not about W11 reads as it always did.
     """
     client.deliver(
         TOPICS["host_status"],
@@ -102,6 +109,8 @@ def host_status(client, profile, requested=None, ttl_expires_at=None):
             "profile_requested": requested or profile,
             "ttl_expires_at": ttl_expires_at,
             "errors": [],
+            "boot": boot,
+            "previous": previous,
         },
     )
 
@@ -221,6 +230,11 @@ def test_before_hostd_speaks_the_profile_is_null_and_nothing_may_be_recorded(obc
         "cadence_scale": 1.0,
         "persistence": Persistence.NONE.value,
         "mission_label": None,
+        # Both new on 2026-09-03 (W11): why this profile is active, and how this
+        # run began. Null here because HOSTD has not said anything yet, which is
+        # the honest answer rather than "an ordinary boot".
+        "mission_start_reason": "command",
+        "boot": None,
         "subsystems": {"watched": ["eps"], "lost": []},
     }
 
@@ -244,6 +258,8 @@ def test_a_set_profile_command_becomes_an_apply_profile_action(obc):
         "profile": "EXPO",
         "request_id": "req_010",
         "ttl_minutes": None,
+        "mission_label": None,
+        "resume": False,
     }
 
 
@@ -976,6 +992,8 @@ def test_the_tick_falls_back_to_the_default_profile_when_the_ttl_expires(obc):
         "profile": "HOSTED",
         "request_id": None,
         "ttl_minutes": None,
+        "mission_label": None,
+        "resume": False,
     }
 
 
@@ -1119,3 +1137,251 @@ def test_relabelling_a_running_profile_updates_the_status(obc):
     host_status(client, "FLIGHT")
     assert status(client)["mission_label"] == "walk home"
     assert service.mission.state is MissionState.NOMINAL
+
+
+# ── resuming an interrupted trip (W11) ───────────────────────────────────────
+#
+# The failure this closes: a reset mid-trip brings the satellite up in HOSTED,
+# where DHS, ADCS and PAYLOAD never start, and nothing says so — STANDBY has no
+# beacon row. The rule itself is unit-tested in test_resume.py; what these test
+# is the wiring, which is where the two halves of the evidence meet.
+
+RESUMES = config.RESUME_MAX_CONSECUTIVE
+SETTLE = config.RESUME_SETTLE_SEC
+EVIDENCE_WINDOW = config.RESUME_EVIDENCE_TIMEOUT_SEC
+
+
+def interrupted(clock, profile="FLIGHT", minutes_left=590, **fields):
+    """What HOSTD publishes about a trip a reset cut short."""
+    return {
+        "profile": profile,
+        "written_at": clock.now - 60.0,
+        "ttl_expires_at": clock.now + minutes_left * 60.0,
+        "mission_label": "walk to work",
+        "resume_count": 0,
+        **fields,
+    }
+
+
+def boot_into(client, clock, **fields):
+    """A boot: HOSTD came up in HOSTED and nothing has asked for anything."""
+    host_status(client, "HOSTED", boot=True, previous=interrupted(clock, **fields))
+
+
+def applies(client):
+    return host_actions(client, "apply_profile")
+
+
+def test_a_reset_on_battery_puts_the_trip_back(obc):
+    # The whole point: an hour into a walk, a jolt reboots the Pi, and the
+    # recording resumes without anybody being told.
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock)
+    assert applies(client) == []  # nothing yet: the mains has not been read
+
+    battery(client, 62.0, external_power=False)
+
+    assert applies(client)[-1] == {
+        "timestamp": applies(client)[-1]["timestamp"],
+        "action": "apply_profile",
+        "profile": "FLIGHT",
+        "request_id": None,
+        # The remainder of the strap it already had, not a fresh 600 minutes.
+        "ttl_minutes": 590.0,
+        # Under the name it was given, so the trip reads as one journey.
+        "mission_label": "walk to work",
+        "resume": True,
+    }
+
+
+def test_mains_at_boot_means_a_desk_and_not_a_trip(obc):
+    # The case the whole design protects: brought home flat, plugged in, and it
+    # must come up on the home network with SSH rather than walking off into a
+    # profile with no Wi-Fi.
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock)
+    battery(client, 62.0, external_power=True)
+
+    assert applies(client) == []
+    assert status(client)["boot"] == {
+        "at": clock.now,
+        "previous": "FLIGHT",
+        "resumed": False,
+        "reason": "mains",
+    }
+
+
+def test_no_reading_at_all_is_not_a_reading_of_no_mains(obc):
+    # An EPS that never published is also a satellite that cannot see its own
+    # battery, which is a reason to stay reachable rather than to fly on.
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock)
+
+    clock.advance(EVIDENCE_WINDOW + 1)
+    service.tick()
+
+    assert applies(client) == []
+    assert status(client)["boot"]["reason"] == "noeps"
+    # And the window really was a window: a reading arriving afterwards does not
+    # quietly resume a trip nobody is watching any more.
+    battery(client, 62.0, external_power=False)
+    assert applies(client) == []
+
+
+def test_a_reading_inside_the_window_still_counts(obc):
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock)
+    clock.advance(EVIDENCE_WINDOW - 1)
+    service.tick()
+    battery(client, 62.0, external_power=False)
+    assert applies(client)[-1]["profile"] == "FLIGHT"
+
+
+def test_an_eps_message_without_the_mains_pin_is_not_evidence(obc):
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock)
+    client.deliver(TOPICS["eps_status"], {"battery_percent": 62.0, "voltage": 3.8})
+    assert applies(client) == []
+    # Still waiting, rather than refused: the next message may carry it.
+    assert status(client)["boot"] is None
+
+
+def test_an_ordinary_desk_reboot_says_nothing_at_all(obc):
+    # HOSTED interrupted by a reboot is not news, and airtime on a shared mesh
+    # is not free — so there is nothing for COMMS to transmit.
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock, profile="HOSTED")
+    assert status(client)["boot"] == {
+        "at": clock.now,
+        "previous": None,
+        "resumed": False,
+        "reason": "profile",
+    }
+
+
+def test_a_restart_of_obc_under_a_running_profile_resumes_nothing(obc):
+    # `systemctl restart cubesat@obc` mid-trip: the retained host_status says a
+    # profile is applied and nothing about a boot, so there is nothing to weigh.
+    service, client, clock = obc
+    service.on_start()
+    host_status(client, "FLIGHT", previous=interrupted(clock))
+    battery(client, 62.0, external_power=False)
+    assert applies(client) == []
+
+
+def test_a_human_who_has_already_chosen_is_not_argued_with(obc):
+    # `boot` goes false the moment anything asks for a profile — including the
+    # operator typing `profile hosted` on arrival.
+    service, client, clock = obc
+    service.on_start()
+    host_status(client, "HOSTED", boot=False, previous=interrupted(clock))
+    battery(client, 62.0, external_power=False)
+    assert applies(client) == []
+
+
+def test_a_boot_loop_stops_resuming_and_says_why(obc):
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock, resume_count=RESUMES)
+    battery(client, 62.0, external_power=False)
+    assert applies(client) == []
+    assert status(client)["boot"]["reason"] == "loop"
+
+
+def test_a_trip_whose_ttl_ran_out_during_the_reset_stays_down(obc):
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock, minutes_left=-1)
+    assert applies(client) == []
+    assert status(client)["boot"]["reason"] == "ttl"
+
+
+def test_the_question_is_asked_once_per_boot(obc):
+    # Two eps_status messages, one apply: the rule runs to an answer and stops.
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock)
+    battery(client, 62.0, external_power=False)
+    battery(client, 61.0, external_power=False)
+    assert len(applies(client)) == 1
+
+
+def test_a_resumed_session_tells_hostd_when_it_has_outlived_the_reset(obc):
+    # The boot-loop fence is a lifetime, not a counter: three resumes only mean
+    # a loop when all three were short.
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock)
+    battery(client, 62.0, external_power=False)
+
+    service.tick()
+    assert host_actions(client, "clear_resume") == []
+
+    clock.advance(SETTLE)
+    service.tick()
+    assert len(host_actions(client, "clear_resume")) == 1
+
+    # Once, not once per tick: a HOSTD that never answers must not be shouted at.
+    clock.advance(SETTLE)
+    service.tick()
+    assert len(host_actions(client, "clear_resume")) == 1
+
+
+def test_a_session_that_was_not_resumed_never_clears_anything(obc):
+    service, client, clock = obc
+    bring_up(service, client, "FLIGHT")
+    clock.advance(SETTLE * 2)
+    service.tick()
+    assert host_actions(client, "clear_resume") == []
+
+
+def test_the_mission_row_records_that_this_run_was_resumed(obc):
+    # DHS opens a mission from obc_status alone, so this is how a trip split in
+    # two by a reset is legible as one afterwards.
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock)
+    battery(client, 62.0, external_power=False)
+    assert status(client)["mission_start_reason"] == "command"  # not applied yet
+
+    host_status(client, "FLIGHT", previous=interrupted(clock))
+    assert status(client)["mission_start_reason"] == "resume"
+    assert status(client)["mission_label"] == "walk to work"
+
+    # And a profile asked for afterwards is a command again.
+    command(client, "set_profile", params={"profile": "DEMO"})
+    host_status(client, "DEMO")
+    assert status(client)["mission_start_reason"] == "command"
+
+
+def test_a_resume_hostd_refuses_is_reported_rather_than_assumed(obc, monkeypatch):
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock)
+    monkeypatch.setattr(service.profile_machine, "request", lambda *a, **k: False)
+    battery(client, 62.0, external_power=False)
+    assert status(client)["boot"] == {
+        "at": clock.now,
+        "previous": "FLIGHT",
+        "resumed": False,
+        "reason": "profile",
+    }
+
+
+def test_a_resumed_trip_says_so_on_obc_status(obc):
+    service, client, clock = obc
+    service.on_start()
+    boot_into(client, clock)
+    battery(client, 62.0, external_power=False)
+    assert status(client)["boot"] == {
+        "at": clock.now,
+        "previous": "FLIGHT",
+        "resumed": True,
+        "reason": None,
+    }

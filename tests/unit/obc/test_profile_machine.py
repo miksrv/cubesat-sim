@@ -30,7 +30,9 @@ def applied():
 def machine(clock, applied):
     return ProfileMachine(
         profiles.load(),
-        lambda profile, request_id, ttl: applied.append((profile, request_id, ttl)),
+        lambda profile, request_id, ttl, label, resume: applied.append(
+            (profile, request_id, ttl, label, resume)
+        ),
         clock=clock,
         wall_clock=clock,
     )
@@ -58,7 +60,7 @@ def host_status(profile, requested=None, ttl_minutes=None, now=0.0, **extra):
 
 def test_a_valid_profile_is_translated_into_an_apply_profile_action(machine, applied):
     assert machine.request("EXPO", request_id="req_010") is True
-    assert applied == [(Profile.EXPO, "req_010", None)]
+    assert applied == [(Profile.EXPO, "req_010", None, None, False)]
 
 
 def test_an_unknown_profile_never_reaches_hostd(machine, applied, caplog):
@@ -74,7 +76,9 @@ def test_a_profile_missing_from_the_yaml_is_refused_too(clock, applied):
     trimmed = profiles.load()
     del trimmed.profiles[Profile.DIAG]
     machine = ProfileMachine(
-        trimmed, lambda profile, rid: applied.append((profile, rid)), clock=clock
+        trimmed,
+        lambda profile, rid, ttl, label, resume: applied.append((profile, rid)),
+        clock=clock,
     )
     assert machine.request(Profile.DIAG) is False
 
@@ -214,12 +218,12 @@ def test_the_profile_ttl_travels_with_the_request(machine, applied):
     # definition — but it is sent to HOSTD rather than timed here, so that HOSTD
     # can turn it into an absolute deadline and publish it retained.
     machine.request("FLIGHT")
-    assert applied == [(Profile.FLIGHT, None, 600)]
+    assert applied == [(Profile.FLIGHT, None, 600, None, False)]
 
 
 def test_a_command_can_override_the_profile_s_own_ttl(machine, applied):
     machine.request("FLIGHT", ttl_minutes=5)
-    assert applied == [(Profile.FLIGHT, None, 5)]
+    assert applied == [(Profile.FLIGHT, None, 5, None, False)]
 
 
 def test_the_deadline_comes_from_hostd_not_from_a_local_timer(machine, clock):
@@ -277,7 +281,7 @@ def test_expiry_asks_for_the_default_profile(machine, clock, applied, caplog):
     clock.advance_minutes(120)
     with caplog.at_level("WARNING"):
         assert machine.request_default_on_expiry() is True
-    assert applied == [(Profile.HOSTED, None, None)]
+    assert applied == [(Profile.HOSTED, None, None, None, False)]
     assert "expired" in caplog.text
 
 

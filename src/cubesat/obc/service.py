@@ -28,6 +28,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from cubesat.common import config
 from cubesat.common import profiles as profiles_module
 from cubesat.common.profiles import ProfileConfig
 from cubesat.common.service import Service
@@ -35,6 +36,7 @@ from cubesat.common.states import EndReason, MissionMode, MissionState, Persiste
 from cubesat.common.topics import TOPICS
 from cubesat.hal import i2c
 from cubesat.obc import commands, deploy, mission_machine, power_policy
+from cubesat.obc import resume as resume_rule
 from cubesat.obc.health import HealthMonitor
 from cubesat.obc.profile_machine import ProfileMachine, ProfileUpdate
 
@@ -89,6 +91,10 @@ class ObcService(Service):
         super().__init__()
         self._profiles = profiles if profiles is not None else profiles_module.load()
         self._clock = clock
+        #: Wall clock, for the two facts that cross a process boundary: a TTL
+        #: deadline and the moment this run began. Monotonic time means nothing
+        #: to another process, and the DS1307 keeps this honest with no network.
+        self._wall_clock = wall_clock
         self._bus = bus
         # Messages arrive on paho's network thread while tick() runs on the main
         # one. Both move the state machine, so every decision below is taken
@@ -120,6 +126,21 @@ class ObcService(Service):
         self._governor_lowered = False
         self._flushed = threading.Event()
         self._flush_thread: threading.Thread | None = None
+        #: The trip a reset interrupted, waiting on a mains reading to confirm
+        #: it — see resume.py. None once the question has been answered, one way
+        #: or the other, so the whole rule runs at most once per boot.
+        self._resume: resume_rule.Candidate | None = None
+        #: When the wait for that reading began, monotonic. A missing
+        #: measurement is not a measurement of no mains, so the wait is bounded.
+        self._resume_since: float | None = None
+        #: Set once a resume has been requested: when this monotonic moment
+        #: passes, the session has lived long enough to stop counting as a boot
+        #: loop and HOSTD is told to clear the count.
+        self._settle_at: float | None = None
+        #: What this boot decided, published on obc_status so COMMS can say it
+        #: on the radio and a dashboard can show it. Kept for the session: it
+        #: describes how this run began, which does not stop being true.
+        self._boot_report: dict[str, Any] | None = None
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 
@@ -138,6 +159,8 @@ class ObcService(Service):
         with self._lock:
             self._publish_status()
             self.profile_machine.request_default_on_expiry()
+            self._expire_resume_wait()
+            self._settle_resume()
             self._reconcile()
 
     # ── inbound ─────────────────────────────────────────────────────────────
@@ -229,6 +252,7 @@ class ObcService(Service):
         )
 
     def _on_eps_status(self, data: dict[str, Any]) -> None:
+        self._resume_on_evidence(data)
         reading = power_policy.reading_from(data)
         if reading is None:
             self.log.warning("eps_status carries no battery level; no power verdict")
@@ -254,6 +278,7 @@ class ObcService(Service):
             self._recover(automatic=True)
 
     def _on_host_status(self, data: dict[str, Any]) -> None:
+        self._weigh_resume(data)
         update = self.profile_machine.observe(data)
         if update is not None:
             self._apply_profile_update(update)
@@ -287,8 +312,21 @@ class ObcService(Service):
     # ── the profile ─────────────────────────────────────────────────────────
 
     def _request_apply(
-        self, profile: Profile, request_id: str | None, ttl_minutes: int | None
+        self,
+        profile: Profile,
+        request_id: str | None,
+        ttl_minutes: float | None,
+        mission_label: str | None,
+        resume: bool,
     ) -> None:
+        """Ask HOSTD for a profile. The whole of OBC's authority over the host.
+
+        ``mission_label`` and ``resume`` are here for one reason each, and
+        neither is HOSTD acquiring an opinion: the label is written into
+        ``last-profile`` so a trip interrupted by a reset can be resumed under
+        the name it was given, and ``resume`` is what makes HOSTD count this
+        start against the boot-loop fence rather than clearing it.
+        """
         self.publish(
             "host_command",
             qos=1,
@@ -296,7 +334,167 @@ class ObcService(Service):
             profile=profile.value,
             request_id=request_id,
             ttl_minutes=ttl_minutes,
+            mission_label=mission_label,
+            resume=resume,
         )
+
+    # ── resuming an interrupted trip ────────────────────────────────────────
+
+    def _weigh_resume(self, data: dict[str, Any]) -> None:
+        """Decide, from HOSTD's report of the boot, whether a trip may resume.
+
+        Everything except the mains reading can be settled here: whether this is
+        a boot at all, what the previous run was, whether its TTL is still
+        running and whether the boot-loop fence is out of budget. The reading
+        itself is a measurement and has to be waited for — see
+        ``_resume_on_evidence``.
+
+        Runs at most once per boot: the first ``host_status`` that says ``boot``
+        answers the question, and any answer — including a refusal — closes it.
+        A retained ``host_status`` that still says ``boot`` after an OBC restart
+        therefore re-asks it, which is right: nothing has been decided by
+        anybody in between, and the same evidence gives the same answer.
+        """
+        if self._boot_report is not None or self._resume is not None:
+            return
+        if not data.get("boot"):
+            return
+        verdict = resume_rule.candidate_from(
+            data.get("previous"),
+            now=self._wall_clock(),
+            max_consecutive=config.RESUME_MAX_CONSECUTIVE,
+        )
+        if verdict.candidate is None:
+            # Nothing to resume, and the reason is worth publishing even when it
+            # is the dull one: this is the message that says a boot happened.
+            self._report_boot(verdict)
+            return
+        self._resume = verdict.candidate
+        self._resume_since = self._clock()
+        self.log.info(
+            "%s was interrupted; waiting for EPS to say whether there is mains",
+            verdict.candidate.profile.value,
+        )
+
+    def _resume_on_evidence(self, data: dict[str, Any]) -> None:
+        """The mains reading arrives: resume, or say why not.
+
+        Only ``external_power`` is read, and only when it is an actual boolean.
+        EPS publishes it from the X728 PLD pin; a payload that carries no such
+        field, or carries something else, is not evidence and the wait
+        continues until it times out.
+        """
+        candidate = self._resume
+        if candidate is None:
+            return
+        external = data.get("external_power")
+        if not isinstance(external, bool):
+            return
+        if external:
+            self.log.info("mains is present, so this is a desk and not a trip; staying put")
+            self._resume = None
+            self._resume_since = None
+            self._report_boot(
+                resume_rule.Verdict(
+                    resumed=False,
+                    reason=resume_rule.MAINS,
+                    previous=candidate.profile.value,
+                )
+            )
+            return
+        self._take_resume(candidate)
+
+    def _expire_resume_wait(self) -> None:
+        """Give up waiting for a mains reading that is not coming.
+
+        The withholding rule, on the clock: no measurement is not a measurement
+        of no mains. An EPS that never published is also a satellite that cannot
+        see its own battery, which is a reason to stay somewhere reachable
+        rather than to walk off into a profile with no Wi-Fi.
+        """
+        if self._resume is None or self._resume_since is None:
+            return
+        if self._clock() - self._resume_since < config.RESUME_EVIDENCE_TIMEOUT_SEC:
+            return
+        self.log.warning(
+            "no eps_status in %.0f s; not resuming %s without knowing about mains",
+            config.RESUME_EVIDENCE_TIMEOUT_SEC,
+            self._resume.profile.value,
+        )
+        previous = self._resume.profile.value
+        self._resume = None
+        self._resume_since = None
+        self._report_boot(
+            resume_rule.Verdict(
+                resumed=False, reason=resume_rule.NO_EVIDENCE, previous=previous
+            )
+        )
+
+    def _take_resume(self, candidate: resume_rule.Candidate) -> None:
+        """Ask for the interrupted profile back, on the terms it had before."""
+        self._resume = None
+        self._resume_since = None
+        self.log.warning(
+            "no mains at boot: resuming %s (label=%r, %s, resumes in a row: %d)",
+            candidate.profile.value,
+            candidate.mission_label,
+            f"{candidate.ttl_minutes:.0f} min left" if candidate.ttl_minutes else "no ttl",
+            candidate.resume_count,
+        )
+        requested = self.profile_machine.request(
+            candidate.profile,
+            ttl_minutes=candidate.ttl_minutes,
+            mission_label=candidate.mission_label,
+            resume=True,
+        )
+        if not requested:
+            self._report_boot(
+                resume_rule.Verdict(
+                    resumed=False,
+                    reason=resume_rule.NOT_RESUMABLE,
+                    previous=candidate.profile.value,
+                )
+            )
+            return
+        # Armed on the request rather than on the achieved profile: what the
+        # fence counts is short *lives*, and this process has been alive since
+        # the boot whether or not HOSTD answers.
+        self._settle_at = self._clock() + config.RESUME_SETTLE_SEC
+        self._report_boot(
+            resume_rule.Verdict(
+                resumed=True, candidate=candidate, previous=candidate.profile.value
+            )
+        )
+
+    def _settle_resume(self) -> None:
+        """Tell HOSTD this session outlived the reset that started it.
+
+        The boot-loop fence is a lifetime, not a counter: three resumes only
+        mean a loop when all three were short. Sent once, and the record of
+        having to send it is cleared first, so a HOSTD that never answers
+        produces one message rather than one per tick.
+        """
+        if self._settle_at is None or self._clock() < self._settle_at:
+            return
+        self._settle_at = None
+        self.log.info("resumed session has settled; clearing the resume count")
+        self.publish("host_command", qos=1, action="clear_resume")
+
+    def _report_boot(self, verdict: resume_rule.Verdict) -> None:
+        """Record how this run began, for obc_status and thence for the radio.
+
+        Published even when nothing was resumed and even when there was nothing
+        to resume. A refusal that says nothing is indistinguishable from a
+        satellite that never woke up, and this is the only message that can tell
+        the difference.
+        """
+        self._boot_report = {
+            "at": self._wall_clock(),
+            "previous": verdict.previous,
+            "resumed": verdict.resumed,
+            "reason": verdict.reason,
+        }
+        self._publish_status()
 
     def _apply_profile_update(self, update: ProfileUpdate) -> None:
         # Every service derives its poll interval from this, so it has to follow
@@ -491,6 +689,13 @@ class ObcService(Service):
             cadence_scale=spec.power.cadence_scale if spec else 1.0,
             persistence=(spec.persistence if spec else Persistence.NONE).value,
             mission_label=self.profile_machine.label,
+            # Why this profile is active. DHS records it in the mission row, so
+            # a trip that a reset split in two is legible as one afterwards.
+            mission_start_reason=self.profile_machine.start_reason,
+            # How this run began: what was interrupted, whether it was resumed,
+            # and when not, why. Null until the first host_status has been
+            # weighed — the honest answer before HOSTD has said anything.
+            boot=self._boot_report,
             subsystems={
                 "watched": sorted(self.health.watched),
                 "lost": [] if self.profile_machine.settling else list(self.health.lost()),

@@ -127,9 +127,9 @@ later taken away again.
 | `DEPLOY` | Bring-up of the subsystems | **given real work** — see below |
 | `NOMINAL` | Healthy, subsystems polled at nominal cadence | unchanged; where an active profile lives |
 | ~~`SCIENCE`~~ | ~~Payload actively collecting~~ | **removed 2026-09-02** — see below |
-| `LOW_POWER` | Battery < 30 % (40 % until 2026-09-02) | **given real content** — see below |
-| `SAFE` | Battery < 20 %, or a fault, or a ground command | unchanged |
-| `CRITICAL` | **new** — battery < 10 %: graceful `poweroff` | added |
+| `LOW_POWER` | Pack < 3.64 V ≈ 30 % (40 % until 2026-09-02; volts since 2026-09-04) | **given real content** — see below |
+| `SAFE` | Pack < 3.58 V ≈ 20 %, or a fault, or a ground command | unchanged |
+| `CRITICAL` | **new** — pack < 3.45 V ≈ 10 %: graceful `poweroff` | added |
 
 New lifecycle: `BOOT → STANDBY`, and `STANDBY → DEPLOY → NOMINAL` on entering an active
 profile (`DEMO`/`EXPO`/`FLIGHT`/`DIAG`). Leaving an active profile returns to `STANDBY`.
@@ -171,8 +171,10 @@ observation" mode is ever genuinely wanted, it needs to arrive with its own numb
 a state that shares `NOMINAL`'s.
 
 `CRITICAL` is not a nicety: in `EXPO` and `FLIGHT` the unit runs off the X728 UPS, and a Pi
-that browns out mid-write risks the SD card. At < 10 % OBC must stop the services, flush the
-database and call `poweroff`; the X728 brings the Pi back up by itself when mains returns.
+that browns out mid-write risks the SD card. Under 3.45 V OBC must stop the services, flush the
+database and call `poweroff`; the X728 brings the Pi back up by itself when mains returns. What
+that threshold is really buying is the 450 mV between it and the X728's own 3.0 V cutoff — over two
+hours at the discharge measured on the hardware, against a flush and a shutdown that take seconds.
 
 But every power-driven descent — `LOW_POWER`, `SAFE` and `CRITICAL` alike — is suppressed while
 mains is present, because on mains there is no power emergency. Skipping that rule is the
@@ -180,21 +182,38 @@ difference between working and bricked: arriving home with a flat pack and plugg
 otherwise power the host off, and the X728 would not restore it, because mains never left.
 
 Mains alone is not trusted either. A faulty charger or a stuck PLD pin would suppress the
-protection indefinitely, so "on mains" means `external_power` **and** a charge rate that is not
-still falling — a pack draining while the satellite believes it is plugged in still reaches
-`CRITICAL`. The rate was meant to come from the gauge's `CRATE` register; the X728's gauge turned
-out to be a MAX17040/41 with no such register (2026-09-01), so EPS derives it from the
-state-of-charge history over a ten-minute window and publishes `null` until it has one. `null`
-means "trust the pin" — the honest fallback, and the only one that lets a flat pack just plugged in
-climb out of `SAFE` rather than power itself off.
+protection indefinitely, so "on mains" means `external_power` **and** a pack that is not still
+falling — a pack draining while the satellite believes it is plugged in still reaches `CRITICAL`.
+
+**Which quantity says "falling" took three attempts, and that history is the point of this
+paragraph.** It was meant to be the gauge's `CRATE` register; the X728's gauge turned out to be a
+MAX17040/41 with no such register (2026-09-01), so EPS fitted a slope to the state of charge
+instead. Then the state of charge itself turned out to be a *model* — no shunt, no coulomb counter —
+and it was measured drifting down at 8–10 %/h for an hour while the satellite sat on mains with its
+terminal voltage flat to the millivolt (2026-09-03). A slope fitted to that reported a failed
+charger on a desk, which is the one error that ends with a plugged-in satellite powering itself off.
+The fix that day asked both slopes and required them to agree; the fix the next day noticed that
+once the percentage is derived from the voltage, "both agree" is a condition that cannot be false,
+and reduced it to the one measured slope: `voltage_rate`, under −30 mV/h.
+
+`null` still means "trust the pin" — the honest fallback, and the only one that lets a flat pack
+just plugged in climb out of `SAFE` rather than power itself off.
+
+**Every threshold on this axis is a voltage as of 2026-09-04**, for the same reason: `VCELL` is a
+direct ADC reading and the percentage beside it is a reconstruction. Percentages remain everywhere a
+person reads one, derived from the voltage through a curve in `common/battery.py` that is itself
+inferred rather than measured — so nothing the satellite *does* is allowed to depend on it. A
+threshold in volts also needs the level smoothed, which a modelled percentage did not: EPS publishes
+a 120 s median beside the raw sample, because the camera pipeline starting is worth tens of
+millivolts and the thresholds are 60–130 mV apart.
 
 Recovery also needs hysteresis, which the pre-rewrite handler lacked: `handlers.py` dropped to
 `LOW_POWER` below its threshold and only ever left it when external power appeared. Returning to
-`NOMINAL` at ≥ 40 % on battery — ten points above the 30 % trigger, the band moving with it —
-prevents flapping around the threshold and
-makes recovery possible at all in `FLIGHT`. Mains recovers from any level, but "mains" has to
-mean the pin *and* a charge rate that is not still falling — see the paragraph on suppressing
-the descents below.
+`NOMINAL` at ≥ 3.75 V on battery — a 110 mV band above the 3.64 V trigger — prevents flapping around
+the threshold and makes recovery possible at all in `FLIGHT`. The band is wider than the ten points
+it replaced because the load moving on or off the pack is worth 50 mV by itself, which a slow model
+absorbed and a voltage does not. Mains recovers from any level, but "mains" has to mean the pin
+*and* a voltage that is not still falling — see above.
 
 ---
 

@@ -345,12 +345,92 @@ when the voltage *and* the charge agree that it is (`obc/power_policy.py` → `D
 settling model moves only one. No test could have caught this — the mock gauge reports whatever the
 test hands it, and what was wrong was the register map, not the logic.
 
+*That fix lasted one day and was then finished properly; see
+[The percentage is now derived from the voltage](#the-percentage-is-now-derived-from-the-voltage-and-the-thresholds-are-volts--2026-09-04)
+below.*
+
 The charging question itself is unchanged and still open: the DC 5.5 × 2.1 jack with a 5.1 V ≥ 4 A
 supply has still not been tried.
 
 If the jumper is ever opened on purpose, GPIO16 would let EPS decide *when* to charge. Holding a
 partial charge on the desk is genuinely better for a Li-ion cell than sitting at 4.2 V for weeks,
-and a deliberate top-up before a `FLIGHT` outing is exactly the behaviour wanted.
+and a deliberate top-up before a `FLIGHT` outing is exactly the behaviour wanted. Note what the
+2026-09-04 test below implies about the cost: charging on this board appears to require the board to
+be powered on, so handing the decision to EPS would mean a satellite that only ever charges while
+its software is running.
+
+### Charging is an activity of the powered-on state — 2026-09-04
+
+Ten hours plugged in with the Pi shut down (`poweroff`, then a 10-second press on the X728's button
+to cut the 5 V rail — the LEDs on the sensor boards were still lit before that press, which is worth
+knowing on its own: a `poweroff` alone leaves the whole 5 V bus powered). Result: **the charge LEDs
+read the same in the morning as the night before — one steady, one blinking, two dark — and the
+terminal voltage had barely moved.** Even the low charge rate measured on 2026-09-01 would have put
+about 25 % into the pack over that time and moved the indicator a level.
+
+Two things follow.
+
+**The overnight test measured nothing about charging current**, which is what it was meant to do. It
+was run precisely because there was no load competing for the adapter's current, so a result of
+"nothing happened" cannot distinguish a starved charger from a disabled one.
+
+**Geekworm's own documentation contradicts itself here, and the observation picks a side.**
+[X728-script](https://wiki.geekworm.com/X728-script) says a shorted `CHG Ctrl` means "battery
+automatic charging when power adapter connected", with no mention of the host's state, while
+[X728](https://wiki.geekworm.com/X728) describes the V2.5 feature as "choose to charge when boot up
+by short *CHG EN* and stop charging at shutdown". The jumper on this unit is shorted, and the
+satellite did not charge while off, which matches the second wording. The most likely mechanism is
+that the enable line is fed from a rail that the long press takes down with everything else.
+
+The practical rule for operating this satellite: **leave it running while it charges.** `HOSTED` is
+the right profile for it — three services, minimal load, and the pack still gets most of whatever
+the input can spare. "Put it on charge overnight and switch it off" does not work on this board in
+any jumper configuration: shorted, the charger follows the board's own state; open, it follows
+GPIO16, which needs a running Pi to hold high.
+
+Also corrected here: the "~150 mA" charging figure recorded above came from the gauge's percentage
+and is therefore not a measurement. Taken from the voltage instead — +17 mV in 15 minutes, i.e.
+68 mV/h, against a curve gradient of about 7 mV per point — the same series reads as roughly 8 %/h
+and 400–500 mA. Still far below the board's rating, but the difference matters for diagnosis: half
+an amp with the Pi drawing about one from a 3.5 A adapter is the signature of a starved input, not
+of a broken charger.
+
+### The percentage is now derived from the voltage, and the thresholds are volts — 2026-09-04
+
+The end of the story that began with a misidentified part. The 2026-09-03 fix took the gauge's
+modelled state of charge out of the *mains* decision but left it deciding `LOW_POWER`, `SAFE` and
+`CRITICAL` — so the two thresholds whose whole job is to protect the filesystem were still comparing
+a number this board reconstructs from a model with no current sense behind it. The remedy is not a
+better percentage:
+
+- **`obc/power_policy.py` compares volts.** `LOW_POWER_VOLTS` 3.64, `SAFE_VOLTS` 3.58,
+  `CRITICAL_VOLTS` 3.45, `RECOVERY_VOLTS` 3.75. `CRITICAL` sits 450 mV above the X728's own 3.0 V
+  cutoff, which at the measured idle discharge is over two hours of margin for a flush and a
+  poweroff.
+- **`common/battery.py` holds one voltage-to-percentage curve**, used for display only: the
+  dashboard, the beacon's `b` field, `cubesat status`, the `battery` column, and the two
+  time-remaining estimates. It is **inferred from a generic 18650 curve, not measured on this pack**,
+  and it is marked as such at the constant. One point agrees with it — 3.759 V read 47.7 % on the
+  gauge, against 47 % on the curve — which is a coincidence rather than a calibration.
+- **The gauge's own figure is still published and still recorded**, as `gauge_percent` and in its own
+  column. Two reasons, both about the record: the pair over a few missions is what will confirm or
+  replace the inferred curve, and a gauge that has already been wrong in one known way is best
+  watched for going wrong in another.
+- **One slope, not two.** With the percentage derived from the voltage, its slope is the voltage
+  slope restated, so `on_mains` asking both was a condition that could not be false. `charge_rate`
+  is now `voltage_rate` through the curve's local gradient, published because %/h is what a person
+  reads, and consulted by nothing.
+- **The level compared is a 120 s median** (`eps/slopes.py` → `MedianWindow`). A modelled percentage
+  changed slowly by construction; a terminal voltage drops the moment a load appears, and this
+  satellite's camera pipeline is worth tens of millivolts against thresholds 60–130 mV apart. The
+  raw sample is published and recorded beside the median, so a chart can still show the dip that the
+  policy is not allowed to act on.
+
+**What this does not fix.** Nothing here makes the pack charge faster, and nothing here measures the
+curve. Both wait on the bench: V13 for the charging input, and **V15** for one full discharge from
+4.2 V to cutoff, which is what turns the curve and the four thresholds from estimates into
+measurements — and which will also give the first real answer about this pack's capacity, currently
+estimated at about 3.3 Ah for the pair against 3.5 Ah each on the label.
 
 Tracked as V13 in [`ROADMAP.md`](../ROADMAP.md). **Do not interpret the gauge drift above until
 this is settled:** a cell that is being trickle-charged and one that is not are different problems.

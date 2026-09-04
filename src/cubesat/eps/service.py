@@ -5,13 +5,19 @@ sets no thresholds, makes no decisions and knows nothing about mission states.
 Deciding what 38% means belongs to OBC's power policy, in one place, where it
 can be tested against every state.
 
-What EPS adds to the gauge's reading is two slopes, and both are measurements
-rather than decisions: the X728's gauge reports no rate of its own (see
-``slopes.py``), so EPS fits one to the state of charge and one to the terminal
-voltage. What a slope *means* — whether −0.5 %/h on mains is a failed charger —
-is still the policy's call. The voltage one exists because the percentage one
-turned out to describe a model rather than the pack: it drifted downwards for an
-hour on mains while the voltage did not move at all.
+What EPS adds to the gauge's reading is arithmetic, never a threshold: a slope
+fitted to the terminal voltage, a median of the same voltage over a shorter
+window, and — through ``common/battery.py`` — the percentage and the two
+estimates of time remaining that a person actually reads. What any of it *means*
+— whether −40 mV/h on mains is a failed charger — is still the policy's call.
+
+**Everything here is anchored to the voltage** (2026-09-04). The gauge's own
+state of charge is published as ``gauge_percent`` and used by nothing: it is a
+MAX17040/41 reconstruction from an internal model, and it was measured drifting
+downwards for an hour on mains while the voltage did not move at all. The
+percentage on the wire is derived from the voltage instead, which is why there is
+one slope here and not two — a slope over a derived percentage would be the
+voltage slope with extra steps.
 
 EPS runs in **every** profile, including HOSTED where there is no mission at
 all. It is the only source of the telemetry that drives LOW_POWER, SAFE and
@@ -25,9 +31,9 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 
-from cubesat.common import config
+from cubesat.common import battery, config
 from cubesat.common.service import Service
-from cubesat.eps.slopes import SlopeEstimator
+from cubesat.eps.slopes import MedianWindow, SlopeEstimator
 from cubesat.hal import registry
 from cubesat.hal.interfaces import PowerMonitor
 
@@ -43,19 +49,17 @@ class EpsService(Service):
     ) -> None:
         super().__init__()
         self._monitor = monitor if monitor is not None else registry.power_monitor()
-        self._rate = SlopeEstimator(
-            config.EPS_CHARGE_RATE_WINDOW_SEC,
-            config.EPS_CHARGE_RATE_MIN_SPAN_SEC,
-            clock=clock,
-        )
-        # The same window over the voltage, fed in millivolts so the estimator's
-        # two-decimal rounding lands well below the policy's threshold instead of
-        # quantising it to 10 mV/h.
+        # Fed in millivolts so the estimator's two-decimal rounding lands well
+        # below the policy's threshold instead of quantising it to 10 mV/h.
         self._volts = SlopeEstimator(
             config.EPS_CHARGE_RATE_WINDOW_SEC,
             config.EPS_CHARGE_RATE_MIN_SPAN_SEC,
             clock=clock,
         )
+        # A much shorter window, over the level rather than its slope. See
+        # slopes.py -> MedianWindow: a threshold in volts has to survive the
+        # camera pipeline starting.
+        self._level = MedianWindow(config.EPS_LEVEL_WINDOW_SEC, clock=clock)
 
     def on_start(self) -> None:
         # Report the gauge's absence loudly and then carry on. The service stays
@@ -66,32 +70,63 @@ class EpsService(Service):
 
     def tick(self) -> None:
         reading = self._monitor.read()
-        if reading.charge_rate is None:
-            # A gauge that measures its own rate is believed; this one does not,
-            # so the rate is fitted to the history of the level it does measure.
-            reading = replace(
-                reading,
-                charge_rate=self._rate.observe(reading.battery_percent, reading.external_power),
-            )
         if reading.voltage_rate is None:
             # No gauge here reports this one, so it is always fitted. It is the
-            # slope the power policy consults first: this part's state of charge
-            # is a model that was measured drifting on mains, and the voltage is
-            # not (2026-09-03, see hal/interfaces.py -> Power.voltage_rate).
+            # slope the power policy decides on: this part's state of charge is a
+            # model that was measured drifting on mains, and the voltage is not
+            # (2026-09-03, see hal/interfaces.py -> Power.voltage_rate).
             reading = replace(
                 reading,
                 voltage_rate=self._volts.observe(
                     reading.voltage * 1000.0, reading.external_power
                 ),
             )
-        self.publish("eps_status", qos=1, **reading.as_dict())
+        level = round(self._level.observe(reading.voltage, reading.external_power), 3)
+        if reading.charge_rate is None:
+            # A gauge that measures its own rate is believed; this one does not,
+            # so the rate a person reads is the measured slope expressed in the
+            # units they expect. It is a restatement of voltage_rate, not a
+            # second opinion, and the policy consults neither of the two through
+            # this field.
+            reading = replace(
+                reading,
+                charge_rate=(
+                    None
+                    if reading.voltage_rate is None
+                    else battery.percent_per_hour(reading.voltage_rate, level)
+                ),
+            )
+        self.publish(
+            "eps_status",
+            qos=1,
+            **reading.as_dict(),
+            # The level the descents compare, and the percentage a person reads.
+            # Both derived from the median rather than from the raw sample, so
+            # that a chart, a beacon and a state change never disagree about
+            # which reading they were looking at.
+            voltage_median=level,
+            battery_percent=battery.percent_from_voltage(level),
+            # Estimates, and null wherever the slope does not support one. The
+            # target of the first is the pack's own floor rather than any policy
+            # threshold: EPS sets no thresholds and does not know where CRITICAL
+            # is, and the satellite will have powered itself off well before this
+            # number runs out.
+            time_to_empty_sec=battery.seconds_to_voltage(
+                level, reading.voltage_rate, battery.EMPTY_VOLTS
+            ),
+            time_to_full_sec=battery.seconds_to_voltage(
+                level, reading.voltage_rate, battery.FULL_VOLTS
+            ),
+        )
         self.log.debug(
-            "battery %.2f%% at %.3f V, external_power=%s, charge_rate=%s, voltage_rate=%s",
-            reading.battery_percent,
+            "pack %.3f V (median %.3f V, gauge says %s%%), external_power=%s, "
+            "voltage_rate=%s, charge_rate=%s",
             reading.voltage,
+            level,
+            reading.gauge_percent,
             reading.external_power,
-            reading.charge_rate,
             reading.voltage_rate,
+            reading.charge_rate,
         )
 
     def on_stop(self) -> None:

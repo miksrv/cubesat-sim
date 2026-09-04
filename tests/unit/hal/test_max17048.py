@@ -90,7 +90,7 @@ def test_bench_measured_registers_decode_to_the_bench_values(monitor):
     device, _, _ = monitor
     reading = device.read()
     assert reading.voltage == 4.044
-    assert reading.battery_percent == 79.61
+    assert reading.gauge_percent == 79.61
 
 
 def test_a_word_read_is_one_indivisible_transaction(monitor):
@@ -129,15 +129,27 @@ def test_the_gauge_has_no_rate_register_so_none_is_reported_and_never_read(monit
     assert reading.charge_rate is None
     assert (ADDRESS, max17048.REG_CRATE_ABSENT) not in bus.reads
     assert (ADDRESS, max17048.REG_CRATE_ABSENT + 1) not in bus.reads
-    assert reading.battery_percent == 79.61
+    assert reading.gauge_percent == 79.61
 
 
 def test_state_of_charge_is_clamped(monitor):
-    # A full pack reads slightly over 100%; letting that through would make
-    # every threshold and chart downstream subtly wrong.
+    # A full pack reads slightly over 100%. Nothing decides on this field any
+    # more, but a 104 % point on a chart still sends somebody hunting for a bug
+    # in the wrong place.
     device, bus, _ = monitor
     bus.words[0x04] = 0x6800  # 104%
-    assert device.read().battery_percent == 100.0
+    assert device.read().gauge_percent == 100.0
+
+
+def test_the_state_of_charge_is_reported_and_not_promoted(monitor):
+    # The 2026-09-04 split, as a test. This driver reports what the gauge says
+    # under a name that says whose opinion it is, and reports no percentage of
+    # its own: deriving one belongs to EPS, which owns the pack curve, and the
+    # policy reads volts either way.
+    device, _, _ = monitor
+    fields = device.read().as_dict()
+    assert "battery_percent" not in fields
+    assert fields["gauge_percent"] == 79.61
 
 
 def test_probe_accepts_a_gauge_that_answers(monitor):

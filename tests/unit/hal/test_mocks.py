@@ -99,25 +99,31 @@ def test_power_starts_full_and_discharges():
     monitor._discharge_sec = 100
     full = monitor.read()
     assert isinstance(full, Power)
-    assert full.battery_percent == 100.0
+    assert full.voltage == pytest.approx(4.2)
     monitor._started -= 50
-    assert monitor.read().battery_percent == pytest.approx(50.0, abs=1)
+    # Half of the pack, in volts, through the same curve the satellite reads.
+    assert monitor.read().voltage == pytest.approx(3.77, abs=0.01)
 
 
 def test_battery_can_be_pinned_to_reach_a_state_directly(monkeypatch):
     # LOW_POWER, SAFE and CRITICAL are unreachable in a test without this.
     monkeypatch.setenv("CUBESAT_MOCK_BATTERY", "15")
-    assert MockPowerMonitor().read().battery_percent == 15.0
+    reading = MockPowerMonitor().read()
+    # The knob is still a percentage because that is how a test says what it
+    # wants; the reading is the voltage a 15 % pack shows, because that is what
+    # the policy compares.
+    assert reading.gauge_percent == 15.0
+    assert reading.voltage == pytest.approx(3.52, abs=0.001)
 
 
 def test_pinned_battery_is_clamped(monkeypatch):
     monkeypatch.setenv("CUBESAT_MOCK_BATTERY", "500")
-    assert MockPowerMonitor().read().battery_percent == 100.0
+    assert MockPowerMonitor().read().voltage == pytest.approx(4.2)
 
 
 def test_unparseable_pin_is_ignored(monkeypatch):
     monkeypatch.setenv("CUBESAT_MOCK_BATTERY", "half")
-    assert MockPowerMonitor().read().battery_percent == 100.0
+    assert MockPowerMonitor().read().voltage == pytest.approx(4.2)
 
 
 def test_the_mock_reports_no_rate_like_the_real_gauge(monkeypatch):
@@ -137,7 +143,7 @@ def test_mains_stops_the_discharge(monkeypatch):
     monitor._started -= 10_000
     reading = monitor.read()
     assert reading.external_power is True
-    assert reading.battery_percent == 100.0
+    assert reading.voltage == pytest.approx(4.2)
     assert reading.charge_rate is None
 
 
@@ -145,8 +151,9 @@ def test_discharge_never_goes_below_empty():
     monitor = MockPowerMonitor()
     monitor._started -= 10_000
     reading = monitor.read()
-    assert reading.battery_percent == 0.0
-    assert reading.voltage == pytest.approx(3.2)
+    assert reading.gauge_percent == 0.0
+    # The floor of the curve, which is where the X728 cuts its own output.
+    assert reading.voltage == pytest.approx(3.0)
 
 
 def test_camera_writes_a_real_decodable_file(tmp_path):
@@ -217,7 +224,7 @@ def test_readings_serialise_to_flat_dicts():
         "temperature", "humidity", "pressure", "light", "uv_index", "uv_raw"
     }
     assert set(MockPowerMonitor().read().as_dict()) == {
-        "battery_percent", "voltage", "external_power", "charge_rate", "voltage_rate"
+        "gauge_percent", "voltage", "external_power", "charge_rate", "voltage_rate"
     }
     imu = MockImu()
     imu._started -= 100

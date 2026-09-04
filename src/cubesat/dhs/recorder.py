@@ -313,16 +313,25 @@ def build_row(
         "mission_id": mission_id,
         "profile": profile,
         "obc_state": obc_state,
+        # Derived from the voltage through the pack curve since 2026-09-04, and
+        # the gauge's own model kept beside it. Two columns because the curve is
+        # inferred and this pair is what will confirm or replace it; see the
+        # migration that added `gauge_percent`.
         "battery": _number(eps.get("battery_percent")),
+        "gauge_percent": _number(eps.get("gauge_percent")),
+        # The raw sample, not the median EPS smooths for the descents. The median
+        # is recoverable from a run of these rows and the raw value is not, and a
+        # recorder that stores a filtered signal has thrown away the only thing
+        # it could have filtered differently later.
         "voltage": _number(eps.get("voltage")),
         # SQLite has no boolean type, and "true"/1/'t' in one column is how a
         # chart ends up filtering on a string. Stored as 0/1, null if unknown.
         "external_power": _flag(eps.get("external_power")),
-        # Both fitted by EPS, not read from the gauge — this family has no rate
+        # Fitted by EPS, not read from the gauge — this family has no rate
         # register. Null until EPS has enough history to say, which is a
         # measurement of ignorance rather than of zero. The voltage one is the
-        # slope the power policy decides on; the percentage one describes a
-        # model, and on 2026-09-03 the two disagreed on a desk for an hour.
+        # slope the power policy decides on; the percentage one is that same
+        # slope through the curve, kept because it is what a chart labels.
         "charge_rate": _number(eps.get("charge_rate")),
         "voltage_rate": _number(eps.get("voltage_rate")),
         "roll": _number((adcs or {}).get("roll")),

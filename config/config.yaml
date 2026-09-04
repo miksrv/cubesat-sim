@@ -95,14 +95,16 @@ beacon:
 
 # The flight recorder's own settings.
 eps:
-  # The charge rate is computed by EPS from the state-of-charge history: the
-  # X728's gauge is a MAX17040/41 and has no rate register (verified
-  # 2026-09-01, docs/hardware-x728-ups-hat.md). A least-squares slope over this
-  # many seconds of readings is published as charge_rate, in percent per hour.
-  # 600 s is long enough that the SOC register's 1/256 % steps average out
-  # against the policy's -1 %/h threshold, and short enough that a charger that
-  # stops charging is noticed within the time the pack would take to lose a
-  # percent or two.
+  # Rates are computed by EPS from the terminal voltage: the X728's gauge is a
+  # MAX17040/41 and has no rate register (verified 2026-09-01,
+  # docs/hardware-x728-ups-hat.md), and its state of charge turned out to be a
+  # model rather than a measurement (2026-09-03). A least-squares slope over
+  # this many seconds of readings is published as voltage_rate in mV/h, and the
+  # same slope through the pack curve as charge_rate in %/h.
+  # 600 s is long enough that VCELL's 1.25 mV steps average out against the
+  # policy's -30 mV/h threshold, and short enough that a charger that stops
+  # charging is noticed within the time the pack would take to lose a percent
+  # or two.
   charge_rate_window_sec: 600
   # Until the window holds this much history the rate is published as null,
   # which the power policy reads as "trust the mains pin". Also the time it
@@ -110,6 +112,13 @@ eps:
   # discarded then: a battery-time slope must not follow the satellite onto
   # mains, or a flat pack just plugged in would look like one still draining.
   charge_rate_min_span_sec: 300
+  # The level itself is published as a median over this window, and that median
+  # is what LOW_POWER, SAFE, CRITICAL and the recovery compare. Short: at the
+  # 30 s NOMINAL cadence this holds four samples, so it outlasts a photograph
+  # (which moves the terminal voltage by tens of millivolts) while lagging a
+  # real discharge by about 3 mV. Raising it smooths the descents into
+  # uselessness; the charts have the raw voltage and do not need it.
+  level_window_sec: 120
 
 # What happens after an unexpected reset — a brownout, a watchdog bite, the jolt
 # of a landing. FLIGHT is the only profile that resumes itself, because it is

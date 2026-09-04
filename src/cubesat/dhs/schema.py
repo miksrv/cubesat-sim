@@ -139,6 +139,7 @@ TELEMETRY_COLUMNS: tuple[str, ...] = (
     # position is documentation rather than mechanism.
     "charge_rate",
     "voltage_rate",
+    "gauge_percent",
 )
 
 #: Written in this order, in one executemany per flush.
@@ -211,7 +212,14 @@ CREATE TABLE telemetry (
     mission_id      INTEGER NOT NULL REFERENCES missions(id),
     profile         TEXT,
     obc_state       TEXT,
+    -- Percent remaining. Derived from `voltage` through the pack curve since
+    -- 2026-09-04 (common/battery.py); the fuel gauge's own figure lives in
+    -- `gauge_percent`, and in this column for rows older than that date. See
+    -- the migration that added it.
     battery         REAL,
+    -- The measured terminal voltage, and the quantity every power threshold
+    -- compares (obc/power_policy.py). The one number here the hardware reports
+    -- directly.
     voltage         REAL,
     external_power  INTEGER,
     roll            REAL,
@@ -363,14 +371,17 @@ _START_REASON_DDL = (
 )
 
 _CHARGE_RATE_DDL = (
-    # The signed percent-per-hour EPS fits to the state-of-charge history
-    # (eps/slopes.py). It has always been published and has always landed
-    # in raw_json; this promotes it to a column because it is not one more
-    # reading among many — it is the quantity power_policy actually decides on.
-    # `on_mains` compares it against DRAINING_PERCENT_PER_HOUR, so it is the
-    # number that explains why a descent happened or did not, and a black box
-    # that keeps the readings but not the quantity under the decision makes the
-    # analyst reconstruct the decision from JSON.
+    # The signed percent-per-hour rate EPS publishes (eps/slopes.py). It has
+    # always been published and has always landed in raw_json; this promoted it
+    # to a column on 2026-09-03, when it was still the quantity power_policy
+    # decided on.
+    #
+    # It is not that any more, and the column stays anyway: as of 2026-09-04 it
+    # is voltage_rate through the pack curve, which makes it the readable form of
+    # the number under the decision rather than the number itself. Dropping it
+    # would cost a chart and gain nothing — SQLite rewrites the table for a
+    # dropped column, and every mission recorded before the change has real
+    # values in it.
     #
     # Null is a real value here and must stay one: EPS publishes no rate until
     # it has charge_rate_min_span_sec of history, and again for that long after
@@ -382,8 +393,8 @@ _CHARGE_RATE_DDL = (
 _VOLTAGE_RATE_DDL = (
     # The millivolts-per-hour slope over the terminal voltage, added one day
     # after charge_rate for the same reason and ahead of it in the decision: as
-    # of 2026-09-03 `on_mains` asks this one first, and treats the pack as
-    # draining only when both slopes agree (obc/power_policy.py).
+    # of 2026-09-03 `on_mains` asked this one first, and since 2026-09-04 it is
+    # the only slope it asks at all (obc/power_policy.py).
     #
     # Storing it is not symmetry with charge_rate, and `voltage` already being a
     # column does not cover it. Recomputing a slope from the stored voltages
@@ -394,6 +405,30 @@ _VOLTAGE_RATE_DDL = (
     # a confident figure rewrites the one thing the record exists to preserve,
     # which is what the satellite believed at the time.
     "ALTER TABLE telemetry ADD COLUMN voltage_rate REAL",
+)
+
+_GAUGE_PERCENT_DDL = (
+    # What the fuel gauge itself said, beside what the satellite concluded.
+    #
+    # `battery` changed meaning on 2026-09-04 without changing type: it used to
+    # be the MAX17040/41's own state of charge and is now a percentage derived
+    # from the terminal voltage (common/battery.py). The gauge's number is kept
+    # in its own column rather than dropped, for two reasons that are both about
+    # the record rather than about tidiness.
+    #
+    # The first is that the derived percentage rests on an *inferred* curve, and
+    # the two columns side by side over a few missions are how that curve gets
+    # checked — a discharge that logged only the conclusion could not audit it.
+    # The second is that this gauge has already been wrong in one specific way
+    # (a model settling downwards on mains at 8-10 %/h with the voltage flat),
+    # and the way to notice it going wrong differently is to have kept the
+    # measurements from when it was merely wrong in the known way.
+    #
+    # Rows recorded before this column are null in it, and rows recorded before
+    # 2026-09-04 hold the gauge's value in `battery`. That discontinuity is real
+    # and it is dated: do not "fix" old rows, and do not read `battery` across
+    # the boundary as one series without saying which side it came from.
+    "ALTER TABLE telemetry ADD COLUMN gauge_percent REAL",
 )
 
 #: Forward-only, in order. Never edit a migration that has shipped — a file that
@@ -409,6 +444,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=5, statements=_START_REASON_DDL),
     Migration(version=6, statements=_CHARGE_RATE_DDL),
     Migration(version=7, statements=_VOLTAGE_RATE_DDL),
+    Migration(version=8, statements=_GAUGE_PERCENT_DDL),
 )
 
 #: What a database this build can write looks like.

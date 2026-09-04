@@ -11,7 +11,7 @@ This module is wiring. The decisions live next door and are unit-tested there:
 
     mission_machine.py   the legal moves between mission states
     profile_machine.py   request a profile, reconcile what HOSTD achieved
-    power_policy.py      what a battery percentage means, in one place
+    power_policy.py      what a pack voltage means, in one place
     deploy.py            the bring-up self-test
     health.py            who is still alive
     commands.py          parsing what the ground sent
@@ -44,8 +44,8 @@ from cubesat.obc.profile_machine import ProfileMachine, ProfileUpdate
 #:
 #: A bound, not a handshake: a profile with no persistence never started DHS at
 #: all, and hanging until a service that was never launched answers would leave
-#: the Pi running at under 10 % battery — the exact situation the state exists to
-#: get out of before the SD card pays for it.
+#: the Pi running under the CRITICAL voltage — the exact situation the state
+#: exists to get out of before the SD card pays for it.
 CRITICAL_FLUSH_GRACE_SEC = 10.0
 
 #: Asked of HOSTD on entering LOW_POWER. The way back out is the active profile's
@@ -255,14 +255,18 @@ class ObcService(Service):
         self._resume_on_evidence(data)
         reading = power_policy.reading_from(data)
         if reading is None:
-            self.log.warning("eps_status carries no battery level; no power verdict")
+            self.log.warning("eps_status carries no pack voltage; no power verdict")
             return
         target = power_policy.evaluate(reading, self.mission.state)
         if target is None:
             return
+        # Volts first, because volts are what was compared. The percentage is
+        # there for whoever is reading the log with the dashboard next to them,
+        # and it is None on an EPS old enough not to publish one.
         self.log.info(
-            "battery %.1f%% (external_power=%s) calls for %s",
-            reading.battery_percent,
+            "pack %.3f V (%s) (external_power=%s) calls for %s",
+            reading.voltage,
+            "?%" if reading.battery_percent is None else f"{reading.battery_percent:.1f}%",
             reading.external_power,
             target.value,
         )

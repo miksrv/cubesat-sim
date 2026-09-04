@@ -2,6 +2,7 @@ import dataclasses
 
 import pytest
 
+from cubesat.common import battery as pack
 from cubesat.common import config, profiles
 from cubesat.common.states import MissionState, Persistence, Profile
 from cubesat.common.topics import TOPICS
@@ -12,13 +13,15 @@ from cubesat.obc.service import ObcService
 #: What DEMO, EXPO and FLIGHT all ask for.
 MISSION_SERVICES = ("adcs", "payload", "dhs", "comms")
 
-#: Battery levels placed relative to the thresholds rather than spelled out. The
-#: LOW_POWER trigger moved from 40 % to 30 % on 2026-09-02, and a test that was
-#: about the descent rather than about the number should not have noticed.
-THROTTLED = power_policy.LOW_POWER_PERCENT - 1.0
-SAVED = power_policy.SAFE_PERCENT - 1.0
-DYING = power_policy.CRITICAL_PERCENT - 1.0
-RECOVERED = power_policy.RECOVERY_PERCENT + 1.0
+#: Pack voltages placed relative to the thresholds rather than spelled out. The
+#: LOW_POWER trigger moved from 40 % to 30 % on 2026-09-02 and from a percentage
+#: to 3.64 V on 2026-09-04, and a test that was about the descent rather than
+#: about the number should not have noticed either time.
+STEP = 0.01
+THROTTLED = power_policy.LOW_POWER_VOLTS - STEP
+SAVED = power_policy.SAFE_VOLTS - STEP
+DYING = power_policy.CRITICAL_VOLTS - STEP
+RECOVERED = power_policy.RECOVERY_VOLTS + STEP
 
 #: A plausible first status message per service — enough that the payload is
 #: recognisably the real one rather than an empty object.
@@ -127,21 +130,25 @@ def report_in(client, *services):
         client.deliver(TOPICS[deploy.REPORT_TOPICS[name]], dict(STATUS_PAYLOADS[name]))
 
 
-def battery(client, percent, external_power=False, charge_rate=None, voltage_rate=None):
-    if charge_rate is None:
-        charge_rate = 1.5 if external_power else -2.0
+def battery(client, volts, external_power=False, voltage_rate=None):
+    """One eps_status at a given pack voltage, shaped the way EPS shapes it.
+
+    The level is published as both the raw sample and the median, because that is
+    what EPS does and because the policy reads the median: a test that set only
+    one of them would be testing the fallback path rather than the normal one.
+    The percentage rides along derived from the same voltage, so that a test can
+    see what the log line would have said without any of it deciding anything.
+    """
     if voltage_rate is None:
         # Mains held the terminal voltage flat on the hardware; the pack falls.
-        # Both slopes have to agree before a plugged-in satellite may descend, so
-        # a test that means "the charger died" says so in both.
         voltage_rate = 0.0 if external_power else -100.0
     client.deliver(
         TOPICS["eps_status"],
         {
-            "battery_percent": percent,
-            "voltage": 3.8,
+            "voltage": volts,
+            "voltage_median": volts,
+            "battery_percent": pack.percent_from_voltage(volts),
             "external_power": external_power,
-            "charge_rate": charge_rate,
             "voltage_rate": voltage_rate,
         },
     )
@@ -694,9 +701,9 @@ def test_a_battery_that_says_nothing_yields_no_verdict(obc, caplog):
     service, client, _ = obc
     bring_up(service, client)
     with caplog.at_level("WARNING"):
-        client.deliver(TOPICS["eps_status"], {"voltage": 3.8})
+        client.deliver(TOPICS["eps_status"], {"battery_percent": 42.0})
     assert service.mission.state is MissionState.NOMINAL
-    assert "no battery level" in caplog.text
+    assert "no pack voltage" in caplog.text
 
 
 def test_a_healthy_battery_in_a_healthy_state_publishes_nothing_new(obc):
@@ -812,7 +819,7 @@ def test_the_flush_is_started_once_per_descent(obc, monkeypatch):
     bring_up(service, client)
     battery(client, DYING)
     flush_thread(service)
-    battery(client, DYING - 1.0)
+    battery(client, DYING - STEP)
     poweroffs = [c for c in host_commands(client) if c["action"] == "poweroff"]
     assert len(poweroffs) == 1
 
@@ -1065,8 +1072,8 @@ def test_the_governor_is_asked_for_once_per_descent(obc):
     service, client, _ = obc
     bring_up(service, client)
     battery(client, THROTTLED)
-    battery(client, THROTTLED - 1.0)
-    battery(client, THROTTLED - 2.0)
+    battery(client, THROTTLED - STEP)
+    battery(client, THROTTLED - 2 * STEP)
     assert governors(client) == ["powersave"]
 
 
@@ -1111,7 +1118,7 @@ def test_a_flat_satellite_plugged_in_at_a_desk_is_not_powered_off(obc, monkeypat
     bring_up(service, client, "EXPO")
     battery(client, SAVED)
     assert service.mission.state is MissionState.SAFE
-    battery(client, DYING, external_power=True, charge_rate=2.0)
+    battery(client, DYING, external_power=True)
     assert service.mission.state is MissionState.NOMINAL
     assert [c for c in host_commands(client) if c["action"] == "poweroff"] == []
 
@@ -1124,7 +1131,7 @@ def test_a_charger_that_stopped_charging_does_not_suppress_the_power_off(obc, mo
     # supplying the load, so its terminal voltage falls with the charge. The
     # gauge's model drifting downwards on its own is a different case, and it
     # deliberately no longer reaches here — tests/unit/obc/test_power_policy.py.
-    battery(client, DYING, external_power=True, charge_rate=-3.0, voltage_rate=-90.0)
+    battery(client, DYING, external_power=True, voltage_rate=-90.0)
     assert service.mission.state is MissionState.CRITICAL
     flush_thread(service)
     assert host_commands(client)[-1]["action"] == "poweroff"

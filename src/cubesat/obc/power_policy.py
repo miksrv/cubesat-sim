@@ -1,8 +1,14 @@
 """What the battery level means. Pure functions, no I/O, no MQTT.
 
 EPS publishes numbers and makes no decisions; every threshold in the system
-lives here, in one place, so that "what happens at 38 %" has exactly one answer
+lives here, in one place, so that "what happens at 3.6 V" has exactly one answer
 and that answer is testable against every state without a broker.
+
+**The level is a voltage** (2026-09-04). It used to be the fuel gauge's
+percentage, until that gauge was identified as a MAX17040/41 whose state of
+charge is a model rather than a measurement. Percentages still exist — EPS
+derives one through ``common/battery.py`` for the dashboard, the beacon and the
+log line below — but nothing in this file compares one, and nothing should.
 
 The thresholds themselves are not arbitrary. The unit runs off an X728 UPS in
 ``EXPO`` and ``FLIGHT``, and a Raspberry Pi that browns out mid-write risks the
@@ -18,25 +24,43 @@ from typing import Any
 
 from cubesat.common.states import MissionState
 
-#: Throttle everything: stretch the poll intervals, refuse the camera.
+#: **Every threshold here is in volts** (2026-09-04), and that is the whole
+#: point of this file's second version.
 #:
-#: Lowered from 40 % on 2026-09-02. 40 % of an 18650 pair is a long way from an
-#: emergency, and throttling there cost the most interesting part of a trip — the
-#: second half of it — for no gain: the descent that actually protects the card
-#: is SAFE at 20 % and CRITICAL at 10 %, and both are still where they were. What
-#: 30 % buys is a wider band of full-rate recording before anything is given up.
-LOW_POWER_PERCENT = 30.0
+#: They were percentages for as long as the satellite believed its fuel gauge.
+#: The gauge is a MAX17040/41 with no shunt and no coulomb counter: its state of
+#: charge is reconstructed from an internal model, and that model was measured
+#: falling at 8–10 %/h for an hour while the satellite sat on mains with the
+#: terminal voltage flat to the millivolt (2026-09-03,
+#: ``docs/hardware-x728-ups-hat.md``). Patching the mains test kept that number
+#: out of the *mains* decision, but SAFE and CRITICAL still hung on it, so the
+#: two thresholds that exist to protect the SD card and the filesystem were the
+#: two still deciding on an unmeasured quantity.
+#:
+#: So the descents now compare the voltage, which is what ``VCELL`` reports at
+#: 1.25 mV per LSB. The percentages below each threshold are what
+#: ``common/battery.py`` maps that voltage to; they are written here as a
+#: courtesy to whoever remembers the old numbers, and they are **inferred from a
+#: generic Li-ion curve, not measured on this pack** — which is why the curve is
+#: not in the path of the comparison. One discharge log replaces the annotation
+#: without touching the behaviour (ROADMAP V15).
+#:
+#: Throttle everything: stretch the poll intervals, refuse the camera. Was 40 %,
+#: lowered to 30 % on 2026-09-02, because throttling there cost the most
+#: interesting part of a trip — the second half of it — for no gain: the descents
+#: that actually protect the card are the two below.
+LOW_POWER_VOLTS = 3.64  # ≈ 30 %
 #: Sensors only, radio quiet.
-SAFE_PERCENT = 20.0
+SAFE_VOLTS = 3.58  # ≈ 20 %
 #: Flush the recorder and power the host off while that is still possible.
-CRITICAL_PERCENT = 10.0
-#: Below this, the *modelled* state of charge is falling. Kept as the confirming
-#: half of the mains test rather than the deciding one — see ``on_mains``. The
-#: threshold is not zero because the rate is fitted to a quantised reading and
-#: carries a few hundredths of noise, and a pack can dip slightly for minutes
-#: after a plug-in; treating either as a mains failure would throw away the
-#: protection it is meant to preserve.
-DRAINING_PERCENT_PER_HOUR = -1.0
+#:
+#: The margin under it is what matters, and it is generous: the X728 cuts its own
+#: output at 3.0 V, and from 3.45 V the measured idle discharge of −197 mV/h
+#: (2026-09-03) leaves over two hours, a heavy profile well under one. Either is
+#: an order of magnitude more than a flush and a poweroff need. Do not chase the
+#: last few percent by lowering this — the point of CRITICAL is to spend charge
+#: on shutting down cleanly rather than on staying up.
+CRITICAL_VOLTS = 3.45  # ≈ 10 %
 
 #: Below this, the terminal voltage is falling: the pack is actually delivering
 #: current. **Measured on the satellite 2026-09-03** in HOSTED, one series
@@ -54,15 +78,12 @@ DRAINING_PERCENT_PER_HOUR = -1.0
 #:
 #: −30 mV/h sits between them with margin both ways: four times the fitting noise
 #: (one 1.25 mV VCELL step across the 600 s window is ±7.5 mV/h) and six times
-#: below the idle discharge it must catch. By the discharge slope measured in the
-#: same series — **8.0 mV per percent** at this level — it is worth ≈ −3.8 %/h.
-#: That is less twitchy than the −1 %/h it now fronts, and deliberately so: the
-#: percentage was not measuring the pack. A heavier profile drains faster and is
+#: below the idle discharge it must catch. A heavier profile drains faster and is
 #: caught sooner, never later; a charger delivering exactly the load holds the
 #: voltage flat, and then there is nothing to catch.
 DRAINING_MV_PER_HOUR = -30.0
 
-#: Climb back out at 40 %, ten points above the level that got us here.
+#: Climb back out at 3.75 V, a 110 mV band above the level that got us here.
 #:
 #: The band is the whole point. Recovering at the same level that triggers
 #: LOW_POWER makes the state flap every time the reading crosses it, and the
@@ -70,13 +91,20 @@ DRAINING_MV_PER_HOUR = -30.0
 #: which meant that on battery, in FLIGHT, the satellite could never recover at
 #: all no matter how much the pack had charged.
 #:
-#: Ten points, and it tracked LOW_POWER down when that moved from 40 % to 30 %
-#: (2026-09-02). The alternative was leaving it at 50 % and living with a
-#: twenty-point band, which on this pack means recovery that never arrives on a
-#: walk: the descent is minutes of load, the climb back is a charger the X728 is
-#: not currently delivering (V13). A band wide enough to be unreachable is not
-#: hysteresis, it is a one-way door.
-RECOVERY_PERCENT = 40.0
+#: **It is wider in volts than the ten points it replaces** (2026-09-04), and
+#: deliberately. Ten points on the plateau is about 60 mV, while the load moving
+#: on or off the pack is worth 50 mV all by itself — measured at the unplug on
+#: 2026-09-03, and the same order as the camera pipeline starting. A percentage
+#: from a slow internal model absorbed that; a voltage does not, so hysteresis
+#: has to clear the load swing rather than the fitting noise. 110 mV is twice it.
+#: EPS smoothing (``eps/slopes.py`` → ``MedianWindow``) handles the transients;
+#: this handles the steady-state difference between one profile and another.
+#:
+#: The opposite failure is real too, and is why this is not wider still: a band
+#: wide enough to be unreachable is not hysteresis, it is a one-way door, and on
+#: this pack the climb back is a charger the X728 is not currently delivering
+#: (V13).
+RECOVERY_VOLTS = 3.75  # ≈ 48 %
 
 #: LOW_POWER only applies where power is actually being spent. STANDBY is
 #: already idle, and throttling it would change nothing.
@@ -91,15 +119,23 @@ RECOVERABLE = frozenset({MissionState.LOW_POWER, MissionState.SAFE})
 class PowerReading:
     """The part of an ``eps_status`` payload the policy actually decides on."""
 
-    battery_percent: float
+    #: Terminal volts, and the only level this policy compares. EPS publishes a
+    #: median over a short window as ``voltage_median`` and the raw sample as
+    #: ``voltage``; ``reading_from`` prefers the median, because a threshold in
+    #: volts is sensitive to load transients in a way a threshold in modelled
+    #: percent was not.
+    voltage: float
     external_power: bool
-    #: Signed percent per hour, as EPS publishes it: positive charging, negative
-    #: draining, None while EPS has too little history to say (its first minutes,
-    #: and the minutes after the mains pin changed).
-    charge_rate: float | None = None
-    #: Signed millivolts per hour over the same window, and the slope this policy
-    #: consults first. None under the same conditions as ``charge_rate``.
+    #: Signed millivolts per hour, fitted by EPS over its window. None while
+    #: there is too little history to say — its first minutes, and the minutes
+    #: after the mains pin changed.
     voltage_rate: float | None = None
+    #: Carried for the log line and for nothing else, and None when EPS has not
+    #: said. It is derived from ``voltage`` through the pack curve, so it cannot
+    #: disagree with the decision — and it is not consulted anyway. Do not add a
+    #: threshold on it: that is the arrangement this file spent two revisions
+    #: getting out of.
+    battery_percent: float | None = None
 
     @property
     def on_mains(self) -> bool:
@@ -111,70 +147,92 @@ class PowerReading:
         CRITICAL. So a second opinion is needed — but it has to be one that
         measures the pack rather than a model of it.
 
-        **The voltage decides and the percentage confirms** (2026-09-03). The
-        percentage alone held this job until it was measured on the hardware and
-        found to be wrong in the dangerous direction: this gauge computes state
-        of charge from a model with no current sense at all, and that model was
-        watched drifting down at 8–10 %/h for an hour while the satellite sat
-        plugged in with its charge LEDs lit and its terminal voltage flat to the
-        millivolt. ``on_mains`` was therefore False on a desk, and the descents
-        below — SAFE at 20 %, CRITICAL at 10 %, neither of which asks what state
-        it is in — were hours away from powering off a satellite that was on
-        mains the whole time. That is the exact scenario the comment in
-        ``evaluate`` calls actively harmful, arrived at from the opposite side.
+        **The voltage decides, and it decides alone** (2026-09-04). The
+        percentage alone held this job until 2026-09-03, when it was measured on
+        the hardware and found to be wrong in the dangerous direction: this gauge
+        computes state of charge from a model with no current sense at all, and
+        that model was watched drifting down at 8–10 %/h for an hour while the
+        satellite sat plugged in with its charge LEDs lit and its terminal
+        voltage flat to the millivolt. ``on_mains`` was therefore False on a
+        desk, and the descents below — neither of which asks what state it is in
+        — were hours away from powering off a satellite that was on mains the
+        whole time. That is the exact scenario the comment in ``evaluate`` calls
+        actively harmful, arrived at from the opposite side.
 
-        So the pack counts as draining only when **both** slopes say so: the
-        voltage, which is measured, and the percentage, which corroborates. A
-        genuinely failed charger moves both — the pack delivers current, so the
-        terminal voltage falls, which is what the unplugged half of that same
-        measurement showed at −90 mV/h. A drifting model moves only one, and one
-        is no longer enough.
+        The first fix required **both** slopes to agree, the measured one and the
+        modelled one, on the reasoning that a genuinely failed charger moves both
+        while a settling model moves only one. That reasoning was sound and the
+        arrangement lasted a day: making the percentage a function of the voltage
+        (``common/battery.py``) makes its slope a function of the voltage slope,
+        so "both agree" became a sentence that could not be false. A fence that
+        cannot fail is not a fence, and leaving it in place would have left two
+        conditions in the code and one in reality — the kind of gap somebody
+        later reasons from. So there is one condition, and it is the measured one.
 
-        A missing slope falls back to trusting the pin, as before: EPS that has
-        not yet seen enough history — its first five minutes, and the five after
-        the pin changed — must not cause a plugged-in satellite to power itself
-        off.
+        What has not changed is the reason for having a second opinion at all: a
+        charger that has stopped charging still reads as external power, and the
+        pin alone would let that one failure disable every protection below.
+
+        A missing slope falls back to trusting the pin: EPS that has not yet seen
+        enough history — its first five minutes, and the five after the pin
+        changed — must not cause a plugged-in satellite to power itself off.
         """
         if not self.external_power:
             return False
-        falling_voltage = (
-            self.voltage_rate is not None and self.voltage_rate <= DRAINING_MV_PER_HOUR
-        )
-        falling_charge = (
-            self.charge_rate is not None and self.charge_rate <= DRAINING_PERCENT_PER_HOUR
-        )
-        return not (falling_voltage and falling_charge)
+        falling = self.voltage_rate is not None and self.voltage_rate <= DRAINING_MV_PER_HOUR
+        return not falling
+
+
+def _number(payload: dict[str, Any], key: str) -> float | None:
+    """One numeric field, or None if it is absent or not a number.
+
+    ``bool`` is rejected explicitly because it is an ``int`` in Python, and a
+    ``True`` arriving where volts belong would otherwise read as 1.0 V and put
+    the satellite into CRITICAL.
+    """
+    raw = payload.get(key)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    return float(raw)
 
 
 def reading_from(payload: dict[str, Any]) -> PowerReading | None:
-    """Extract a reading, or None if the payload carries no usable battery level.
+    """Extract a reading, or None if the payload carries no usable voltage.
 
     ``None`` means "no verdict is possible", which is very different from "the
-    battery is fine": a gauge that has stopped answering must not read as 0 % and
-    power the satellite off, nor as 100 % and keep it running.
+    battery is fine": a gauge that has stopped answering must not read as 0 V and
+    power the satellite off, nor as full and keep it running.
 
-    One spelling of the battery field, not two. Accepting an alias as well would
-    mean a typo in a publisher still worked here and stopped working somewhere
-    else, which is the kind of divergence that survives review.
+    **The required field is the voltage** (2026-09-04, it was the percentage
+    before). That is what every threshold compares, so a payload without it
+    carries no verdict — while a payload without the percentage is merely a
+    payload with nothing to write in the log line.
+
+    The level preferred is ``voltage_median``, EPS' median over a short window,
+    falling back to the raw ``voltage`` for its first ticks and for an older EPS
+    that publishes only the sample. The fallback is deliberately the raw value
+    rather than no verdict: one un-smoothed sample is still a measurement of the
+    pack, and the alternative is a satellite with no power protection for the
+    first two minutes after every start.
+
+    One spelling per field, not two. Accepting an alias as well would mean a typo
+    in a publisher still worked here and stopped working somewhere else, which is
+    the kind of divergence that survives review.
     """
-    raw = payload.get("battery_percent")
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+    volts = _number(payload, "voltage_median")
+    if volts is None:
+        volts = _number(payload, "voltage")
+    if volts is None:
         return None
-    rate = payload.get("charge_rate")
-    if isinstance(rate, bool) or not isinstance(rate, (int, float)):
-        rate = None
     # An older EPS publishes no voltage_rate at all, and a satellite mid-upgrade
     # runs one service ahead of another. Absent reads as "not known yet", which
-    # is the same fallback as too little history: the pin is trusted, and the
-    # percentage cannot condemn a plugged-in pack on its own.
-    volts = payload.get("voltage_rate")
-    if isinstance(volts, bool) or not isinstance(volts, (int, float)):
-        volts = None
+    # is the same fallback as too little history: the pin is trusted, and one
+    # sample cannot condemn a plugged-in pack.
     return PowerReading(
-        battery_percent=float(raw),
+        voltage=volts,
         external_power=bool(payload.get("external_power", False)),
-        charge_rate=None if rate is None else float(rate),
-        voltage_rate=None if volts is None else float(volts),
+        voltage_rate=_number(payload, "voltage_rate"),
+        battery_percent=_number(payload, "battery_percent"),
     )
 
 
@@ -184,29 +242,29 @@ def evaluate(reading: PowerReading, state: MissionState) -> MissionState | None:
     Ordered from the most severe downwards, so a battery that has fallen through
     two thresholds between two EPS messages lands on the lower one.
     """
-    battery = reading.battery_percent
+    volts = reading.voltage
 
     if reading.on_mains:
         # On mains there is no power emergency of any kind: the pack cannot die,
         # so there is nothing for CRITICAL to save the SD card from and nothing
         # for LOW_POWER to stretch. Skipping the descents here is not a
         # convenience — CRITICAL on mains is actively harmful. The satellite comes
-        # home with a flat pack, is plugged in, reports 5 %, powers the host off —
+        # home with a flat pack, is plugged in, reads 3.3 V, powers the host off —
         # and the X728 never brings it back, because mains never left. The normal
         # recovery gesture would brick the unit until someone pulled the plug.
         return MissionState.NOMINAL if state in RECOVERABLE else None
 
-    if battery < CRITICAL_PERCENT:
+    if volts < CRITICAL_VOLTS:
         return None if state is MissionState.CRITICAL else MissionState.CRITICAL
-    if battery < SAFE_PERCENT:
+    if volts < SAFE_VOLTS:
         return None if state in (MissionState.SAFE, MissionState.CRITICAL) else MissionState.SAFE
 
     # Mains is handled above, in one place, so the descent and the recovery
     # cannot disagree about what "plugged in" means — if they could, the state
     # would flap between them on every EPS message in the band where they differ.
     if state in RECOVERABLE:
-        return MissionState.NOMINAL if battery >= RECOVERY_PERCENT else None
+        return MissionState.NOMINAL if volts >= RECOVERY_VOLTS else None
 
-    if battery < LOW_POWER_PERCENT and state in LOW_POWER_SOURCES:
+    if volts < LOW_POWER_VOLTS and state in LOW_POWER_SOURCES:
         return MissionState.LOW_POWER
     return None

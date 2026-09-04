@@ -23,9 +23,10 @@ from cubesat.obc.service import ObcService
 #: Battery levels placed relative to the thresholds rather than spelled out, so
 #: that moving one — LOW_POWER went 40 % to 30 % on 2026-09-02 — does not break
 #: a test that is about the descent rather than about the number.
-THROTTLED = power_policy.LOW_POWER_PERCENT - 1.0
-SAVED = power_policy.SAFE_PERCENT - 1.0
-DYING = power_policy.CRITICAL_PERCENT - 1.0
+STEP = 0.01
+THROTTLED = power_policy.LOW_POWER_VOLTS - STEP
+SAVED = power_policy.SAFE_VOLTS - STEP
+DYING = power_policy.CRITICAL_VOLTS - STEP
 
 #: What DEMO, EXPO and FLIGHT all ask for.
 MISSION_SERVICES = ("adcs", "payload", "dhs", "comms")
@@ -155,16 +156,18 @@ def hostd_says(client, profile, ttl_expires_at=None, boot=False, previous=None):
     )
 
 
-def battery(client, percent, external_power=False, charge_rate=None):
-    if charge_rate is None:
-        charge_rate = 1.5 if external_power else -2.0
+def battery(client, volts, external_power=False, voltage_rate=None):
+    if voltage_rate is None:
+        # Flat on mains, falling on the pack — the two regimes as they were
+        # measured on the hardware (2026-09-03).
+        voltage_rate = 0.0 if external_power else -100.0
     client.deliver(
         TOPICS["eps_status"],
         {
-            "battery_percent": percent,
-            "voltage": 3.7,
+            "voltage": volts,
+            "voltage_median": volts,
             "external_power": external_power,
-            "charge_rate": charge_rate,
+            "voltage_rate": voltage_rate,
         },
     )
 
@@ -279,9 +282,9 @@ def test_mains_at_a_desk_brings_a_throttled_satellite_back(service_factory, monk
     report_in(client, *MISSION_SERVICES)
     wait_for_state(client, MissionState.NOMINAL.value)
 
-    battery(client, THROTTLED - 4.0)
+    battery(client, THROTTLED - 4 * STEP)
     wait_for_state(client, MissionState.LOW_POWER.value)
-    battery(client, THROTTLED - 3.0, external_power=True)
+    battery(client, THROTTLED - 3 * STEP, external_power=True)
     # A state change happens inside a mission; it does not end one, so the
     # profile and the label are untouched by the round trip.
     wait_for_state(client, MissionState.NOMINAL.value)
@@ -356,9 +359,9 @@ def test_coming_home_with_a_flat_pack_and_plugging_in_recovers(service_factory, 
     report_in(client, *MISSION_SERVICES)
     wait_for_state(client, MissionState.NOMINAL.value)
 
-    battery(client, SAVED - 4.0)
+    battery(client, SAVED - 4 * STEP)
     wait_for_state(client, MissionState.SAFE.value)
-    battery(client, DYING + 2.0, external_power=True, charge_rate=3.2)
+    battery(client, DYING + 2 * STEP, external_power=True)
 
     wait_for_state(client, MissionState.NOMINAL.value)
     assert host_actions(client, "poweroff") == []

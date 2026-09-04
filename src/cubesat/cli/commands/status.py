@@ -78,6 +78,15 @@ def _power(eps: dict[str, Any] | None) -> str:
     rate = eps.get("charge_rate")
     if isinstance(rate, (int, float)):
         parts.append(f"{rate:+.2f} %/h")
+    # Whichever way the pack is going, at most one of these is a number. Both
+    # are estimates off an inferred curve, so they are shown to the nearest
+    # tenth of an hour and never to the minute.
+    remaining = eps.get("time_to_empty_sec")
+    if isinstance(remaining, (int, float)):
+        parts.append(f"{remaining / 3600.0:.1f} h to empty")
+    until_full = eps.get("time_to_full_sec")
+    if isinstance(until_full, (int, float)):
+        parts.append(f"{until_full / 3600.0:.1f} h to full")
     return ", ".join(parts)
 
 

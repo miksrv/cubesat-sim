@@ -173,15 +173,15 @@ without SSH. Transmission is still rationed by the per-state beacon table, which
    ▼
  NOMINAL        ──► the state an active profile stays in; the recorder runs here
    │
-   │  battery < 30 %
+   │  pack < 3.64 V
    ▼
- LOW_POWER      ──► NOMINAL, on recover: battery ≥ 40 %, or mains restored
+ LOW_POWER      ──► NOMINAL, on recover: pack ≥ 3.75 V, or mains restored
    │
-   │  battery < 20 %, a subsystem lost, or the safe_mode command
+   │  pack < 3.58 V, a subsystem lost, or the safe_mode command
    ▼
  SAFE
    │
-   │  battery < 10 %
+   │  pack < 3.45 V
    ▼
  CRITICAL       ──► flush the recorder, then graceful poweroff
 ```
@@ -194,11 +194,15 @@ without SSH. Transmission is still rationed by the per-state beacon table, which
 | `STANDBY` | Bus alive, mission not active — the state under `HOSTED` and `MAINTENANCE` |
 | `DEPLOY` | Subsystem bring-up: an I2C presence sweep for the addresses this profile's services need, then a first **status** message from each of them. A heartbeat is not enough — a service whose sensor is dead still heartbeats. On failure → `SAFE`, not a pretended `NOMINAL` |
 | `NOMINAL` | Healthy, subsystems polled at nominal cadence. Where an active profile lives: the mission records, the camera is permitted, the beacon runs |
-| `LOW_POWER` | Battery < 30 %: cadence stretched, camera refused, radio duty-cycled, `powersave` governor |
-| `SAFE` | Battery < 20 %, a fault, or a ground command |
-| `CRITICAL` | Battery < 10 % **and not on mains**: flush and `poweroff`. The X728 brings the Pi back when mains returns |
+| `LOW_POWER` | Pack under 3.64 V (≈ 30 %): cadence stretched, camera refused, radio duty-cycled, `powersave` governor |
+| `SAFE` | Pack under 3.58 V (≈ 20 %), a fault, or a ground command |
+| `CRITICAL` | Pack under 3.45 V (≈ 10 %) **and not on mains**: flush and `poweroff`. The X728 brings the Pi back when mains returns |
 
-Entering an active profile triggers `DEPLOY`; leaving one returns to `STANDBY`. Recovery from `LOW_POWER` happens at ≥ 40 % — a 10-point band, so the state cannot flap around the threshold. The band tracks the trigger rather than staying where it was: a band wide enough that a pack on a walk never climbs out of it would be a one-way door, not hysteresis.
+**The thresholds are volts, not percentages** (2026-09-04). They were percentages for as long as the satellite believed its fuel gauge; the gauge turned out to be a MAX17040/41 whose state of charge is reconstructed from an internal model with no current sense behind it, and that model was measured drifting down at 8–10 %/h on mains with the terminal voltage flat to the millivolt. So the descents compare `VCELL`, which is measured at 1.25 mV per LSB, and the percentages above are what `common/battery.py` maps those voltages to — an **inferred** curve, shown for orientation and in the path of no decision. One discharge log replaces the annotation without touching the behaviour ([ROADMAP](ROADMAP.md) V15). Percentages still exist everywhere a person reads one: the dashboard, the beacon's `b` field, `cubesat status`, the `battery` column.
+
+Entering an active profile triggers `DEPLOY`; leaving one returns to `STANDBY`. Recovery from `LOW_POWER` happens at ≥ 3.75 V — a 110 mV band, so the state cannot flap around the threshold. The band is wider in volts than the ten points it replaced, and deliberately: ten points on the plateau is about 60 mV, while the load moving on or off the pack is worth 50 mV by itself (measured at an unplug, 2026-09-03). A modelled percentage absorbed that; a voltage does not, so hysteresis has to clear the load swing rather than the fitting noise. It is not wider still because a band a pack on a walk never climbs out of would be a one-way door, not hysteresis.
+
+**The level compared is a median, not a sample.** EPS publishes both — `voltage` as read and `voltage_median` over `eps.level_window_sec` (120 s) — and the policy reads the median, because a threshold in volts is sensitive to a transient in a way a threshold in modelled percent was not: a camera capture is worth tens of millivolts and `SAFE` to `CRITICAL` is 130 mV apart, so one unlucky sample could descend a state on its own. A median rather than a mean, because a mean carries the transient into the answer.
 
 **There was a `SCIENCE` state above `NOMINAL`, entered and left by ground command, and it was removed on 2026-09-02.** It had no content: every cadence row, the beacon interval, the camera permission and the recording rule were identical to `NOMINAL`, so `science start` changed a word on the wire and nothing a service could act on. What such a state would have been *for* — deciding whether telemetry is recorded — belongs to the profile, and how often to the state; the pre-rewrite build gated writes on it and that gate is what made `FLIGHT` record nothing unless somebody remembered a command. Cadence and photo interval are configuration, and the only thing that changes them at runtime is the power-driven descent, which is the satellite's decision rather than an operator's.
 
@@ -206,7 +210,9 @@ Entering an active profile triggers `DEPLOY`; leaving one returns to `STANDBY`. 
 
 Mains alone is not trusted, though. A faulty charger or a stuck PLD pin would otherwise suppress the protection forever, so "on mains" means `external_power` **and** a pack that is not still going down. A pack draining while the satellite believes it is plugged in is not on mains as far as the power policy is concerned, and it still reaches `CRITICAL`.
 
-**What "still going down" means is two slopes, and the measured one decides** (2026-09-03). It used to be `charge_rate` alone, until that was measured on the hardware: this gauge has no current sense, its state of charge is a *model*, and that model was watched drifting down at 8–10 %/h for an hour while the satellite sat on mains with its charge LEDs lit and its terminal voltage flat to the millivolt. The satellite therefore believed it was on battery at a desk, and `SAFE` and `CRITICAL` — which do not ask what state it is in — were hours from powering off a plugged-in unit that the X728 could not have restarted. So the policy now asks `voltage_rate` first, in mV/h, and treats the pack as draining only when the voltage **and** the charge agree: a charger that has genuinely stopped moves both, because the pack then carries the load, while a settling model moves only the modelled one. Thresholds and the measurements behind them are at `obc/power_policy.py`.
+**What "still going down" means is `voltage_rate`, in mV/h, and nothing else** (2026-09-04). It used to be `charge_rate` alone, until that was measured on the hardware: this gauge has no current sense, its state of charge is a *model*, and that model was watched drifting down at 8–10 %/h for an hour while the satellite sat on mains with its charge LEDs lit and its terminal voltage flat to the millivolt. The satellite therefore believed it was on battery at a desk, and `SAFE` and `CRITICAL` — which do not ask what state it is in — were hours from powering off a plugged-in unit that the X728 could not have restarted.
+
+The first fix required both slopes to agree, the measured one and the modelled one, on the reasoning that a failed charger moves both while a settling model moves only one. That reasoning was sound and it lasted a day: making the percentage a function of the voltage made its slope a function of the voltage slope, so "both agree" became a condition that could not be false. A fence that cannot fail is worse than no fence, because the code then claims two checks where reality has one. So there is one, and it is the measured one — under −30 mV/h the pack is delivering current, whatever the pin says. A missing slope (EPS' first five minutes, and five minutes after the pin changes) falls back to trusting the pin, because a missing measurement must not power off a plugged-in satellite. Thresholds and the measurements behind them are at `obc/power_policy.py`.
 
 Two things `DEPLOY` deliberately does **not** do. It does not require a GNSS fix: `DEMO` and `EXPO` run indoors, where a fix never arrives, and failing on that would send every indoor demonstration to `SAFE`. A fix is waited for best-effort and its absence is logged. And OBC does not read any device itself beyond the presence check — ADCS owns the IMU and the GNSS receiver, PAYLOAD owns the environmental sensor and the camera, COMMS owns the radio. Each subsystem's first status message *is* the proof its own hardware answered, and two processes reaching for one device over a 10 kHz bus is exactly the contention the [bus lock](#hardware-ownership) exists to prevent.
 
@@ -223,7 +229,7 @@ Two things `DEPLOY` deliberately does **not** do. It does not require a GNSS fix
 
 Notably, `LOW_POWER` and `SAFE` do **not** tear down the access point or the dashboard under `EXPO`: losing the display in front of an audience because the battery crossed a threshold would be the wrong behaviour, and the AP costs far less than the sensors it is throttling.
 
-The trigger was 40 % until 2026-09-02 and is now 30 %. 40 % of an 18650 pair is a long way from an emergency, and throttling there cost the second half of a trip — the more interesting half — for no gain: what protects the card is `SAFE` at 20 % and `CRITICAL` at 10 %, and both are unchanged.
+The trigger was 40 % until 2026-09-02, then 30 %, and since 2026-09-04 it is 3.64 V — the same place on the pack, expressed in the quantity that is actually measured. 40 % of an 18650 pair is a long way from an emergency, and throttling there cost the second half of a trip — the more interesting half — for no gain: what protects the card is `SAFE` and `CRITICAL`, and both are where they were.
 
 ---
 
@@ -340,6 +346,8 @@ Because `HOSTD` holds the applied profile and `OBC` reads it from a retained mes
 
 Reads battery state from the X728's fuel gauge — a **MAX17040/41** (I2C `0x36`), identified on 2026-09-01; the driver file is still named `max17048.py` and reads only the registers both families share — and mains presence from the X728 UPS Power Loss Detection pin over GPIO. Publishes `cubesat/eps/status` retained.
 
+What EPS trusts that gauge for is one number, `VCELL`. Its state of charge is published as `gauge_percent` and decided on by nothing (2026-09-04): it is a model with no current sense behind it, and it was measured drifting. The percentage, both rates and the two estimates of time remaining are all derived from the voltage through `common/battery.py`, and the thresholds they are compared against are volts.
+
 `EPS` runs in **every** profile, including `HOSTED` where there is no mission at all: it is the only source of the telemetry that drives `CRITICAL`, and a satellite that cannot see its own battery cannot protect its filesystem. Mains appearing on the PLD pin is also the "I am back at a desk" signal that can request a return to `HOSTED`.
 
 ### ADCS
@@ -406,7 +414,7 @@ opens one for itself and closes it again.
 |---|---|
 | Timing | `id`, `timestamp` (ISO-8601 UTC string) |
 | Context | `mission_id` → [`missions`](#mission-sessions), `profile`, `obc_state` |
-| EPS | `battery`, `voltage`, `external_power`, `charge_rate`, `voltage_rate` |
+| EPS | `battery` (derived from the voltage), `gauge_percent` (what the gauge itself said), `voltage`, `external_power`, `charge_rate`, `voltage_rate` |
 | ADCS attitude | `roll`, `pitch`, `yaw`, `quat_w/x/y/z`, `imu_temp`, `accel_x/y/z`, `gyro_x/y/z`, `calib_status` |
 | ADCS position | `lat`, `lon`, `alt`, `speed`, `fix`, `satellites` |
 | Payload science | `temperature`, `humidity`, `pressure`, `light`, `uv_index` |
@@ -929,29 +937,61 @@ read mid-switch goodbyes as faults.
 ```json
 {
   "timestamp": 1741863600.0,
-  "battery_percent": 87.5,
-  "voltage": 4.123,
-  "external_power": true,
-  "charge_rate": -0.208,
-  "voltage_rate": -197.0
+  "voltage": 3.759,
+  "voltage_median": 3.757,
+  "external_power": false,
+  "battery_percent": 48.4,
+  "gauge_percent": 47.71,
+  "voltage_rate": -197.0,
+  "charge_rate": -24.62,
+  "time_to_empty_sec": 7077.2,
+  "time_to_full_sec": null
 }
 ```
 
-`charge_rate` is signed percent per hour: positive charging, negative draining. It is **computed by
-EPS**, a least-squares slope over the last `eps.charge_rate_window_sec` (600 s) of `battery_percent`
-readings — the X728's gauge is a MAX17040/41 and has no rate register of its own (the `−0.208` an
-earlier driver published was a decoded `0xFFFF`, see `docs/hardware-x728-ups-hat.md`). It is `null`
-until the window holds `eps.charge_rate_min_span_sec` (300 s) of history, and again for that long
-after `external_power` changes, because a slope measured on battery says nothing about the pack once
-it is plugged in. The power policy reads `null` as "trust the pin". What the rate is for is telling
-"plugged in and charging" from "plugged in but the pack is still going down".
+Those are real numbers: the pack as it read on 2026-09-03 a minute after the plug was pulled, with
+every derived field computed from the two measured ones rather than made up for the example. Note
+what the pair says about the gauge — 47.71 against 48.4 is close here, and it was the *slope* of the
+gauge's figure that was wrong by an order of magnitude on mains, not its level on battery.
 
-`voltage_rate` is the same fit over the terminal voltage, in **millivolts per hour**, and it is the
-one the power policy consults first. It exists because `charge_rate` describes a model rather than
-the cell: this gauge reconstructs state of charge without measuring current, and on 2026-09-03 that
-reconstruction was measured drifting at −8…−10 %/h on mains while the voltage held flat at 0 mV/h —
-against −197 mV/h with the plug pulled. Both slopes share one window and one `null` rule, so an EPS
-that cannot say yet says nothing in either.
+**`voltage` is the only measurement in this payload; everything else is arithmetic on it.** That is
+the shape of the 2026-09-04 change: the X728's gauge is a MAX17040/41, it has no shunt and no
+coulomb counter, and its state of charge is reconstructed from an internal model that was measured
+drifting down at 8–10 %/h on mains with the terminal voltage flat to the millivolt. `VCELL` is a
+direct ADC reading at 1.25 mV per LSB, so it is what the power policy compares and what every
+derived field below is computed from.
+
+`voltage_median` is the median of the last `eps.level_window_sec` (120 s) of samples, and **the level
+the power policy actually compares**. `voltage` is published beside it unfiltered, because the
+recorder stores the raw series and a median is recoverable from it while the reverse is not. A median
+rather than a mean: a camera capture pulls the terminal voltage down for one sample, and a mean would
+carry that into the answer.
+
+`battery_percent` is `voltage_median` through the pack curve in `common/battery.py` — **an inferred
+curve**, and the reason nothing in the satellite's behaviour depends on it. If it is wrong by five
+points, a chart is wrong by five points and no decision changes. `gauge_percent` is what the fuel
+gauge itself reports, published beside it and believed by nothing: the pair over a few missions is
+what will confirm or replace the curve, and a record that kept only the conclusion could not audit
+it.
+
+`voltage_rate` is a least-squares slope over the last `eps.charge_rate_window_sec` (600 s) of
+readings, in **millivolts per hour**, and the one slope the power policy consults. It is `null` until
+the window holds `eps.charge_rate_min_span_sec` (300 s) of history, and again for that long after
+`external_power` changes, because a slope measured on battery says nothing about the pack once it is
+plugged in — the policy reads `null` as "trust the pin". `charge_rate` is that same slope converted
+through the curve's local gradient into percent per hour, for whoever is reading a screen; it is a
+restatement rather than a second opinion, which is why the mains test asks only one of them.
+
+`time_to_empty_sec` and `time_to_full_sec` are estimates against the pack's own floor and ceiling
+(3.0 V and 4.2 V), computed in the percentage domain rather than by dividing a voltage gap by a
+voltage slope: a satellite drawing constant power loses constant *charge* per hour, not constant
+volts, and extrapolating millivolts straight down over-states the time remaining worst exactly at
+the knee. At most one of the two is ever a number, and both are `null` whenever the slope is missing,
+flat or pointing the wrong way. The floor is deliberately the pack's rather than `CRITICAL`'s: EPS
+sets no thresholds and does not know where `CRITICAL` is — the satellite will have powered itself off
+long before this number runs out. `time_to_full_sec` inherits one extra caveat, stated at the
+function: the constant-voltage tail of a charge is not modelled, so it is optimistic about the last
+few points.
 
 ### `cubesat/adcs/status`
 
@@ -1581,31 +1621,38 @@ This is the recovery path for `FLIGHT`, where Wi-Fi is down and there is no SSH.
 ### Battery descent
 
 ```
-1. EPS publishes battery = 28 %  →  cubesat/eps/status
+1. EPS publishes voltage 3.628 V, voltage_median 3.630 V, battery_percent 29.4
+   →  cubesat/eps/status
 
-2. OBC: 28 % < 30 %, and not on mains  → LOW_POWER
+2. OBC: 3.630 V < 3.64 V, and not on mains  → LOW_POWER
    ADCS drops to 0.2 Hz, PAYLOAD to 300 s, DHS to 300 s, camera refused,
    OBC asks HOSTD for the powersave governor.
    Under EXPO the AP and the dashboard stay up.
 
-3. 18 % → SAFE: sensors only, no camera; the radio keeps listening and
+3. 3.57 V → SAFE: sensors only, no camera; the radio keeps listening and
    beacons every 10 min instead of every minute.
 
-4. 9 %  → CRITICAL: OBC tells DHS to flush and close the mission
+4. 3.44 V → CRITICAL: OBC tells DHS to flush and close the mission
    (end_reason = battery_critical), then asks HOSTD to power off.
    The X728 brings the Pi back when mains returns — into HOSTED, not into
    whatever profile was running. See Cold boot above.
 
+   From here to the X728's own 3.0 V cutoff is over two hours at the idle
+   discharge measured on the hardware, which is what the margin is for: the
+   flush and the poweroff spend charge, and they must not run out of it.
+
 5. Plug the satellite in at any point and the descent stops: mains recovers it to
-   NOMINAL from LOW_POWER or SAFE at any battery level, and suppresses the descent
-   in the first place. On battery, recovery needs ≥ 40 %.
+   NOMINAL from LOW_POWER or SAFE at any level, and suppresses the descent in the
+   first place. On battery, recovery needs ≥ 3.75 V.
    Either way the mission continues uninterrupted — a state change happens inside
    a mission, it does not end one.
 
-   "On mains" means the PLD pin AND a charge rate that is not still falling. A
-   charger that has stopped charging does not count, and the satellite still
-   reaches CRITICAL — otherwise one failed jack would disable the protection
-   permanently.
+   "On mains" means the PLD pin AND a terminal voltage that is not still falling
+   (voltage_rate above -30 mV/h). A charger that has stopped charging does not
+   count, and the satellite still reaches CRITICAL — otherwise one failed jack
+   would disable the protection permanently. A single dip does not count either:
+   the level compared is the 120 s median, so a camera capture cannot descend a
+   state on its own.
 ```
 
 ### Live dashboard
@@ -1670,7 +1717,7 @@ cubesat-sim/
 │       │   ├── service.py          #   wiring; the decisions live next door
 │       │   ├── profile_machine.py  #   request a profile, reconcile what HOSTD achieved
 │       │   ├── mission_machine.py  #   the legal moves between mission states
-│       │   ├── power_policy.py     #   what a battery percentage means, in one place
+│       │   ├── power_policy.py     #   what a pack voltage means, in one place
 │       │   ├── resume.py           #   may a reset put an interrupted FLIGHT back?
 │       │   ├── deploy.py           #   the bring-up self-test
 │       │   ├── health.py           #   who is still alive
@@ -2195,7 +2242,7 @@ are reached without waiting for a real battery to drain:
 
 | Variable | Effect |
 |---|---|
-| `CUBESAT_MOCK_BATTERY` | Pin the level, e.g. `15` to sit in `SAFE` |
+| `CUBESAT_MOCK_BATTERY` | Pin the level as a percentage, e.g. `15` to sit in `SAFE`. The mock converts it to the voltage a pack at that level would show, because that is what the policy compares |
 | `CUBESAT_MOCK_DISCHARGE_SEC` | Full to empty in this many seconds (default 3600) |
 | `CUBESAT_MOCK_EXTERNAL_POWER` | `1` for mains present, so nothing discharges |
 | `CUBESAT_MOCK_FIX_DELAY_SEC` | How long the mock GNSS reports no fix (default 60) |

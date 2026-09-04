@@ -192,6 +192,13 @@ def build(
     _put(fields, "pr", profile)
 
     if isinstance(eps, dict):
+        # ``b`` is the derived percentage and ``v`` is the measurement it was
+        # derived from (2026-09-04). Both go out because they answer different
+        # questions over a radio: ``b`` is what a person reads at a glance, and
+        # ``v`` is the number the satellite's own thresholds compare, so an
+        # operator debugging a descent from a phone can see what OBC saw. If the
+        # line has to be trimmed, note that ``v`` is the one that cannot be
+        # reconstructed from the other.
         _put(fields, "b", _decimal(eps.get("battery_percent"), 1))
         _put(fields, "v", _decimal(eps.get("voltage"), 2))
         external = eps.get("external_power")

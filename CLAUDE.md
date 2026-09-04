@@ -206,18 +206,43 @@ external power is present *and* the pack is not still going down. Without the fi
 satellite brought home flat and plugged in powers itself off and the X728 never restores it,
 because mains never left. Without the second, one failed charger disables the protection forever.
 
-**And "going down" is the voltage first, the percentage second** (measured 2026-09-03). The second
-half used to be `charge_rate` alone, which on this gauge is a slope fitted to a *model*: the
-MAX17040/41 senses no current, and its state of charge was watched falling at 8–10 %/h for an hour
-while the satellite sat on mains with the charge LEDs lit and the terminal voltage flat to the
-millivolt — 0 mV/h against −197 mV/h once unplugged. So a plugged-in satellite read as being on
-battery, and `SAFE` and `CRITICAL` (neither of which asks what state it is in) were hours from
-powering off a unit the X728 could not restart. The pack now counts as draining only when
-`voltage_rate` **and** `charge_rate` agree, because a charger that has really stopped moves both and
-a settling model moves one. Do not collapse this back to a single slope, and do not reach for the
-percentage as the deciding one: it is the only quantity here that is not measured. This is also the
-standing example of the rule below — the logic was right, the register map was not, and no test
-could have told the difference.
+**And "going down" is the voltage, full stop** (2026-09-04). The second half used to be
+`charge_rate`, which on this gauge is a slope fitted to a *model*: the MAX17040/41 senses no current,
+and its state of charge was watched falling at 8–10 %/h for an hour while the satellite sat on mains
+with the charge LEDs lit and the terminal voltage flat to the millivolt — 0 mV/h against −197 mV/h
+once unplugged. So a plugged-in satellite read as being on battery, and `SAFE` and `CRITICAL`
+(neither of which asks what state it is in) were hours from powering off a unit the X728 could not
+restart.
+
+The first fix required both slopes to agree, and it was right for a day. Then the percentage itself
+became derived from the voltage (see the rule below), which made its slope a restatement of
+`voltage_rate` rather than a second opinion — so "both agree" turned into a condition that cannot be
+false. **A fence that cannot fail is worse than no fence**, because the code then claims two checks
+where reality has one, and somebody later reasons from the claim. `on_mains` now asks one slope, the
+measured one, under −30 mV/h. Do not add a second condition on `charge_rate` to make it look
+symmetrical again, and do not reach for the percentage as a deciding quantity anywhere: it is the
+only number in this system that is not measured.
+
+**The pack's level is a voltage, and every percentage is decoration** (2026-09-04). `LOW_POWER`,
+`SAFE`, `CRITICAL` and the recovery compare volts — 3.64, 3.58, 3.45, 3.75 in
+`obc/power_policy.py` — because `VCELL` is a direct ADC reading at 1.25 mV per LSB and the state of
+charge beside it is a reconstruction. `common/battery.py` maps volts to a percentage for the
+dashboard, the beacon's `b` field, `cubesat status` and the `battery` column, and **that curve is
+inferred from a generic 18650 discharge curve, not measured on this pack** (ROADMAP V15). Two
+consequences to preserve: nothing in the satellite's behaviour may depend on the curve, so that
+being wrong by five points costs a chart and no decision; and the gauge's own figure is still
+published as `gauge_percent` and recorded in its own column, because the pair is what will confirm
+or replace the curve, and because a part that has already been wrong in one known way is worth
+watching for a second.
+
+**A threshold in volts needs a median, not a sample** (2026-09-04). A modelled percentage changed
+slowly by construction — the part's own filter did the one favour it ever did us. A terminal voltage
+drops the moment a load appears: 50 mV was measured at a single unplug, the camera pipeline starting
+is the same order, and `SAFE` to `CRITICAL` is 130 mV apart. So EPS publishes `voltage_median` over
+`eps.level_window_sec` (120 s) and the policy reads that, while the raw `voltage` is published and
+recorded beside it — a chart must still be able to show the dip the policy is not allowed to act on.
+A median rather than a mean, because a mean carries the transient into the answer. Do not stretch
+that window to smooth the charts, and do not feed the policy the raw sample.
 
 **Quiet is not deaf, and it is not mute either.** `beacon_enabled` rations the *schedule* only;
 listening is the profile's call, and so is answering. A profile sets where transmission starts:

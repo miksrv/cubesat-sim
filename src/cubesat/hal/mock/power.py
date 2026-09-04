@@ -8,6 +8,13 @@ an hour, so a service left running crosses every threshold on its own.
     CUBESAT_MOCK_BATTERY=15          pin the level (test SAFE directly)
     CUBESAT_MOCK_DISCHARGE_SEC=120   full to empty in two minutes
     CUBESAT_MOCK_EXTERNAL_POWER=1    mains present, so nothing discharges
+
+The knobs stay in percent because that is how a test says what it wants — "sit
+at 15 % and prove SAFE happens" — but the satellite decides on volts, so the
+level is converted through the same pack curve the dashboard reads
+(``common/battery.py``). A test that pins 15 % therefore gets the voltage a
+15 % pack would show, and the policy meets it on its own terms. The curve is
+not a straight line, so do not expect the voltage to be linear in the knob.
 """
 
 from __future__ import annotations
@@ -15,10 +22,8 @@ from __future__ import annotations
 import os
 import time
 
+from cubesat.common.battery import voltage_from_percent
 from cubesat.hal.interfaces import Power
-
-_FULL_VOLTS = 4.2
-_EMPTY_VOLTS = 3.2
 
 
 def _env_float(name: str) -> float | None:
@@ -44,12 +49,16 @@ class MockPowerMonitor:
     def read(self) -> Power:
         percent = self._level()
         return Power(
-            battery_percent=round(percent, 2),
-            voltage=round(_EMPTY_VOLTS + (_FULL_VOLTS - _EMPTY_VOLTS) * percent / 100.0, 3),
+            voltage=voltage_from_percent(percent),
             external_power=self._external,
+            # A mock gauge that agrees with the curve. The real one does not,
+            # which is the entire reason the curve exists — but a mock that
+            # disagreed would only be modelling one particular way of lying, and
+            # nothing downstream decides on this field any more.
+            gauge_percent=round(percent, 2),
             # None, like the real gauge: the X728's MAX17040/41 has no rate
-            # register, and EPS derives the rate from the level's history. A
-            # mock that reported one would exercise a path the hardware lacks.
+            # register, and EPS derives the rate from the voltage slope. A mock
+            # that reported one would exercise a path the hardware lacks.
             charge_rate=None,
         )
 

@@ -11,9 +11,16 @@ The gauge is a **MAX17040/41**, not the MAX17048 this file is named after. The
 address returns, while ``CONFIG`` reads the 17040/41 factory ``0x9700``. So
 the ``charge_rate`` this driver used to publish was ``0xFFFF × 0.208 = −0.208``,
 a constant, never a rate. It publishes ``None`` now, and EPS derives the rate
-from the state-of-charge history instead (``eps/charge_rate.py``). The
+from the voltage slope instead (``eps/slopes.py``, ``common/battery.py``). The
 registers read here (``VCELL``, ``SOC``, ``VERSION``) are the ones both
 families share.
+
+**What this driver is trusted for is one number: ``VCELL``.** Since 2026-09-04
+the state of charge it also reads is reported as ``gauge_percent`` and nothing
+acts on it — the percentage the rest of the system uses is derived from the
+voltage through a curve, and the power thresholds are volts. That is the honest
+end of the story that began with a misidentified part: this board is a voltmeter
+with a fuel gauge attached to it, and the voltmeter is the half that works.
 """
 
 from __future__ import annotations
@@ -112,13 +119,18 @@ class PowerMonitorX728:
         voltage = (self._word(REG_VCELL) >> 4) * VOLTS_PER_LSB
         percent = self._word(REG_SOC) / SOC_LSB_PER_PERCENT
         return Power(
-            # The gauge can read slightly above 100% on a full charge; clamping
-            # keeps every downstream threshold and chart honest.
-            battery_percent=round(min(100.0, max(0.0, percent)), 2),
             voltage=round(voltage, 3),
             external_power=self._external_power(),
-            # This gauge has no rate register; EPS computes the rate from the
-            # history of the reading above. See the module docstring.
+            # Read and reported, decided on by nothing. `SOC` is still worth a
+            # column because it is the raw output of the part's own model, and
+            # comparing it against the curve-derived percentage over a few
+            # missions is how that curve gets checked. Clamped because the
+            # register can read a little over 100 % on a full charge, and a
+            # chart with a 103 % point in it invites a bug hunt in the wrong
+            # place.
+            gauge_percent=round(min(100.0, max(0.0, percent)), 2),
+            # This gauge has no rate register; EPS derives one from the voltage
+            # slope. See the module docstring.
             charge_rate=None,
         )
 

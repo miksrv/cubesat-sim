@@ -1,4 +1,4 @@
-"""The charge rate fitted from state-of-charge history.
+"""The slope fitted from the pack's voltage, and the median of that voltage.
 
 Every window and span here is the test's own; nothing reads the shipped
 configuration, so a retuned config.yaml cannot silently change what is proved.
@@ -6,7 +6,7 @@ configuration, so a retuned config.yaml cannot silently change what is proved.
 
 import pytest
 
-from cubesat.eps.slopes import MIN_SAMPLES, SlopeEstimator
+from cubesat.eps.slopes import MIN_SAMPLES, MedianWindow, SlopeEstimator
 
 WINDOW = 600.0
 MIN_SPAN = 300.0
@@ -139,3 +139,60 @@ def test_the_rate_is_rounded_to_two_decimals(est):
 def test_a_nonsensical_window_is_refused_at_construction(window, span):
     with pytest.raises(ValueError):
         SlopeEstimator(window, span)
+
+
+# ── the level, as a median over a short window ───────────────────────────────
+
+
+def test_the_median_of_one_sample_is_that_sample():
+    # Never None, deliberately: withholding the level for the first two minutes
+    # after every start would leave the satellite with no power protection in
+    # exactly the window where a flat pack is most likely.
+    window = MedianWindow(60.0, clock=Clock())
+    assert window.observe(3.75, external_power=False) == 3.75
+
+
+def test_a_transient_dip_does_not_move_the_median():
+    # A photograph being encoded is worth tens of millivolts on this pack, and
+    # the thresholds are 60 mV apart.
+    clock = Clock()
+    window = MedianWindow(60.0, clock=clock)
+    for _ in range(3):
+        window.observe(3.70, external_power=False)
+        clock.advance(10)
+    assert window.observe(3.40, external_power=False) == 3.70
+
+
+def test_samples_older_than_the_window_are_dropped():
+    # Otherwise the median would carry the level from before a real fall for as
+    # long as the process had been running.
+    clock = Clock()
+    window = MedianWindow(60.0, clock=clock)
+    window.observe(4.10, external_power=False)
+    clock.advance(600)
+    assert window.observe(3.50, external_power=False) == 3.50
+
+
+def test_the_median_starts_over_when_the_mains_pin_changes():
+    # The plug moving is worth more millivolts than anything else that happens
+    # to this pack: 50 of them, measured at an unplug on 2026-09-03.
+    clock = Clock()
+    window = MedianWindow(600.0, clock=clock)
+    for _ in range(3):
+        window.observe(3.70, external_power=False)
+        clock.advance(10)
+    assert window.observe(3.75, external_power=True) == 3.75
+
+
+def test_a_reset_forgets_the_window_and_the_pin():
+    clock = Clock()
+    window = MedianWindow(600.0, clock=clock)
+    window.observe(3.70, external_power=False)
+    window.reset()
+    assert window.observe(3.50, external_power=False) == 3.50
+
+
+@pytest.mark.parametrize("window", [0, -1])
+def test_a_nonsensical_level_window_is_refused_at_construction(window):
+    with pytest.raises(ValueError):
+        MedianWindow(window)

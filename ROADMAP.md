@@ -40,6 +40,7 @@ code is worth writing.
 | [V10](#v10-whether-the-private-channel-is-relayed-at-all) | `[ ]` bench | Whether the private channel is relayed at all |
 | [V13](#v13-does-the-x728-actually-charge-the-pack-and-from-which-input) | `[ ]` bench | Does the X728 actually charge the pack, and from which input |
 | [V14](#v14-bno055-low-byte-bit-7-flips-reach-the-record) | `[ ]` bench | BNO055 low-byte bit-7 flips reach the record |
+| [V15](#v15-one-full-discharge-the-pack-curve-the-real-capacity-and-the-endurance) | `[ ]` bench | One full discharge: the pack curve, the real capacity and the endurance |
 | [Q1](#q1-keep-the-bmp280-at-0x76-and-for-what) | `[ ]` open | Keep the BMP280 at `0x76`, and for what? |
 | [Q4](#q4-may-a-safe-satellite-be-shown-in-expo) | `[ ]` open | May a `SAFE` satellite be shown in `EXPO`? |
 | [Q5](#q5-a-watchdog-under-the-satellite-and-what-it-must-not-undo) | `[ ]` open | A watchdog under the satellite, and what it must not undo |
@@ -338,8 +339,19 @@ battery and was hours from a `CRITICAL` poweroff on a desk. The fix — `voltage
 
 **What is left is the original question: the pack charges slowly, and nobody knows why.** Measured
 2026-09-01: CanaKit 5.1 V / 3.5 A on the X728's USB-C input, LEDs one steady one blinking, SOC
-50.39 → 50.78 % in fifteen minutes, voltage +17 mV — about +3 %/h, on the order of 150 mA against
-the 2.3–3.2 A the board advertises. At that rate 50 → 100 % takes about seventeen hours.
+50.39 → 50.78 % in fifteen minutes, voltage +17 mV. **Read the voltage, not the percentage**
+(corrected 2026-09-04): +17 mV in fifteen minutes is 68 mV/h, which at the curve's local gradient
+is on the order of 8 %/h and 400–500 mA — not the +3 %/h and 150 mA recorded here originally, both
+of which came off the gauge's own model. Either way it is far under the 2.3–3.2 A the board
+advertises, but the corrected figure points at a starved input rather than a dead charger stage,
+and that changes which candidate to test first.
+
+**A test with the board powered off tells nothing** (2026-09-04). Ten hours plugged in with the Pi
+shut down and the 5 V rail cut by a long press moved neither the LEDs nor the voltage — but the
+X728's own documentation contradicts itself about whether a shorted `CHG Ctrl` charges
+unconditionally or only "when boot up", and the observation says the latter. So charging on this
+board is an activity of the powered-on state, the overnight test measured nothing about current,
+and any future charge measurement has to run with the Pi up.
 
 **The check.** A 5.1 V, ≥ 4 A supply on the **DC 5.5 × 2.1 jack** — the input Geekworm rates for the
 full charging current, and the one input never yet tried. Watch `voltage` and `voltage_rate` for ten
@@ -386,6 +398,38 @@ as measured, so a replay shows an 8° twitch, a 0.13 g kick, or an 8° turn of h
 happened.
 
 ---
+
+#### V15: One full discharge: the pack curve, the real capacity and the endurance
+
+**Nothing about this pack is measured except one slope at one voltage.** −197 mV/h at 3.73–3.76 V
+under the HOSTED load, 2026-09-03. Everything else — the endurance, the capacity, the shape of the
+curve — is inference from that one number and a generic 18650 discharge curve, and three things now
+rest on it:
+
+- `common/battery.py` → `CURVE`, the voltage-to-percentage table every displayed percentage, the
+  beacon's `b` field and both time-remaining estimates come from. Marked inferred at the constant.
+- The four thresholds in `obc/power_policy.py`, which are volts chosen at the points that table
+  calls 10 %, 20 %, 30 % and 48 %. These are the numbers that decide when the satellite powers
+  itself off.
+- The claim that the cells are nothing like their label. Working back from the slope and the load
+  gives roughly 3.3 Ah for the pair, against 3.5 Ah each on the wrapper — which, if true, halves
+  every endurance figure anybody has assumed about this satellite.
+
+**The check.** Charge to 4.2 V, run one profile on battery, and log `eps_status` until the X728 cuts
+its own output at 3.0 V. No script needed: EPS publishes voltage on its own cadence, DHS records it
+in `telemetry`, and `mosquitto_sub` writes it to a file — the point is one uninterrupted series with
+the load held constant, not new tooling.
+
+What it settles, in one run: the real curve (so the table stops being inferred and the thresholds
+stop being estimates), the pack's actual capacity in Wh, the endurance in `FLIGHT` — the number
+[W10](#w10-the-walk-to-work-what-to-check-on-the-first-real-trip) needs before a trip is planned
+around it — and whether the X728's `ASD` actually powers the host down at 3.0 V, which one report
+on the Raspberry Pi forum says it does not.
+
+**One caveat to record with the data**: this gives a curve *under load*, not an open-circuit curve.
+That is the right one for this use — every threshold is compared against a voltage measured while
+the satellite is running — but it means the table is only valid for a load of roughly this size, and
+the profile it was measured in belongs in the note beside it.
 
 ### Decisions still open
 

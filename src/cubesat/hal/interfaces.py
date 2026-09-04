@@ -128,14 +128,29 @@ class Environment:
 
 @dataclass(frozen=True)
 class Power:
-    battery_percent: float
+    #: The terminal voltage, and the only quantity here a driver is required to
+    #: report. Every power decision in the satellite is taken on it — see
+    #: ``obc/power_policy.py`` — because it is the one this hardware measures.
     voltage: float
     external_power: bool
+    #: The gauge's *own* state of charge, as it reports it, or None for hardware
+    #: that has no such register.
+    #:
+    #: Raw observation, published beside the derived percentage rather than
+    #: instead of it, and believed by nothing. On the X728 this is a MAX17040/41
+    #: reconstruction from an internal model with no current sense behind it, and
+    #: it was measured falling at 8–10 %/h on mains with the voltage flat
+    #: (2026-09-03). It is kept because a wrong number recorded next to the right
+    #: one is evidence — it is how the curve in ``common/battery.py`` will be
+    #: shown to be better than the model — and because deleting the raw reading
+    #: would leave nothing to compare against if this gauge starts lying
+    #: differently.
+    gauge_percent: float | None = None
     #: Signed charge rate in percent per hour: positive charging, negative
     #: draining. A driver fills this only if its gauge measures it; the X728's
-    #: MAX17040/41 does not, so the driver leaves it None and EPS derives it from
-    #: the state-of-charge history (``eps/slopes.py``). None on the wire
-    #: means "not known yet", which the power policy reads as "trust the pin".
+    #: MAX17040/41 does not, so the driver leaves it None and EPS derives one
+    #: from the voltage slope through the pack curve. None on the wire means
+    #: "not known yet".
     charge_rate: float | None = None
     #: Signed slope of the terminal voltage in **millivolts per hour**, fitted by
     #: EPS to the same window. Always derived, never read from a register.
@@ -149,6 +164,12 @@ class Power:
     #: policy towards CRITICAL on a desk. Voltage is the quantity the gauge does
     #: measure directly, and it separates the two regimes by a factor of ten —
     #: see ``docs/hardware-x728-ups-hat.md`` and ``obc/power_policy.py``.
+    #:
+    #: Since 2026-09-04 it is the **only** slope the policy consults, and the
+    #: published ``charge_rate`` is derived from it rather than fitted
+    #: independently. The two-slope test that briefly stood between them is gone
+    #: because it stopped being two tests: once the percentage is a function of
+    #: the voltage, so is its slope.
     voltage_rate: float | None = None
 
     def as_dict(self) -> dict[str, Any]:

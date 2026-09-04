@@ -10,6 +10,8 @@ from __future__ import annotations
 import threading
 import time
 
+import pytest
+
 from cubesat.common import config
 from cubesat.common.topics import TOPICS
 from cubesat.eps.service import EpsService
@@ -38,7 +40,12 @@ def test_eps_publishes_battery_telemetry_and_heartbeats(service_factory, monkeyp
 
     telemetry = client.payloads(TOPICS["eps_status"])
     assert telemetry, "no battery telemetry was published"
-    assert telemetry[-1]["battery_percent"] == 38.0
+    # Approximate on purpose: the knob is a percentage, the mock turns it into
+    # the voltage of a 38 % pack, and EPS turns that voltage back into a
+    # percentage. The millivolt the voltage is rounded to is worth about a
+    # tenth of a point, and a test that pinned the exact figure would be
+    # testing the rounding rather than the path.
+    assert telemetry[-1]["battery_percent"] == pytest.approx(38.0, abs=0.2)
 
     beats = [p for p in client.payloads(TOPICS["heartbeat"]) if p["alive"]]
     assert beats and all(b["service"] == "eps" for b in beats)
@@ -63,8 +70,10 @@ def test_a_draining_battery_is_visible_in_the_telemetry(service_factory, monkeyp
     run_briefly(service, seconds=0.3)
 
     payloads = client.payloads(TOPICS["eps_status"])
-    levels = [p["battery_percent"] for p in payloads]
+    levels = [p["voltage_median"] for p in payloads]
     assert len(levels) >= 2
     assert levels[-1] < levels[0], "the mock battery is not actually draining"
-    assert payloads[0]["charge_rate"] is None, "a rate from one reading is a guess"
-    assert payloads[-1]["charge_rate"] < 0, "the fitted rate does not show the drain"
+    assert payloads[0]["voltage_rate"] is None, "a rate from one reading is a guess"
+    assert payloads[-1]["voltage_rate"] < 0, "the fitted rate does not show the drain"
+    assert payloads[-1]["charge_rate"] < 0, "the readable rate disagrees with the slope"
+    assert payloads[-1]["time_to_empty_sec"] > 0

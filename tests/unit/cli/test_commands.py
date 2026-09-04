@@ -347,9 +347,8 @@ def test_status_with_no_obc_says_which_unit_to_look_at(session):
 
 
 def test_status_reports_the_charge_rate_when_the_gauge_gives_one(session, fake_client):
-    # A SOC that disagrees with its own charge rate is the fault this pairing
-    # exists to make visible, and an operator checks the two side by side. The
-    # value here is the one the old gauge driver reported forever (V12, closed
+    # An operator checks the level, the voltage and the rate side by side. The
+    # rate here is the one the old gauge driver reported forever (V12, closed
     # 2026-09-01: it was 0xFFFF decoded, not a measurement).
     fake_client.deliver(TOPICS["obc_status"], {"status": "NOMINAL", "profile": "DEMO"})
     fake_client.deliver(
@@ -359,6 +358,42 @@ def test_status_reports_the_charge_rate_when_the_gauge_gives_one(session, fake_c
     _code, lines = status_cmd.show(session)
     assert "on mains" in text(lines)
     assert "-0.21 %/h" in text(lines)
+
+
+def test_status_reports_how_long_the_pack_has_left(session, fake_client):
+    # The one place this is visible in FLIGHT, where there is no dashboard: the
+    # CLI is a thin MQTT client and works with mosquitto and nothing else.
+    fake_client.deliver(TOPICS["obc_status"], {"status": "NOMINAL", "profile": "FLIGHT"})
+    fake_client.deliver(
+        TOPICS["eps_status"],
+        {
+            "battery_percent": 48.0,
+            "voltage": 3.75,
+            "external_power": False,
+            "charge_rate": -24.5,
+            "time_to_empty_sec": 7020.0,
+        },
+    )
+    _code, lines = status_cmd.show(session)
+    assert "1.9 h to empty" in text(lines)
+
+
+def test_status_reports_how_long_a_charge_has_left(session, fake_client):
+    fake_client.deliver(TOPICS["obc_status"], {"status": "NOMINAL", "profile": "HOSTED"})
+    fake_client.deliver(
+        TOPICS["eps_status"],
+        {
+            "battery_percent": 50.8,
+            "voltage": 3.85,
+            "external_power": True,
+            "charge_rate": 3.28,
+            "time_to_full_sec": 61200.0,
+        },
+    )
+    _code, lines = status_cmd.show(session)
+    # Seventeen hours, which is what +3 %/h into this pack actually means and
+    # the number that made the charging problem legible in the first place.
+    assert "17.0 h to full" in text(lines)
 
 
 def test_status_reports_the_recorder_writing_and_the_card_it_writes_to(session, fake_client):

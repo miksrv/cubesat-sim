@@ -190,9 +190,10 @@ DASHBOARD_LIVE_ROWS: int = int(
 
 _eps = _yaml.get("eps", {})
 
-#: The sliding window, in seconds, over which EPS fits the charge rate to the
-#: state-of-charge readings. There is no rate register on this gauge; see
-#: ``eps/charge_rate.py`` for why a fitted slope and not a difference.
+#: The sliding window, in seconds, over which EPS fits the voltage slope. There
+#: is no rate register on this gauge; see ``eps/slopes.py`` for why a fitted
+#: slope and not a difference. The name is the older one because the published
+#: ``charge_rate`` is this same slope expressed in percent per hour.
 EPS_CHARGE_RATE_WINDOW_SEC: float = float(
     os.getenv("EPS_CHARGE_RATE_WINDOW_SEC", _eps.get("charge_rate_window_sec", 600.0))
 )
@@ -200,6 +201,13 @@ EPS_CHARGE_RATE_WINDOW_SEC: float = float(
 #: Below this the rate is null and the power policy falls back to the mains pin.
 EPS_CHARGE_RATE_MIN_SPAN_SEC: float = float(
     os.getenv("EPS_CHARGE_RATE_MIN_SPAN_SEC", _eps.get("charge_rate_min_span_sec", 300.0))
+)
+#: The much shorter window over which EPS takes the *median* of the terminal
+#: voltage, which is the level every power threshold compares. See
+#: ``eps/slopes.py`` -> ``MedianWindow``: the thresholds are volts now, and a
+#: voltage moves tens of millivolts when the camera pipeline starts.
+EPS_LEVEL_WINDOW_SEC: float = float(
+    os.getenv("EPS_LEVEL_WINDOW_SEC", _eps.get("level_window_sec", 120.0))
 )
 
 _resume = _yaml.get("resume", {})

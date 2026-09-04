@@ -6,7 +6,7 @@ configuration, so a retuned config.yaml cannot silently change what is proved.
 
 import pytest
 
-from cubesat.eps.charge_rate import MIN_SAMPLES, ChargeRateEstimator
+from cubesat.eps.slopes import MIN_SAMPLES, SlopeEstimator
 
 WINDOW = 600.0
 MIN_SPAN = 300.0
@@ -26,7 +26,7 @@ class Clock:
 @pytest.fixture
 def est():
     clock = Clock()
-    return ChargeRateEstimator(WINDOW, MIN_SPAN, clock=clock), clock
+    return SlopeEstimator(WINDOW, MIN_SPAN, clock=clock), clock
 
 
 def feed(est, clock, levels, step_sec):
@@ -116,7 +116,7 @@ def test_reset_forgets_everything_including_the_power_source(est):
 
 def test_it_needs_at_least_three_points_even_over_a_long_span():
     clock = Clock()
-    estimator = ChargeRateEstimator(WINDOW, min_span_sec=10.0, clock=clock)
+    estimator = SlopeEstimator(WINDOW, min_span_sec=10.0, clock=clock)
     assert MIN_SAMPLES == 3
     estimator.observe(60.0, external_power=False)
     clock.advance(200)
@@ -138,4 +138,4 @@ def test_the_rate_is_rounded_to_two_decimals(est):
 @pytest.mark.parametrize("window, span", [(0, 1), (600, 0), (600, 601), (-1, -1)])
 def test_a_nonsensical_window_is_refused_at_construction(window, span):
     with pytest.raises(ValueError):
-        ChargeRateEstimator(window, span)
+        SlopeEstimator(window, span)

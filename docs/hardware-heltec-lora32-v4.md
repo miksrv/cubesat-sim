@@ -290,6 +290,34 @@ meshtastic --port /dev/serial0 --ch-add CubeSat            # creates it with a r
 meshtastic --port /dev/serial0 --sendtext "..." --ch-index 1
 ```
 
+### Uplink filtering, measured 2026-09-03
+
+The channel filter in `comms/service.py` decides what may command the satellite, and until this
+reading its discrimination rested on an inference about one protobuf key. Measured in `HOSTED`,
+`lora_listening: true`, `command_channel: 1`, by sending `!ping` three ways from the operator's
+phone and reading the COMMS log:
+
+| Sent on | Arrived as | Outcome |
+|---|---|---|
+| Public primary channel | `channel 0` | Refused, silently. `refused a LoRa message on channel 0`, 5 bytes, no airtime spent |
+| `CubeSat` (channel 1) | `channel 1` | Accepted, and answered — `ack sent: re=ping` **116 ms** after the message was logged |
+| Direct message to `CSAT` | `channel 0` | Refused by the same rule. Nobody had looked at what a DM carries before; it needs no rule of its own |
+
+Two things worth keeping beside the table. **The filter met real foreign traffic in the same
+window**, unprompted: at 19:27:09, ninety seconds before the test, a stranger's 12-byte line on the
+primary (`!1aff93f2`, SNR 6.0) was refused exactly like the test messages — and so never reached the
+command parser, the dashboard's Radio Link Log, or `radio_log` on the card. And the sender field was
+populated on every one of these, unlike the relayed chat of 2026-09-02 that arrived with a null
+`fromId`, which is the observation that made the channel key the credential rather than the node id.
+
+What this reading does **not** settle is whether `channel` is physically absent on the primary or
+present as `0`: the log line prints the value the driver has already resolved, so both look
+identical from outside. It does not matter — both resolve to the primary index, which is not the
+command channel either way — and the dangerous version of the inference is ruled out, because
+channel 1 was seen arriving as an explicit `1`. Reading the raw packet dict would need a bench
+script with `/dev/serial0` free, i.e. `MAINTENANCE`. The reasoning lives at `CHANNEL_KEY` in
+`src/cubesat/hal/rpi/meshtastic_radio.py`.
+
 ### The channel URL is a secret — keep it out of this repository
 
 Sharing the channel with a phone or a second node is done with the URL from:

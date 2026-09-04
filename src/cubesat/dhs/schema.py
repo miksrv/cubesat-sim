@@ -138,6 +138,7 @@ TELEMETRY_COLUMNS: tuple[str, ...] = (
     # this tuple is documented as DDL order. The insert binds by name, so the
     # position is documentation rather than mechanism.
     "charge_rate",
+    "voltage_rate",
 )
 
 #: Written in this order, in one executemany per flush.
@@ -363,7 +364,7 @@ _START_REASON_DDL = (
 
 _CHARGE_RATE_DDL = (
     # The signed percent-per-hour EPS fits to the state-of-charge history
-    # (eps/charge_rate.py). It has always been published and has always landed
+    # (eps/slopes.py). It has always been published and has always landed
     # in raw_json; this promotes it to a column because it is not one more
     # reading among many — it is the quantity power_policy actually decides on.
     # `on_mains` compares it against DRAINING_PERCENT_PER_HOUR, so it is the
@@ -378,6 +379,23 @@ _CHARGE_RATE_DDL = (
     "ALTER TABLE telemetry ADD COLUMN charge_rate REAL",
 )
 
+_VOLTAGE_RATE_DDL = (
+    # The millivolts-per-hour slope over the terminal voltage, added one day
+    # after charge_rate for the same reason and ahead of it in the decision: as
+    # of 2026-09-03 `on_mains` asks this one first, and treats the pack as
+    # draining only when both slopes agree (obc/power_policy.py).
+    #
+    # Storing it is not symmetry with charge_rate, and `voltage` already being a
+    # column does not cover it. Recomputing a slope from the stored voltages
+    # would produce a number everywhere — including the windows where EPS
+    # published none — and those nulls are the whole of what the policy read as
+    # "trust the pin": the first five minutes of a session, and five minutes
+    # after every mains change. A reconstruction that turns "not known yet" into
+    # a confident figure rewrites the one thing the record exists to preserve,
+    # which is what the satellite believed at the time.
+    "ALTER TABLE telemetry ADD COLUMN voltage_rate REAL",
+)
+
 #: Forward-only, in order. Never edit a migration that has shipped — a file that
 #: already applied it will not apply it again, so the edit would only ever reach
 #: databases created after it, and the two would silently diverge. That is why
@@ -390,6 +408,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=4, statements=(_RADIO_DDL, *_RADIO_INDEX_DDL)),
     Migration(version=5, statements=_START_REASON_DDL),
     Migration(version=6, statements=_CHARGE_RATE_DDL),
+    Migration(version=7, statements=_VOLTAGE_RATE_DDL),
 )
 
 #: What a database this build can write looks like.

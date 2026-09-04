@@ -1,12 +1,23 @@
-"""The charge rate, computed from the state-of-charge history.
+"""How the pack is moving: slopes fitted to what the gauge reports.
 
 The X728's gauge is a MAX17040/41 (verified on the assembled satellite,
 2026-09-01 — see ``docs/hardware-x728-ups-hat.md``). It reports voltage and
 state of charge and nothing else: the ``CRATE`` register the power policy was
 designed around exists on the MAX17048 and not on this part, and reading its
 address returns ``0xFFFF``, which the driver used to decode into a confident
-``−0.208 %/h`` that never changed. So the rate is derived here, from the one
-quantity the gauge does measure — how the state of charge moves over time.
+``−0.208 %/h`` that never changed. So the rates are derived here, from the two
+quantities the gauge does report.
+
+**Two slopes rather than one, because one of them is a model** (2026-09-03).
+State of charge on this part is not measured — there is no shunt and no coulomb
+counter — it is reconstructed from voltage and an internal model, and that model
+was watched drifting downwards at 8–10 %/h on a satellite sitting on mains, with
+the charge LEDs lit and the terminal voltage flat to the millivolt for the whole
+hour. So a slope fitted to it says as much about the model settling as about the
+charge. Voltage is measured directly, and the same two regimes separate by a
+factor of ten in it: 0 mV/h on mains against −90 mV/h on the pack, at idle load.
+The power policy therefore asks the voltage first and uses the percentage only
+to confirm it — ``obc/power_policy.py``.
 
 Why a least-squares slope over a window rather than two readings: the SOC
 register moves in steps of 1/256 %, and the policy's threshold is −1 %/h. Two
@@ -33,8 +44,14 @@ from collections.abc import Callable
 MIN_SAMPLES = 3
 
 
-class ChargeRateEstimator:
-    """Signed percent per hour from a sliding window of SOC readings."""
+class SlopeEstimator:
+    """Signed units-per-hour from a sliding window of readings of one quantity.
+
+    Unit-agnostic on purpose: EPS runs one of these over the state of charge, in
+    percent, and a second over the terminal voltage, in volts. The caller owns
+    the unit and the threshold that goes with it — this class owns the fit and
+    the rule about when there is not yet enough history to answer.
+    """
 
     def __init__(
         self,

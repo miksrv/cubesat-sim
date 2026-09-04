@@ -30,13 +30,37 @@ LOW_POWER_PERCENT = 30.0
 SAFE_PERCENT = 20.0
 #: Flush the recorder and power the host off while that is still possible.
 CRITICAL_PERCENT = 10.0
-#: Below this, a pack is going down even if the mains pin says it is plugged in —
-#: a faulty charger, a dead barrel jack, or a PLD pin that is simply lying. The
+#: Below this, the *modelled* state of charge is falling. Kept as the confirming
+#: half of the mains test rather than the deciding one — see ``on_mains``. The
 #: threshold is not zero because the rate is fitted to a quantised reading and
 #: carries a few hundredths of noise, and a pack can dip slightly for minutes
 #: after a plug-in; treating either as a mains failure would throw away the
 #: protection it is meant to preserve.
 DRAINING_PERCENT_PER_HOUR = -1.0
+
+#: Below this, the terminal voltage is falling: the pack is actually delivering
+#: current. **Measured on the satellite 2026-09-03** in HOSTED, one series
+#: across a deliberate unplug and back (see ``docs/hardware-x728-ups-hat.md``):
+#:
+#: * on mains, the voltage held 3.806–3.809 V — a slope of **0 mV/h** — while the
+#:   gauge's modelled SOC drifted down at 8–10 %/h;
+#: * unplugged, it dropped **50 mV inside one publish** and then fell at
+#:   **−197 mV/h** at idle load, with SOC at −24.5 %/h.
+#:
+#: So the regimes separate by two orders of magnitude in this quantity and barely
+#: at all in the other one: −8 %/h and −24 %/h are both under the percentage
+#: threshold, which is precisely why that threshold could not tell a desk from a
+#: dying pack.
+#:
+#: −30 mV/h sits between them with margin both ways: four times the fitting noise
+#: (one 1.25 mV VCELL step across the 600 s window is ±7.5 mV/h) and six times
+#: below the idle discharge it must catch. By the discharge slope measured in the
+#: same series — **8.0 mV per percent** at this level — it is worth ≈ −3.8 %/h.
+#: That is less twitchy than the −1 %/h it now fronts, and deliberately so: the
+#: percentage was not measuring the pack. A heavier profile drains faster and is
+#: caught sooner, never later; a charger delivering exactly the load holds the
+#: voltage flat, and then there is nothing to catch.
+DRAINING_MV_PER_HOUR = -30.0
 
 #: Climb back out at 40 %, ten points above the level that got us here.
 #:
@@ -73,6 +97,9 @@ class PowerReading:
     #: draining, None while EPS has too little history to say (its first minutes,
     #: and the minutes after the mains pin changed).
     charge_rate: float | None = None
+    #: Signed millivolts per hour over the same window, and the slope this policy
+    #: consults first. None under the same conditions as ``charge_rate``.
+    voltage_rate: float | None = None
 
     @property
     def on_mains(self) -> bool:
@@ -81,15 +108,42 @@ class PowerReading:
         Not just the PLD pin. The pin alone would let one failure mode disable
         every protection below: a charger that has stopped charging still reads
         as external power, and a pack that keeps falling would then never reach
-        CRITICAL. The charge rate is the second opinion — fitted by EPS to the
-        state-of-charge history, because this gauge measures no rate itself.
+        CRITICAL. So a second opinion is needed — but it has to be one that
+        measures the pack rather than a model of it.
 
-        A missing rate falls back to trusting the pin: EPS that has not yet seen
-        enough history must not cause a plugged-in satellite to power itself off.
+        **The voltage decides and the percentage confirms** (2026-09-03). The
+        percentage alone held this job until it was measured on the hardware and
+        found to be wrong in the dangerous direction: this gauge computes state
+        of charge from a model with no current sense at all, and that model was
+        watched drifting down at 8–10 %/h for an hour while the satellite sat
+        plugged in with its charge LEDs lit and its terminal voltage flat to the
+        millivolt. ``on_mains`` was therefore False on a desk, and the descents
+        below — SAFE at 20 %, CRITICAL at 10 %, neither of which asks what state
+        it is in — were hours away from powering off a satellite that was on
+        mains the whole time. That is the exact scenario the comment in
+        ``evaluate`` calls actively harmful, arrived at from the opposite side.
+
+        So the pack counts as draining only when **both** slopes say so: the
+        voltage, which is measured, and the percentage, which corroborates. A
+        genuinely failed charger moves both — the pack delivers current, so the
+        terminal voltage falls, which is what the unplugged half of that same
+        measurement showed at −90 mV/h. A drifting model moves only one, and one
+        is no longer enough.
+
+        A missing slope falls back to trusting the pin, as before: EPS that has
+        not yet seen enough history — its first five minutes, and the five after
+        the pin changed — must not cause a plugged-in satellite to power itself
+        off.
         """
         if not self.external_power:
             return False
-        return self.charge_rate is None or self.charge_rate > DRAINING_PERCENT_PER_HOUR
+        falling_voltage = (
+            self.voltage_rate is not None and self.voltage_rate <= DRAINING_MV_PER_HOUR
+        )
+        falling_charge = (
+            self.charge_rate is not None and self.charge_rate <= DRAINING_PERCENT_PER_HOUR
+        )
+        return not (falling_voltage and falling_charge)
 
 
 def reading_from(payload: dict[str, Any]) -> PowerReading | None:
@@ -109,10 +163,18 @@ def reading_from(payload: dict[str, Any]) -> PowerReading | None:
     rate = payload.get("charge_rate")
     if isinstance(rate, bool) or not isinstance(rate, (int, float)):
         rate = None
+    # An older EPS publishes no voltage_rate at all, and a satellite mid-upgrade
+    # runs one service ahead of another. Absent reads as "not known yet", which
+    # is the same fallback as too little history: the pin is trusted, and the
+    # percentage cannot condemn a plugged-in pack on its own.
+    volts = payload.get("voltage_rate")
+    if isinstance(volts, bool) or not isinstance(volts, (int, float)):
+        volts = None
     return PowerReading(
         battery_percent=float(raw),
         external_power=bool(payload.get("external_power", False)),
         charge_rate=None if rate is None else float(rate),
+        voltage_rate=None if volts is None else float(volts),
     )
 
 

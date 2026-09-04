@@ -134,9 +134,22 @@ class Power:
     #: Signed charge rate in percent per hour: positive charging, negative
     #: draining. A driver fills this only if its gauge measures it; the X728's
     #: MAX17040/41 does not, so the driver leaves it None and EPS derives it from
-    #: the state-of-charge history (``eps/charge_rate.py``). None on the wire
+    #: the state-of-charge history (``eps/slopes.py``). None on the wire
     #: means "not known yet", which the power policy reads as "trust the pin".
     charge_rate: float | None = None
+    #: Signed slope of the terminal voltage in **millivolts per hour**, fitted by
+    #: EPS to the same window. Always derived, never read from a register.
+    #:
+    #: It exists because ``charge_rate`` turned out not to measure what its name
+    #: says on this hardware. This gauge reports no current at all: its state of
+    #: charge is a model, and on 2026-09-03 that model was measured drifting
+    #: downwards at 8–10 %/h **while the satellite sat on mains with the charge
+    #: LEDs lit and the terminal voltage flat to the millivolt**. A rate fitted
+    #: to a drifting model is a plausible wrong number, and it walked the power
+    #: policy towards CRITICAL on a desk. Voltage is the quantity the gauge does
+    #: measure directly, and it separates the two regimes by a factor of ten —
+    #: see ``docs/hardware-x728-ups-hat.md`` and ``obc/power_policy.py``.
+    voltage_rate: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

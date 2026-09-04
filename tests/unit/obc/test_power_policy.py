@@ -31,9 +31,20 @@ def on_battery(percent):
     return PowerReading(battery_percent=percent, external_power=False, charge_rate=-2.0)
 
 
-def on_mains(percent, charge_rate=1.5):
+#: Slopes placed relative to the policy's own thresholds, for the reason given
+#: at JUST_UNDER. FLAT_VOLTAGE is what mains looked like on the hardware: the
+#: terminal voltage did not move at all for an hour (2026-09-03).
+FLAT_VOLTAGE = 0.0
+FALLING_VOLTAGE = power_policy.DRAINING_MV_PER_HOUR - 10.0
+FALLING_CHARGE = power_policy.DRAINING_PERCENT_PER_HOUR - 1.0
+
+
+def on_mains(percent, charge_rate=1.5, voltage_rate=FLAT_VOLTAGE):
     return PowerReading(
-        battery_percent=percent, external_power=True, charge_rate=charge_rate
+        battery_percent=percent,
+        external_power=True,
+        charge_rate=charge_rate,
+        voltage_rate=voltage_rate,
     )
 
 
@@ -89,12 +100,45 @@ def test_plugging_in_a_flat_satellite_takes_it_to_nominal(state):
 
 
 def test_a_pack_that_keeps_falling_on_mains_still_reaches_critical():
-    # A charger that has stopped charging still reads as external power. The
-    # charge rate is the second opinion, and this is what it is for: without it
-    # one failure mode would disable every protection below.
-    assert evaluate(on_mains(9.0, charge_rate=-3.0), NOMINAL) is CRITICAL
-    assert evaluate(on_mains(19.0, charge_rate=-3.0), NOMINAL) is SAFE
-    assert evaluate(on_mains(LOW_POWER_EDGE, charge_rate=-3.0), NOMINAL) is LOW_POWER
+    # A charger that has stopped charging still reads as external power, and this
+    # is what the second opinion is for: without it one failure mode would
+    # disable every protection below. A real one moves both slopes — the pack is
+    # delivering current, so the terminal voltage falls with the charge.
+    draining = {"charge_rate": FALLING_CHARGE, "voltage_rate": FALLING_VOLTAGE}
+    assert evaluate(on_mains(9.0, **draining), NOMINAL) is CRITICAL
+    assert evaluate(on_mains(19.0, **draining), NOMINAL) is SAFE
+    assert evaluate(on_mains(LOW_POWER_EDGE, **draining), NOMINAL) is LOW_POWER
+
+
+def test_a_drifting_gauge_model_on_mains_does_not_descend():
+    # Measured on the satellite 2026-09-03 and the reason the voltage slope was
+    # added: this gauge computes state of charge from a model, and that model
+    # drifted down at 8-10 %/h for an hour while the satellite sat plugged in
+    # with its charge LEDs lit and its terminal voltage flat to the millivolt.
+    # The percentage alone read that as a failed charger, so SAFE and CRITICAL —
+    # neither of which asks what state it is in — were hours from powering off a
+    # satellite that was on mains the whole time.
+    drifting = {"charge_rate": FALLING_CHARGE, "voltage_rate": FLAT_VOLTAGE}
+    assert evaluate(on_mains(9.0, **drifting), NOMINAL) is None
+    assert evaluate(on_mains(19.0, **drifting), NOMINAL) is None
+    assert evaluate(on_mains(5.0, **drifting), STANDBY) is None
+
+
+def test_a_falling_voltage_alone_does_not_condemn_mains():
+    # The mirror of the case above, and why the two slopes confirm each other
+    # rather than either one deciding: a dip in the terminal voltage that the
+    # charge does not follow is load or noise, not a pack going down.
+    reading = on_mains(9.0, charge_rate=1.5, voltage_rate=FALLING_VOLTAGE)
+    assert evaluate(reading, NOMINAL) is None
+
+
+def test_no_voltage_history_yet_trusts_the_pin():
+    # EPS publishes no voltage slope for its first five minutes, and for five
+    # minutes after the mains pin changes. That window must not be the one where
+    # a drifting percentage gets to power the satellite off on its own — which is
+    # also what an EPS older than this change looks like mid-upgrade.
+    reading = on_mains(9.0, charge_rate=FALLING_CHARGE, voltage_rate=None)
+    assert evaluate(reading, NOMINAL) is None
 
 
 def test_a_gauge_that_cannot_report_a_rate_is_believed_about_mains():

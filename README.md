@@ -204,7 +204,9 @@ Entering an active profile triggers `DEPLOY`; leaving one returns to `STANDBY`. 
 
 **Every power-driven descent is suppressed while mains is present**, because on mains there is no power emergency to react to. This is not a refinement, it is the difference between working and bricked: come back from a trip with a flat pack, plug the satellite in, and a `CRITICAL` keyed on battery level alone would power the host off — and the X728 would not bring it back, because mains never left. Plugging in a satellite at 5 % must take it to `NOMINAL`.
 
-Mains alone is not trusted, though. A faulty charger or a stuck PLD pin would otherwise suppress the protection forever, so "on mains" means `external_power` **and** a `charge_rate` that is not still falling. A pack draining while the satellite believes it is plugged in is not on mains as far as the power policy is concerned, and it still reaches `CRITICAL`. That is the reading `charge_rate` was added for.
+Mains alone is not trusted, though. A faulty charger or a stuck PLD pin would otherwise suppress the protection forever, so "on mains" means `external_power` **and** a pack that is not still going down. A pack draining while the satellite believes it is plugged in is not on mains as far as the power policy is concerned, and it still reaches `CRITICAL`.
+
+**What "still going down" means is two slopes, and the measured one decides** (2026-09-03). It used to be `charge_rate` alone, until that was measured on the hardware: this gauge has no current sense, its state of charge is a *model*, and that model was watched drifting down at 8–10 %/h for an hour while the satellite sat on mains with its charge LEDs lit and its terminal voltage flat to the millivolt. The satellite therefore believed it was on battery at a desk, and `SAFE` and `CRITICAL` — which do not ask what state it is in — were hours from powering off a plugged-in unit that the X728 could not have restarted. So the policy now asks `voltage_rate` first, in mV/h, and treats the pack as draining only when the voltage **and** the charge agree: a charger that has genuinely stopped moves both, because the pack then carries the load, while a settling model moves only the modelled one. Thresholds and the measurements behind them are at `obc/power_policy.py`.
 
 Two things `DEPLOY` deliberately does **not** do. It does not require a GNSS fix: `DEMO` and `EXPO` run indoors, where a fix never arrives, and failing on that would send every indoor demonstration to `SAFE`. A fix is waited for best-effort and its absence is logged. And OBC does not read any device itself beyond the presence check — ADCS owns the IMU and the GNSS receiver, PAYLOAD owns the environmental sensor and the camera, COMMS owns the radio. Each subsystem's first status message *is* the proof its own hardware answered, and two processes reaching for one device over a 10 kHz bus is exactly the contention the [bus lock](#hardware-ownership) exists to prevent.
 
@@ -404,7 +406,7 @@ opens one for itself and closes it again.
 |---|---|
 | Timing | `id`, `timestamp` (ISO-8601 UTC string) |
 | Context | `mission_id` → [`missions`](#mission-sessions), `profile`, `obc_state` |
-| EPS | `battery`, `voltage`, `external_power`, `charge_rate` |
+| EPS | `battery`, `voltage`, `external_power`, `charge_rate`, `voltage_rate` |
 | ADCS attitude | `roll`, `pitch`, `yaw`, `quat_w/x/y/z`, `imu_temp`, `accel_x/y/z`, `gyro_x/y/z`, `calib_status` |
 | ADCS position | `lat`, `lon`, `alt`, `speed`, `fix`, `satellites` |
 | Payload science | `temperature`, `humidity`, `pressure`, `light`, `uv_index` |
@@ -930,7 +932,8 @@ read mid-switch goodbyes as faults.
   "battery_percent": 87.5,
   "voltage": 4.123,
   "external_power": true,
-  "charge_rate": -0.208
+  "charge_rate": -0.208,
+  "voltage_rate": -197.0
 }
 ```
 
@@ -942,6 +945,13 @@ until the window holds `eps.charge_rate_min_span_sec` (300 s) of history, and ag
 after `external_power` changes, because a slope measured on battery says nothing about the pack once
 it is plugged in. The power policy reads `null` as "trust the pin". What the rate is for is telling
 "plugged in and charging" from "plugged in but the pack is still going down".
+
+`voltage_rate` is the same fit over the terminal voltage, in **millivolts per hour**, and it is the
+one the power policy consults first. It exists because `charge_rate` describes a model rather than
+the cell: this gauge reconstructs state of charge without measuring current, and on 2026-09-03 that
+reconstruction was measured drifting at −8…−10 %/h on mains while the voltage held flat at 0 mV/h —
+against −197 mV/h with the plug pulled. Both slopes share one window and one `null` rule, so an EPS
+that cannot say yet says nothing in either.
 
 ### `cubesat/adcs/status`
 
@@ -1668,7 +1678,7 @@ cubesat-sim/
 │       │
 │       ├── eps/                    # read the gauge and the mains pin
 │       │   ├── service.py
-│       │   └── charge_rate.py      #   %/h as a least-squares slope over SOC history
+│       │   └── slopes.py          #   %/h and mV/h as least-squares slopes over history
 │       ├── adcs/                   # service.py — orientation and position
 │       │
 │       ├── payload/
@@ -2140,8 +2150,9 @@ up hunting a network that is not there, and lose the rest of the track. That is 
 satellite.
 
 Ending a trip is a person's decision, and the three ways above are all a person exercising it.
-`EPS` still reports `external_power`, and the power policy uses it — together with `charge_rate`,
-never the pin alone — to suppress the power-driven descents; it changes no profile anywhere.
+`EPS` still reports `external_power`, and the power policy uses it — together with the voltage and
+charge slopes, never the pin alone — to suppress the power-driven descents; it changes no profile
+anywhere.
 
 ### Environment variables
 

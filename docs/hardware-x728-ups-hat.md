@@ -301,6 +301,53 @@ The 2026-08-31 evening reading (SOC *falling* on mains) still does not fit this 
 recorded above as observed; one difference is that today's plug-in followed a real discharge, while
 yesterday's gauge may have been re-converging its estimate after a long idle.
 
+### The SOC register drifts on mains, and it nearly powered the satellite off — 2026-09-03
+
+That 2026-08-31 anomaly is not an anomaly. It was reproduced deliberately, and it turned out to be
+the normal behaviour of this gauge: **on mains the modelled state of charge falls while the cell
+does nothing at all.**
+
+Measured in `HOSTED` (three services, idle bus), USB-C on the X728, LEDs one steady and one
+blinking — the board's own "charging" — as one continuous series across an unplug and back:
+
+```
+on mains      50.39 → 48.09 %   3.806…3.809 V   fitted:   0 mV/h,  SOC −8…−10 %/h
+unplugged     47.71 %           3.809 → 3.759 V  −50 mV inside one publish
+on the pack   47.71 → 44.46 %   3.759 → 3.729 V  fitted: −197 mV/h, SOC −24.5 %/h
+```
+
+Three things fall out of it, and the third one is a defect:
+
+1. **The SOC steps are quantised and regular** — ~0.39 % (100 LSB of the `word / 256` decode) every
+   two to three minutes on mains, arriving as discrete jumps rather than as a drift. That is a model
+   settling, not a cell discharging. This part has no shunt and no coulomb counter: state of charge
+   is reconstructed from voltage and an internal model, so it is the one quantity here that is *not*
+   measured.
+2. **Voltage separates the two regimes by two orders of magnitude**, 0 mV/h against −197 mV/h, and
+   the discharge slope is 8.0 mV per percent at this level. SOC separates them barely: −8 %/h and
+   −24 %/h are both "falling".
+3. **`charge_rate` fitted to that model walked the power policy towards `CRITICAL` on a desk.**
+   `on_mains` required the pin *and* a rate above −1 %/h, so with the pin true and the fitted rate
+   at −9 %/h the satellite considered itself on battery while plugged in. `SAFE` (20 %) and
+   `CRITICAL` (10 %) do not ask what state the satellite is in, so from 49 % this was ≈3.5 h from
+   `SAFE` and ≈5 h from powering the host off — with mains present the whole time, which is exactly
+   the case that leaves the X728 unable to bring it back, because mains never left.
+
+   The irony is worth recording: this was a **regression introduced by fixing something else**.
+   Until 2026-09-03 `charge_rate` was the decoded `0xFFFF` constant −0.208 %/h, which happened to
+   sit above the −1 %/h threshold and so passed the test for the wrong reason. Replacing the
+   constant with an honest fit made the number real — and it was really measuring the model.
+
+**The fix keeps both slopes and asks the measured one first**: EPS now also publishes
+`voltage_rate` in mV/h, fitted over the same window, and `on_mains` treats the pack as draining only
+when the voltage *and* the charge agree that it is (`obc/power_policy.py` → `DRAINING_MV_PER_HOUR`,
+−30 mV/h). A charger that has genuinely died moves both, because the pack then supplies the load; a
+settling model moves only one. No test could have caught this — the mock gauge reports whatever the
+test hands it, and what was wrong was the register map, not the logic.
+
+The charging question itself is unchanged and still open: the DC 5.5 × 2.1 jack with a 5.1 V ≥ 4 A
+supply has still not been tried.
+
 If the jumper is ever opened on purpose, GPIO16 would let EPS decide *when* to charge. Holding a
 partial charge on the desk is genuinely better for a Li-ion cell than sitting at 4.2 V for weeks,
 and a deliberate top-up before a `FLIGHT` outing is exactly the behaviour wanted.

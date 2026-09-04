@@ -202,9 +202,22 @@ Never widen either into "ignore goodbyes from this service" — an unannounced d
 what `SAFE` is for.
 
 **On mains there is no power emergency.** All three power-driven descents are suppressed while
-external power is present *and* the charge rate is not still falling. Without the first half, a
+external power is present *and* the pack is not still going down. Without the first half, a
 satellite brought home flat and plugged in powers itself off and the X728 never restores it,
 because mains never left. Without the second, one failed charger disables the protection forever.
+
+**And "going down" is the voltage first, the percentage second** (measured 2026-09-03). The second
+half used to be `charge_rate` alone, which on this gauge is a slope fitted to a *model*: the
+MAX17040/41 senses no current, and its state of charge was watched falling at 8–10 %/h for an hour
+while the satellite sat on mains with the charge LEDs lit and the terminal voltage flat to the
+millivolt — 0 mV/h against −197 mV/h once unplugged. So a plugged-in satellite read as being on
+battery, and `SAFE` and `CRITICAL` (neither of which asks what state it is in) were hours from
+powering off a unit the X728 could not restart. The pack now counts as draining only when
+`voltage_rate` **and** `charge_rate` agree, because a charger that has really stopped moves both and
+a settling model moves one. Do not collapse this back to a single slope, and do not reach for the
+percentage as the deciding one: it is the only quantity here that is not measured. This is also the
+standing example of the rule below — the logic was right, the register map was not, and no test
+could have told the difference.
 
 **Quiet is not deaf, and it is not mute either.** `beacon_enabled` rations the *schedule* only;
 listening is the profile's call, and so is answering. A profile sets where transmission starts:

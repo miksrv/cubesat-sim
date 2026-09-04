@@ -38,9 +38,8 @@ code is worth writing.
 | [V6](#v6-networkmanager-client-mode) | `[ ]` bench | NetworkManager client mode — `EXPO` depends on it |
 | [V7](#v7-sen0501-board-revision) | `[ ]` bench | SEN0501 board revision — `uv_index` stays null until then |
 | [V10](#v10-whether-the-private-channel-is-relayed-at-all) | `[ ]` bench | Whether the private channel is relayed at all |
-| [V13](#v13-the-x728-charge-rate-on-mains) | `[ ]` bench | The X728 charge rate on mains |
+| [V13](#v13-does-the-x728-actually-charge-the-pack-and-from-which-input) | `[ ]` bench | Does the X728 actually charge the pack, and from which input |
 | [V14](#v14-bno055-low-byte-bit-7-flips-reach-the-record) | `[ ]` bench | BNO055 low-byte bit-7 flips reach the record |
-| [V15](#v15-the-channel-index-a-received-packet-reports) | `[ ]` bench | The channel index a received packet reports — the uplink filter rests on it |
 | [V16](#v16-whether-payload-answers-inside-the-ack-window) | `[ ]` bench | Whether PAYLOAD answers inside the ack window — `!photo` says `err=noreply` if not |
 | [Q1](#q1-keep-the-bmp280-at-0x76-and-for-what) | `[ ]` open | Keep the BMP280 at `0x76`, and for what? |
 | [Q4](#q4-may-a-safe-satellite-be-shown-in-expo) | `[ ]` open | May a `SAFE` satellite be shown in `EXPO`? |
@@ -297,37 +296,37 @@ commands do not travel there. A foreign node rebroadcasts a packet it cannot dec
 the satellite can sit in a public node list, relayed six hops, having proved nothing about the
 channel `FLIGHT` depends on.
 
-#### V13: The X728 charge rate on mains
+#### V13: Does the X728 actually charge the pack, and from which input
 
-**The X728 charges on mains, but at ~+3 %/h — a fraction of its rated 2.3–3.2 A.** Measured
-2026-09-01 with `charge_rate` a real quantity (see `docs/hardware-x728-ups-hat.md`): CanaKit 3.5 A
-on USB-C, LEDs one steady one blinking, SOC 50.39 → 50.78 % in fifteen minutes, voltage +17 mV. Next
-check: a 5.1 V ≥ 4 A supply on the DC jack, the input Geekworm rates for full charging current; if
-the rate does not change, the cells or the charger stage are the question. The original observation
-follows for the record. Observed 2026-08-31 with the satellite plugged in all evening: 3.92 V, SOC
-~66 %, `CRATE` one LSB from zero, and the board's own charge LEDs agreeing with roughly that level.
-The datasheet figures in `docs/hardware-x728-ups-hat.md` say the recharge threshold is **4.1 V** and
-cutoff 4.24 V — at 3.92 V the board is well past the point where it should have resumed, so "it
-deliberately holds a partial charge" does not explain this reading. The **`CHG Ctrl` jumper was
-checked on 2026-09-01 and is installed**, which per Geekworm means automatic charging whenever the
-adapter is connected — so a floating GPIO16 is ruled out. Two candidates remain. First, the
-**supply**: the X728 charges only from its own DC jack and wants 2.3–3.2 A for the pack on top of
-the Pi's load; `PLD` proves the jack sees power, not enough of it. Second, tired 18650s: capacity
-loss shows up as a cell that will not hold a charge, and the pack is unbranded.
-`vcgencmd get_throttled` reads `0x0`, so the 5 V supply is not sagging and can be ruled out. **The
-decisive check is now cheap, because `charge_rate` is a real measurement:** plug in and watch
-`voltage` and `charge_rate` for ten minutes — a charger delivering current lifts the terminal
-voltage within seconds and turns the rate positive after the five-minute window. (Opening the jumper
-on purpose stays an opportunity: GPIO16 would let EPS hold a partial charge on the desk and top up
-before a `FLIGHT`. A driver and a policy, later).
+**The gauge drift is settled and is no longer part of this item.** Measured 2026-09-03 across a
+deliberate unplug: on mains the terminal voltage held flat at 0 mV/h while the gauge's modelled SOC
+fell at 8–10 %/h; unplugged, the voltage dropped 50 mV at once and then fell at −197 mV/h. This part
+has no current sense, so its state of charge is a reconstruction, and a rate fitted to it describes
+the model settling. That closed the 2026-08-31 "SOC down while voltage rose" mystery, and it found a
+defect on the way: `on_mains` rested on that rate alone, so a plugged-in satellite read as being on
+battery and was hours from a `CRITICAL` poweroff on a desk. The fix — `voltage_rate` beside
+`charge_rate`, the measured slope deciding and the modelled one confirming — is in
+`obc/power_policy.py`, with the full series in `docs/hardware-x728-ups-hat.md`.
 
-**Why it is not settled.** Nothing errors and nothing looks broken: the dashboard shows a plausible
-66 %, the LEDs agree, and the satellite runs happily on mains. It is discovered at the worst
+**What is left is the original question: the pack charges slowly, and nobody knows why.** Measured
+2026-09-01: CanaKit 5.1 V / 3.5 A on the X728's USB-C input, LEDs one steady one blinking, SOC
+50.39 → 50.78 % in fifteen minutes, voltage +17 mV — about +3 %/h, on the order of 150 mA against
+the 2.3–3.2 A the board advertises. At that rate 50 → 100 % takes about seventeen hours.
+
+**The check.** A 5.1 V, ≥ 4 A supply on the **DC 5.5 × 2.1 jack** — the input Geekworm rates for the
+full charging current, and the one input never yet tried. Watch `voltage` and `voltage_rate` for ten
+minutes: a charger delivering real current lifts the terminal voltage within seconds, and that is
+now a quantity worth watching, unlike the percentage. If the rate does not change, the remaining
+candidates are the charger stage and the cells themselves — unbranded 18650s that no longer hold a
+charge look exactly like this. Ruled out already: the `CHG Ctrl` jumper is installed (2026-09-01),
+so charging is not gated by a floating GPIO16, and `vcgencmd get_throttled` reads `0x0`, so the 5 V
+output is not sagging. (Opening that jumper on purpose stays an opportunity rather than a fix:
+GPIO16 would let EPS hold a partial charge on the desk and top up before a `FLIGHT`.)
+
+**Why it is not settled.** Nothing errors and nothing looks broken: the LEDs agree, the dashboard
+shows a plausible level, and the satellite runs happily on mains. It is discovered at the worst
 possible moment — leaving for a trip with a pack that was never full — which is precisely the
-failure `FLIGHT` cannot afford. While charging is in doubt, the 2026-08-31 mains-day drift (SOC down
-while voltage rose) cannot be interpreted either — that drift is now this item's question, since the
-"70× disagreement" it was filed under turned out to be a comparison against a constant (see
-`docs/hardware-x728-ups-hat.md`, 2026-09-01).
+failure `FLIGHT` cannot afford.
 
 #### V14: BNO055 low-byte bit-7 flips reach the record
 
@@ -341,24 +340,6 @@ the cost of half a second of latency — a decision, not a fix.
 
 **Why it is not settled.** They are physically plausible values and DHS writes them into `attitude`
 as measured, so a replay shows an 8° twitch or a 0.13 g kick that never happened.
-
-#### V15: The channel index a received packet reports
-
-**The check.** Send one line to the satellite on the primary channel and one on channel 1
-`CubeSat` — from the operator's node or the phone app — and log the packet dict each arrives as.
-What is being read is the `channel` key: expected present as `1` on the private channel and
-**absent**, not `0`, on the primary. A direct message is worth a third line, since it is refused by
-the same rule and nobody has looked at what it carries either.
-
-**Why it is not settled.** The absence is inferred from protobuf omitting a zero field, not from a
-packet anyone has read — the marker is at `CHANNEL_KEY` in `hal/rpi/meshtastic_radio.py`, and the
-uplink channel filter landed on 2026-09-03 resting its whole discrimination on it
-(`comms/service.py` → `_refuse_uplink`). The two ways it can be wrong are not symmetric. If the key is present as
-`0` on the primary, nothing changes: `0` is not the command channel either way. If it is absent on
-*both*, every message reads as the primary and the satellite goes deaf to its own uplink — loud,
-immediate, and recoverable, which is why the inference was written to fail in that direction rather
-than towards a public command channel. What would be silent is the reverse assumption, so it is not
-the one in the code.
 
 #### V16: Whether PAYLOAD answers inside the ack window
 

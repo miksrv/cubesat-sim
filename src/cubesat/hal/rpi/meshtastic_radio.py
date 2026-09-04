@@ -100,17 +100,27 @@ TEXT_PORTNUM = "TEXT_MESSAGE_APP"
 #: The packet key carrying the index of the channel a message arrived on, and
 #: the index the primary channel has.
 #:
-#: **Inferred from the library, not from the bench** — bench check V15 sends one
-#: line on each channel and records what arrives. A Meshtastic packet is a
-#: protobuf, and protobuf omits a field whose value is zero, so a message on the
-#: primary channel is expected to arrive with no ``channel`` key at all rather
-#: than with ``channel: 0``. **Absent therefore reads as the primary, never as
-#: unknown.** That direction is deliberate: COMMS takes commands from
-#: ``config.LORA_CHANNEL_INDEX`` alone, so treating an absent key as unknown and
-#: letting it through would hand the public channel back to the command parser,
-#: which is the whole thing the filter exists to stop. If the inference is wrong
-#: the other way — the key absent on *both* channels — the satellite goes deaf
-#: to its own uplink, which is loud, local and recoverable with a power cycle.
+#: **Measured on the satellite 2026-09-03, in ``HOSTED``**: one ``!ping`` on each
+#: of the three ways in. The private ``CubeSat`` channel arrives as ``1`` and is
+#: accepted; the public primary arrives as ``0`` and is refused; and a **direct
+#: message also presents as channel 0**, so it is refused by this same rule
+#: rather than by one of its own. A stranger's line on the primary was refused
+#: in the same window, unprompted — the filter met real foreign traffic, not
+#: only the test. See ``docs/hardware-heltec-lora32-v4.md`` → Uplink filtering.
+#:
+#: What the measurement could *not* separate, and why it does not matter: the
+#: service log prints the value this function has already resolved, so "the key
+#: arrived as ``0``" and "the key was absent and defaulted" look identical from
+#: outside. A Meshtastic packet is a protobuf and protobuf omits a zero-valued
+#: field, so the absent spelling is the likelier one — but both resolve here to
+#: the primary index, and the primary is not the command channel either way.
+#: **Absent therefore reads as the primary, never as unknown.** That direction is
+#: deliberate: COMMS takes commands from ``config.LORA_CHANNEL_INDEX`` alone, so
+#: treating an absent key as unknown and letting it through would hand the public
+#: channel back to the command parser, which is the whole thing the filter exists
+#: to stop. The way this could still be wrong is the key being absent on *both*
+#: channels, which the 2026-09-03 reading rules out: channel 1 was seen arriving
+#: as an explicit ``1``.
 CHANNEL_KEY = "channel"
 PRIMARY_CHANNEL_INDEX = 0
 

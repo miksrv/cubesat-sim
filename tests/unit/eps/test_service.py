@@ -119,7 +119,12 @@ def test_eps_makes_no_decisions(eps):
     service.tick()
     payload = client.last(TOPICS["eps_status"])
     assert set(payload) == {
-        "timestamp", "battery_percent", "voltage", "external_power", "charge_rate"
+        "timestamp",
+        "battery_percent",
+        "voltage",
+        "external_power",
+        "charge_rate",
+        "voltage_rate",
     }
 
 

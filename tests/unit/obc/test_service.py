@@ -127,9 +127,14 @@ def report_in(client, *services):
         client.deliver(TOPICS[deploy.REPORT_TOPICS[name]], dict(STATUS_PAYLOADS[name]))
 
 
-def battery(client, percent, external_power=False, charge_rate=None):
+def battery(client, percent, external_power=False, charge_rate=None, voltage_rate=None):
     if charge_rate is None:
         charge_rate = 1.5 if external_power else -2.0
+    if voltage_rate is None:
+        # Mains held the terminal voltage flat on the hardware; the pack falls.
+        # Both slopes have to agree before a plugged-in satellite may descend, so
+        # a test that means "the charger died" says so in both.
+        voltage_rate = 0.0 if external_power else -100.0
     client.deliver(
         TOPICS["eps_status"],
         {
@@ -137,6 +142,7 @@ def battery(client, percent, external_power=False, charge_rate=None):
             "voltage": 3.8,
             "external_power": external_power,
             "charge_rate": charge_rate,
+            "voltage_rate": voltage_rate,
         },
     )
 
@@ -1114,7 +1120,11 @@ def test_a_charger_that_stopped_charging_does_not_suppress_the_power_off(obc, mo
     monkeypatch.setattr(obc_service, "CRITICAL_FLUSH_GRACE_SEC", 0.05)
     service, client, _ = obc
     bring_up(service, client, "EXPO")
-    battery(client, DYING, external_power=True, charge_rate=-3.0)
+    # A charger that has genuinely stopped moves both slopes: the pack is now
+    # supplying the load, so its terminal voltage falls with the charge. The
+    # gauge's model drifting downwards on its own is a different case, and it
+    # deliberately no longer reaches here — tests/unit/obc/test_power_policy.py.
+    battery(client, DYING, external_power=True, charge_rate=-3.0, voltage_rate=-90.0)
     assert service.mission.state is MissionState.CRITICAL
     flush_thread(service)
     assert host_commands(client)[-1]["action"] == "poweroff"

@@ -217,7 +217,7 @@ def test_readings_serialise_to_flat_dicts():
         "temperature", "humidity", "pressure", "light", "uv_index", "uv_raw"
     }
     assert set(MockPowerMonitor().read().as_dict()) == {
-        "battery_percent", "voltage", "external_power", "charge_rate"
+        "battery_percent", "voltage", "external_power", "charge_rate", "voltage_rate"
     }
     imu = MockImu()
     imu._started -= 100

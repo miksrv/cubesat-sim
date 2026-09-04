@@ -432,6 +432,16 @@ See `README.md` for full payload schemas and the SQLite table layout.
 Environment variables override YAML. Secrets are environment-only — never write one into
 `config.yaml`, and there is deliberately no YAML key for one.
 
+**`EXPO`'s access point is a NetworkManager connection named in `profiles.yaml` and created once by
+`scripts/install.sh`** (2026-09-04), from `CUBESAT_AP_SSID`, `CUBESAT_AP_PASSWORD` and
+`CUBESAT_AP_ADDRESS`. That is the rule above applied to a Wi-Fi key: NetworkManager keeps it at 0600
+under `/etc/NetworkManager/system-connections/`, HOSTD only raises and lowers a name, and the SSID
+on `host_status` is read back off the radio rather than echoed from the file. It replaced
+`nmcli device wifi hotspot`, which picked the address and generated the key *itself* — both then
+knowable only from a shell on the satellite, which is exactly what the access point exists to make
+unnecessary. Do not move the key into YAML, and do not drop `autoconnect no` from the connection:
+without it the satellite boots broadcasting instead of joining the home network.
+
 Profiles are **data, not code**: adding a profile must not require editing `OBC`. `HOSTD` acts only
 on an explicit allowlist — the `cubesat@*` mission instances, the dashboard, `avahi-daemon`, and
 what `external_units` names — so a typo in a profile cannot take down `sshd`. That allowlist is also

@@ -116,10 +116,13 @@ def test_exactly_one_profile_is_deaf_on_lora():
     assert deaf == {Profile.MAINTENANCE}
 
 
-def test_expo_brings_its_own_network_with_an_ssid():
+def test_expo_brings_its_own_network_as_a_named_connection():
+    # A connection name rather than an SSID and a key: the credentials live in
+    # NetworkManager at 0600, where a Wi-Fi password belongs, and not in a file
+    # that is committed to git. HOSTD reads the SSID back off the radio.
     expo = profiles.load().get(Profile.EXPO)
     assert expo.network.mode is NetworkMode.AP
-    assert expo.network.ssid
+    assert expo.network.connection
 
 
 def test_diag_rehearses_flight_into_a_database_of_its_own():
@@ -197,10 +200,10 @@ def test_bad_network_mode_is_rejected(tmp_path):
         profiles.load(write(tmp_path, MINIMAL.replace("mode: client", "mode: carrier-pigeon")))
 
 
-def test_access_point_without_ssid_is_rejected(tmp_path):
-    # An AP with no SSID would come up unreachable, which is the one thing EXPO
-    # cannot afford.
-    with pytest.raises(profiles.ProfileError, match="requires an ssid"):
+def test_access_point_without_a_connection_is_rejected(tmp_path):
+    # An AP with nothing to raise would leave the satellite unreachable, which
+    # is the one thing EXPO cannot afford.
+    with pytest.raises(profiles.ProfileError, match="requires a connection"):
         profiles.load(write(tmp_path, MINIMAL.replace("mode: client", "mode: ap")))
 
 

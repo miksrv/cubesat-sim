@@ -129,7 +129,12 @@ def test_a_science_fair_and_then_a_walk_home(hostd):
     client.deliver(TOPICS["host_command"], {"action": "apply_profile", "profile": "EXPO"})
     assert until(lambda: latest(client)["profile"] == "EXPO")
     expo = latest(client)
-    assert expo["network"] == {"mode": "ap", "ssid": "cubesat", "clients": 0}
+    # The AP is up and the SSID is null, which is the honest pair here: the
+    # recording executor runs no nmcli, so the query that reads the broadcast
+    # name back off the connection answers nothing. A published null means "not
+    # established" everywhere in this system, and the name is one more place
+    # where guessing it — from the connection's own name, say — would be worse.
+    assert expo["network"] == {"mode": "ap", "ssid": None, "clients": 0}
     assert expo["units"][DASHBOARD_UNIT] == "active"
     assert all(expo["units"][unit] == "active" for unit in MISSION_UNITS)
     assert expo["units"]["telegram-bot.service"] == "inactive"

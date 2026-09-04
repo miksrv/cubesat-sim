@@ -586,6 +586,27 @@ Deploy the interface with `scripts/deploy-dashboard.sh` from a machine that has 
 
 **Address:** `http://cubesat.local`. The bare `http://cubesat` is unreliable in client mode, where resolution goes through mDNS — `cubesat.local` is what actually works from a phone or a tablet, and is what belongs on a demo card. Under `EXPO` the access point owns DNS for its own network, so `HOSTD`'s `dnsmasq` can additionally answer the bare name.
 
+#### Joining the satellite in the field
+
+`EXPO` is the profile for a room with no network anybody here can join, and the walk-to-work case it also serves is the one where the operator has *no other way in*: `FLIGHT` takes Wi-Fi down, so at the far end of a trip the satellite is reachable only over LoRa until an access point comes up. Three things therefore have to be knowable **before** leaving the house, and since 2026-09-04 all three are:
+
+| | Where it comes from | Default |
+|---|---|---|
+| SSID | `CUBESAT_AP_SSID` at install time | `cubesat` |
+| Password | `CUBESAT_AP_PASSWORD`, stored by NetworkManager at 0600 | none — the install step is skipped without it |
+| Address | `CUBESAT_AP_ADDRESS` at install time | `192.168.66.1/24`, so the dashboard is `http://192.168.66.1/` |
+
+They live in one NetworkManager connection created by `scripts/install.sh`; `config/profiles.yaml` names it and nothing more. The alternative that was in place until then, `nmcli device wifi hotspot`, chose the address itself and **generated a random key** — both readable only from a shell on the satellite, which is precisely what the access point exists to make unnecessary. A password only the satellite knows is not a password, it is a lock with the key inside.
+
+**Two QR codes on the frame beat any amount of software here.** The first joins the network, the second opens the dashboard:
+
+```
+WIFI:S=cubesat;T=WPA;P=<password>;;      # iOS and Android cameras handle this natively
+http://192.168.66.1/
+```
+
+Two taps, no typing, and nothing to go wrong in front of an audience. A captive portal — DNS hijack plus a redirect on port 80, so the browser opens by itself — was considered and **deliberately not built**: it needs port 80 (the dashboard runs unprivileged on 8080), a `dnsmasq-shared.d` drop-in and a page that survives being loaded inside a captive webview, which the dashboard would not, because its live data is a WebSocket to mosquitto that such a webview typically drops. Stickers cost nothing and work on every phone.
+
 ### Common Infrastructure
 
 **Path:** `src/cubesat/common/`, `src/cubesat/hal/`
@@ -1947,9 +1968,11 @@ Photos of the physical build (full-resolution originals are not kept in the repo
 > `/opt/cubesat-sim`, the units are in place, and the always-on tier comes up at boot. Two things
 > the first installs taught, both still true:
 >
-> - **`cubesat` is not on the operator's `PATH`.** The console script is installed into the
->   project's virtualenv, so it is `/opt/cubesat-sim/venv/bin/cubesat` until a symlink or a shell
->   profile line says otherwise.
+> - **`cubesat` reaches the operator's `PATH` through a symlink.** The console script is installed
+>   into the project's virtualenv, so it is `/opt/cubesat-sim/venv/bin/cubesat`; `scripts/install.sh`
+>   links that to `/usr/local/bin/cubesat` (2026-09-04). A satellite installed before that date keeps
+>   the long path until the script is re-run, which on a trip is a command typed by hand in the one
+>   profile that has no dashboard.
 > - **The dashboard is built elsewhere.** There is no `node` on the satellite and no groundstation
 >   checkout: `scripts/deploy-dashboard.sh` builds on a development machine and rsyncs
 >   `client/dist/` into `/var/lib/cubesat/dashboard`.
@@ -2148,7 +2171,7 @@ profiles:
     mission:            active          # active | standby | none
     network:
       mode:             ap              # client | ap | off
-      ssid:             cubesat
+      connection:       cubesat-ap      # a NetworkManager connection, by name
       advertise_mdns:   true            # answer cubesat.local
     external_units:     stop            # start | stop | [unit.service, ...]
     services:           [adcs, payload, dhs, comms, dashboard]
@@ -2228,6 +2251,10 @@ CUBESAT_MOCK_HARDWARE=0
 | `DHS_ATTITUDE_MIN_INTERVAL_SEC` | `1.0` (from `dhs.attitude_min_interval_sec`) | Floor on how often one attitude sample is recorded. One ceiling across every profile. Costs card writes, never bus time |
 | `PHOTO_MISSION_INTERVAL_SEC` | `300` (from `photos.mission_interval_sec`) | How often an open mission photographs by itself. There is no command and no interval on the wire; frames stop when the mission closes |
 | `DASHBOARD_LIVE_ROWS` | `720` (from `dashboard.live_history_rows`) | How many published telemetry rows DASHBOARD keeps in memory. The charts' whole history in the profiles that record nothing — about six hours at the 30 s `NOMINAL` cadence |
+| `CUBESAT_AP_SSID` | `cubesat` | Read by `scripts/install.sh` only, when it creates the access point's connection. Nothing reads it at runtime: HOSTD asks NetworkManager what is actually being broadcast |
+| `CUBESAT_AP_PASSWORD` | unset | The access point's pre-shared key, at install time. **A secret, so it is here and never in YAML** — NetworkManager stores it at 0600 under `/etc/NetworkManager/system-connections/`. Without it the install step is skipped and `EXPO` reports an error until the connection is created by hand |
+| `CUBESAT_AP_ADDRESS` | `192.168.66.1/24` | The access point's own address, and therefore the dashboard's URL in `EXPO`. Deliberately not a `10.10.x` or `192.168.0/1.x` address, which collide with the home networks a visiting phone already knows |
+| `CUBESAT_AP_CONNECTION`, `CUBESAT_AP_INTERFACE` | `cubesat-ap`, `wlan0` | The connection's name — which `config/profiles.yaml` must agree with — and the radio it is bound to |
 | `CUBESAT_MOCK_HARDWARE` | `0` | `1` selects the mock HAL — sensors, camera and radio are fakes |
 | `CUBESAT_SEN0501_REVISION` | unset | `v1` or `v3`. Unset means the UV index is withheld rather than guessed — see [`payload/data`](#cubesatpayloaddata) |
 | `CUBESAT_MOCK_HOST` | `0` | `1` selects HOSTD's no-op executor — nothing is started, stopped or reconfigured. A separate axis from the HAL: running the whole stack on a laptop needs both |

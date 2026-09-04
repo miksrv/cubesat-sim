@@ -82,9 +82,68 @@ sudo rm -f /etc/mosquitto/conf.d/cubesat-acl.conf
 # broker that did not come back is the one failure that strands everything.
 sudo systemctl restart mosquitto
 
+echo "==> Access point for EXPO"
+# One NetworkManager connection, created here and named by config/profiles.yaml.
+# HOSTD only raises and lowers it: the SSID, the key, the address plan and the
+# DHCP server all belong to this connection, and NetworkManager stores it at
+# 0600 under /etc/NetworkManager/system-connections/ — the one place on this
+# machine a Wi-Fi password may live, and the reason there is no YAML key for it.
+#
+# What this replaced was `nmcli device wifi hotspot`, which works and picks the
+# address (10.42.0.1) and generates the key *itself*. Both then existed only
+# inside NetworkManager on the satellite, so joining the access point required
+# first getting a shell on the satellite to read the password off it — and the
+# field, where EXPO is used, is exactly where there is no other way in.
+AP_CONNECTION="${CUBESAT_AP_CONNECTION:-cubesat-ap}"
+AP_INTERFACE="${CUBESAT_AP_INTERFACE:-wlan0}"
+AP_SSID="${CUBESAT_AP_SSID:-cubesat}"
+# Deliberately not 10.10.x or 192.168.0/1.x: the AP is joined from a phone that
+# may still remember a home network on one of those, and an address that
+# collides with the operator's own LAN is debugged at a science fair.
+AP_ADDRESS="${CUBESAT_AP_ADDRESS:-192.168.66.1/24}"
+AP_PASSWORD="${CUBESAT_AP_PASSWORD:-}"
+
+if ! command -v nmcli >/dev/null 2>&1; then
+    echo "    nmcli is not installed — skipped. EXPO needs NetworkManager."
+elif [[ -z "${AP_PASSWORD}" ]]; then
+    echo "    CUBESAT_AP_PASSWORD is not set — skipped."
+    echo "    EXPO will report an error until this connection exists; re-run"
+    echo "    with the variable set, or create it by hand (see README)."
+else
+    # Deleted and recreated rather than modified, so that re-running with a new
+    # password or address converges instead of layering half a change onto
+    # whatever was there. Deleting a connection that is not up disturbs nothing.
+    #
+    # autoconnect no is load-bearing: without it NetworkManager would raise the
+    # access point at every boot, and the satellite would come up in HOSTED
+    # broadcasting instead of joining the home network.
+    #
+    # The key is visible in the process table for the duration of this command.
+    # That is the cost of nmcli taking it as an argument; the file it writes is
+    # root-only, and this runs once at install time on the operator's own host.
+    sudo nmcli connection delete "${AP_CONNECTION}" >/dev/null 2>&1 || true
+    sudo nmcli connection add type wifi ifname "${AP_INTERFACE}" \
+        con-name "${AP_CONNECTION}" autoconnect no ssid "${AP_SSID}" \
+        802-11-wireless.mode ap 802-11-wireless.band bg \
+        ipv4.method shared ipv4.addresses "${AP_ADDRESS}" \
+        wifi-sec.key-mgmt wpa-psk wifi-sec.psk "${AP_PASSWORD}" >/dev/null
+    echo "    ${AP_CONNECTION}: SSID '${AP_SSID}', dashboard at http://${AP_ADDRESS%%/*}/"
+fi
+
 echo "==> systemd units"
 sudo cp "${PROJECT_DIR}"/systemd/*.service /etc/systemd/system/
 sudo systemctl daemon-reload
+
+echo "==> The cubesat CLI on PATH"
+# The console script is installed by pip into the virtualenv the services use,
+# and nothing puts that directory on a login shell's PATH — so `cubesat status`
+# was /opt/cubesat-sim/venv/bin/cubesat status, typed by hand, in a corridor, in
+# the one profile that has no dashboard (found 2026-09-01, ROADMAP W10).
+#
+# Replaced rather than skipped if it exists: moving the checkout or rebuilding
+# the venv is then repaired by re-running this script, instead of leaving a
+# symlink pointing at a python that is gone.
+sudo ln -sfn "${VENV}/bin/cubesat" /usr/local/bin/cubesat
 
 echo "==> Enabling the always-on tier"
 for unit in "${ALWAYS_ON[@]}"; do
@@ -94,10 +153,17 @@ done
 echo
 echo "Installed. The satellite is in the default profile (HOSTED)."
 echo
-# The `cubesat` CLI is not written yet, so this says what actually works today.
-# Advertising a command that does not exist is the worst possible first
-# impression of a system whose whole point is not claiming things it cannot do.
-echo "Switch profiles (the CLI is not written yet — see ROADMAP P2):"
+# A profile is the unit of operation, so the first thing an operator is told is
+# how to apply one — and individual units are deliberately not mentioned here.
+echo "Switch profiles:"
+echo "  cubesat profile demo"
+echo "  cubesat profile flight --ttl 8h --mission \"walk to work\""
+echo
+echo "Is it well?"
+echo "  cubesat status"
+echo
+echo "The CLI is a thin MQTT client with no state of its own, so the same"
+echo "commands go out from the dashboard, from a LoRa uplink, or by hand:"
 echo "  mosquitto_pub -h localhost -t cubesat/command \\"
 echo "    -m '{\"command\":\"set_profile\",\"params\":{\"profile\":\"DEMO\"}}'"
 echo
@@ -106,6 +172,10 @@ echo "  journalctl -u cubesat-hostd -f"
 echo
 echo "Read the achieved profile:"
 echo "  mosquitto_sub -h localhost -t cubesat/host/status -C 1 | python3 -m json.tool"
+echo
+echo "In EXPO the satellite is its own network: join '${AP_SSID}' and open"
+echo "  http://${AP_ADDRESS%%/*}/"
+echo "Both belong on a sticker — see README, Joining the satellite in the field."
 echo
 echo "The interface is deployed separately, from the cubesat-groundstation"
 echo "checkout on a machine that can build it:"

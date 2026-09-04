@@ -17,6 +17,7 @@ from cubesat.hostd.allowlist import DASHBOARD_UNIT, MDNS_UNIT, Refused, unit_for
 from cubesat.hostd.executor import ExecutorError
 from cubesat.hostd.service import HostdService
 from tests.unit.hostd.test_executor import ScriptedExecutor
+from tests.unit.hostd.test_network import AP_CONNECTION, SSID_QUERY
 
 MISSION_UNITS = tuple(unit_for(service) for service in ("adcs", "comms", "dhs", "payload"))
 EXTERNAL_UNITS = ("starmap.service", "telegram-bot.service")
@@ -166,14 +167,15 @@ def test_applying_expo_stops_the_external_units_brings_up_the_ap_and_starts_the_
     # The transition an operator actually makes: HOSTED is up with the unrelated
     # services running, and the satellite is taken to a science fair.
     service, client, executor = build(dict.fromkeys(EXTERNAL_UNITS, "active"))
+    # What NetworkManager answers when asked what the connection broadcasts. The
+    # SSID is not in profiles.yaml at all since 2026-09-04 — the profile names a
+    # connection, and the name a visitor types comes from the radio's own answer.
+    executor.outputs[SSID_QUERY] = "cubesat\n"
     service.handle({"action": "apply_profile", "profile": "EXPO", "request_id": "req_010"})
 
     assert sorted(units_touched(executor, "start")) == [DASHBOARD_UNIT, *MISSION_UNITS]
     assert sorted(units_touched(executor, "stop")) == list(EXTERNAL_UNITS)
-    hotspot = [
-        call for call in executor.calls if call[:4] == ("nmcli", "device", "wifi", "hotspot")
-    ]
-    assert hotspot and hotspot[0][-1] == "cubesat"
+    assert ("nmcli", "connection", "up", AP_CONNECTION, "ifname", "wlan0") in executor.calls
 
     status = client.last(TOPICS["host_status"])
     assert status["profile"] == "EXPO"
@@ -193,9 +195,9 @@ def test_the_order_is_stop_then_network_then_start(build):
 
     verbs = [call for call in executor.calls if call[:1] == ("systemctl",) or call[0] == "nmcli"]
     stopped = max(i for i, call in enumerate(verbs) if call[:2] == ("systemctl", "stop"))
-    hotspot = next(i for i, call in enumerate(verbs) if "hotspot" in call)
+    ap = next(i for i, call in enumerate(verbs) if call[:3] == ("nmcli", "connection", "up"))
     started = min(i for i, call in enumerate(verbs) if call[:2] == ("systemctl", "start"))
-    assert stopped < hotspot < started
+    assert stopped < ap < started
 
 
 def test_applying_the_active_profile_again_restarts_nothing(hostd):
@@ -210,7 +212,7 @@ def test_applying_the_active_profile_again_restarts_nothing(hostd):
     assert units_touched(executor, "start") == []
     assert units_touched(executor, "stop") == []
     # And the access point was not dropped and rebuilt underneath its clients.
-    assert not any("hotspot" in call for call in executor.calls)
+    assert not any(call[:3] == ("nmcli", "connection", "up") for call in executor.calls)
     assert client.last(TOPICS["host_status"])["profile"] == "EXPO"
 
 
@@ -318,7 +320,7 @@ def test_a_boot_profile_that_only_half_applied_still_says_what_it_wanted(hostd):
 def test_an_access_point_that_never_came_up_is_a_partial_application(hostd):
     # The real failure this distinction exists for: services running, no network.
     service, client, executor = hostd
-    executor.fails = (("nmcli", "device", "wifi", "hotspot"),)
+    executor.fails = (("nmcli", "connection", "up"),)
 
     service.handle({"action": "apply_profile", "profile": "EXPO"})
 
@@ -326,7 +328,7 @@ def test_an_access_point_that_never_came_up_is_a_partial_application(hostd):
     assert status["profile"] is None
     assert status["profile_requested"] == "EXPO"
     assert status["network"]["mode"] == "unknown"
-    assert any("hotspot" in error for error in status["errors"])
+    assert any(AP_CONNECTION in error for error in status["errors"])
     assert unit_for("adcs") in units_touched(executor, "start")
 
 
@@ -334,14 +336,14 @@ def test_a_network_that_failed_is_retried_on_the_next_application(hostd):
     # Otherwise the "already in this mode" shortcut would make a failed AP
     # permanent until a different profile happened to be applied.
     service, _, executor = hostd
-    executor.fails = (("nmcli", "device", "wifi", "hotspot"),)
+    executor.fails = (("nmcli", "connection", "up"),)
     service.handle({"action": "apply_profile", "profile": "EXPO"})
     executor.fails = ()
     executor.calls.clear()
 
     service.handle({"action": "apply_profile", "profile": "EXPO"})
 
-    assert any("hotspot" in call for call in executor.calls)
+    assert any(call[:3] == ("nmcli", "connection", "up") for call in executor.calls)
 
 
 def test_a_unit_outside_the_allowlist_is_reported_and_never_spawned(hostd, monkeypatch):

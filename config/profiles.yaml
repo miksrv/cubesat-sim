@@ -106,7 +106,15 @@ profiles:
   # visitors reloading the page must not each cost SD-card writes.
   EXPO:
     mission: active
-    network: { mode: ap, ssid: cubesat, advertise_mdns: true }
+    # The access point is a NetworkManager connection by name, created once by
+    # scripts/install.sh from the operator's .env — so the SSID, the key and the
+    # address are known before leaving the house, and none of the three is in
+    # this file. A Wi-Fi password in a committed YAML is a Wi-Fi password in git;
+    # NetworkManager keeps it at 0600 under /etc/NetworkManager/system-connections/,
+    # which is where it belongs. HOSTD reads the SSID back out of the connection
+    # and publishes it on host_status, so what a visitor is told is what is
+    # actually being broadcast.
+    network: { mode: ap, connection: cubesat-ap, advertise_mdns: true }
     external_units: stop
     services: [adcs, payload, dhs, comms]
     dashboard: true

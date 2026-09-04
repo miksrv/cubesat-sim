@@ -35,12 +35,13 @@ code is worth writing.
 | [V2](#v2-tel0157-knots-to-ms-factor) | `[ ]` bench | TEL0157 knots to m/s factor |
 | [V3](#v3-tel0157-altitude-triplet-high-byte) | `[ ]` bench | TEL0157 altitude triplet high byte |
 | [V5](#v5-bno055-calibration-save-and-restore) | `[ ]` not implemented | BNO055 calibration save and restore |
-| [V6](#v6-networkmanager-client-mode) | `[ ]` bench | NetworkManager client mode — `EXPO` depends on it |
+| [V6](#v6-networkmanager-client-mode-and-the-access-point-beside-it) | `[ ]` bench | NetworkManager client mode and the AP — **needs a setup step on the satellite first** |
 | [V7](#v7-sen0501-board-revision) | `[ ]` bench | SEN0501 board revision — `uv_index` stays null until then |
 | [V10](#v10-whether-the-private-channel-is-relayed-at-all) | `[ ]` bench | Whether the private channel is relayed at all |
 | [V13](#v13-does-the-x728-actually-charge-the-pack-and-from-which-input) | `[ ]` bench | Does the X728 actually charge the pack, and from which input |
 | [V14](#v14-bno055-low-byte-bit-7-flips-reach-the-record) | `[ ]` bench | BNO055 low-byte bit-7 flips reach the record |
 | [V15](#v15-one-full-discharge-the-pack-curve-the-real-capacity-and-the-endurance) | `[ ]` bench | One full discharge: the pack curve, the real capacity and the endurance |
+| [V16](#v16-two-qr-codes-on-the-frame) | `[ ]` to print | Two QR codes on the frame: join the AP, open the dashboard |
 | [Q1](#q1-keep-the-bmp280-at-0x76-and-for-what) | `[ ]` open | Keep the BMP280 at `0x76`, and for what? |
 | [Q4](#q4-may-a-safe-satellite-be-shown-in-expo) | `[ ]` open | May a `SAFE` satellite be shown in `EXPO`? |
 | [Q5](#q5-a-watchdog-under-the-satellite-and-what-it-must-not-undo) | `[ ]` open | A watchdog under the satellite, and what it must not undo |
@@ -228,11 +229,12 @@ What to watch for, in order of how likely it is to bite:
   load explains (2026-09-01), but whether it started full is exactly what V13 leaves open.
 - **The beacon reset on arrival.** Switching to `DEMO` is what silences it; if it keeps beaconing at
   a desk, the reset in `_reconcile_downlink` did not happen.
-- **`cubesat` is not on the operator's `PATH`.** It ran on the Pi on 2026-09-01 — `cubesat status`
-  answers in about 2.5 s — but only as `/opt/cubesat-sim/venv/bin/cubesat`, because the console
-  script lives in the virtualenv the services use and nothing puts it on a login shell's path. On a
-  trip that is a long command typed by hand; worth a symlink or a profile line before relying on it
-  in a field.
+- **`cubesat` on the operator's `PATH`.** It ran on the Pi on 2026-09-01 — `cubesat status` answers
+  in about 2.5 s — but only as `/opt/cubesat-sim/venv/bin/cubesat`, because the console script lives
+  in the virtualenv the services use and nothing put it on a login shell's path. `scripts/install.sh`
+  now symlinks it to `/usr/local/bin/cubesat` (2026-09-04), so on **this** satellite the short name
+  works from the next install run and not before — until then it is still the full path, in a
+  corridor, in the profile that has no dashboard.
 
 **And one thing to cause on purpose, once the trip is otherwise going well: pull the power.** The
 resume written on 2026-09-03 (`obc/resume.py`) has never met a real reset. Hold the trip somewhere
@@ -288,12 +290,33 @@ a wait after a reset — it is that **every calibration is hand-made and unrepea
 procedure needing a calibrated sensor (notably [W4](#w4-adcs-mounting-offset--requested-2026-09-01-to-be-done-on-the-running-satellite))
 has to redo those two minutes each time, in the field included.
 
-#### V6: NetworkManager client mode
+#### V6: NetworkManager client mode, and the access point beside it
 
-**The check.** `nmcli connection down Hotspot` with a pinned `wlan0`.
+**There is a setup step on the satellite before this can be checked at all** (2026-09-04). The AP is
+no longer `nmcli device wifi hotspot` but a named NetworkManager connection, `cubesat-ap`, which
+`scripts/install.sh` creates from `CUBESAT_AP_SSID`, `CUBESAT_AP_PASSWORD` and `CUBESAT_AP_ADDRESS`.
+A satellite updated by `git pull` alone has no such connection, so `EXPO` will report
+`nmcli connection up cubesat-ap: …` on `host_status` and stay in `unknown` mode until it exists. So
+the first step is on the running satellite: set those three in the operator's `.env` and re-run
+`scripts/install.sh`, or create the connection by hand — the command is in the script, and
+`autoconnect no` is the part not to drop, or the satellite comes up broadcasting instead of joining
+the home network.
+
+**The check**, once it exists:
+
+1. `nmcli connection show cubesat-ap` — it is there, `autoconnect` is `no`, `ipv4.addresses` is what
+   was asked for.
+2. Apply `EXPO`. `host_status.network` should read `{mode: ap, ssid: cubesat, clients: 0}` — and the
+   SSID is now read back off the connection rather than echoed from a profile, so a null there means
+   the query failed while the AP is genuinely up, which is worth noticing rather than shrugging at.
+3. Join from a phone with the password from `.env`, open `http://192.168.66.1/`, watch `clients`
+   go to 1.
+4. Apply `HOSTED`. `nmcli connection down cubesat-ap` runs, NetworkManager rejoins the home network
+   on its own, and `host_status.network.mode` is `client`.
 
 **Why it is not settled.** Written against the documentation, never run on the Pi. `EXPO` depends on
-it.
+it, and so does the far end of the first `FLIGHT` trip: at work there is no network the satellite
+knows, so the access point is the only way to reach the dashboard or a shell.
 
 #### V7: SEN0501 board revision
 
@@ -430,6 +453,25 @@ on the Raspberry Pi forum says it does not.
 That is the right one for this use — every threshold is compared against a voltage measured while
 the satellite is running — but it means the table is only valid for a load of roughly this size, and
 the profile it was measured in belongs in the note beside it.
+
+#### V16: Two QR codes on the frame
+
+**What.** A sticker with two codes: `WIFI:S=cubesat;T=WPA;P=<password>;;`, which iOS and Android
+cameras join natively, and `http://192.168.66.1/`, which opens the dashboard. Print it, and stick it
+where a visitor's hand naturally goes — the side away from the camera and the antenna.
+
+**Why it is on this list rather than in a drawer.** It is the whole user interface of `EXPO` for
+anybody who is not the operator, and it is what makes the walk-to-work case work at the far end: two
+taps instead of typing an SSID, a password and an address into a phone in a corridor. It also
+replaces a captive portal, which was considered on 2026-09-04 and deliberately not built — that
+would have wanted port 80 (the dashboard runs unprivileged on 8080), a `dnsmasq-shared.d` drop-in
+and a page that survives a captive webview, which the dashboard would not because its live data is a
+WebSocket to mosquitto.
+
+**Note before printing:** the password is a secret and the sticker is public to whoever is holding
+the satellite. That is the right trade for a science fair and the wrong one for a conference table —
+if the unit is ever left unattended somewhere it matters, change `CUBESAT_AP_PASSWORD`, re-run
+`scripts/install.sh`, and print a new sticker.
 
 ### Decisions still open
 

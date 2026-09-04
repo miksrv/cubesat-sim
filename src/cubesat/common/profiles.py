@@ -30,7 +30,19 @@ class ProfileError(ValueError):
 @dataclass(frozen=True)
 class NetworkSpec:
     mode: NetworkMode
-    ssid: str | None = None
+    #: The NetworkManager connection to raise for ``mode: ap``, by name.
+    #:
+    #: A name rather than an SSID and a password (2026-09-04). The SSID, the
+    #: pre-shared key, the address plan and the band belong to one connection
+    #: profile that ``scripts/install.sh`` creates once, and NetworkManager keeps
+    #: it in ``/etc/NetworkManager/system-connections/`` at 0600, root-only —
+    #: which is where a Wi-Fi password may live and ``profiles.yaml``, committed
+    #: to git, is not. It also makes the AP's address knowable *before* leaving
+    #: the house: ``nmcli device wifi hotspot`` picked both the address and a
+    #: random key by itself, so an operator standing in front of an access point
+    #: could not join it without first getting a shell on the satellite — which
+    #: is the one thing the access point exists to avoid needing.
+    connection: str | None = None
     advertise_mdns: bool = False
 
 
@@ -179,14 +191,14 @@ def _spec(name: str, raw: dict[str, Any], known_units: tuple[str, ...]) -> Profi
     try:
         network = NetworkSpec(
             mode=NetworkMode(net_raw.get("mode", "off")),
-            ssid=net_raw.get("ssid"),
+            connection=net_raw.get("connection"),
             advertise_mdns=bool(net_raw.get("advertise_mdns", False)),
         )
     except ValueError as exc:
         raise ProfileError(f"profile {name}: bad network mode {net_raw.get('mode')!r}") from exc
 
-    if network.mode is NetworkMode.AP and not network.ssid:
-        raise ProfileError(f"profile {name}: network mode 'ap' requires an ssid")
+    if network.mode is NetworkMode.AP and not network.connection:
+        raise ProfileError(f"profile {name}: network mode 'ap' requires a connection")
 
     external = _external_units(name, need("external_units"), known_units)
 

@@ -40,7 +40,6 @@ code is worth writing.
 | [V10](#v10-whether-the-private-channel-is-relayed-at-all) | `[ ]` bench | Whether the private channel is relayed at all |
 | [V13](#v13-does-the-x728-actually-charge-the-pack-and-from-which-input) | `[ ]` bench | Does the X728 actually charge the pack, and from which input |
 | [V14](#v14-bno055-low-byte-bit-7-flips-reach-the-record) | `[ ]` bench | BNO055 low-byte bit-7 flips reach the record |
-| [V16](#v16-whether-payload-answers-inside-the-ack-window) | `[ ]` bench | Whether PAYLOAD answers inside the ack window — `!photo` says `err=noreply` if not |
 | [Q1](#q1-keep-the-bmp280-at-0x76-and-for-what) | `[ ]` open | Keep the BMP280 at `0x76`, and for what? |
 | [Q4](#q4-may-a-safe-satellite-be-shown-in-expo) | `[ ]` open | May a `SAFE` satellite be shown in `EXPO`? |
 | [Q5](#q5-a-watchdog-under-the-satellite-and-what-it-must-not-undo) | `[ ]` open | A watchdog under the satellite, and what it must not undo |
@@ -60,8 +59,10 @@ a shipped configuration value instead of computing from it. The radio command co
 down to its last command — `restart_service` was that one — and the **acks** closed on 2026-09-03:
 a reply is gated on the profile rather than on the beacon flag, every command with an effect keeps
 its own answer instead of being erased by the next one, and `!photo` reports the frame it took. The
-`photo` field set the contract had described and never had is part of that. What the contract still
-cannot promise is that PAYLOAD answers inside the window — [V16](#v16-whether-payload-answers-inside-the-ack-window).
+`photo` field set the contract had described and never had is part of that, and on 2026-09-03 the
+last open question about it was measured away in `DIAG`: the frame was ready 29 seconds before the
+reply went out, so the ack window is bounded by the radio cadence rather than by the camera
+(`comms/service.py` -> `_photo_fields`).
 
 **Where the rewrite stands.** All eight services exist, at 100 % line coverage with `ruff` and
 `mypy` clean, and all eight have now run on the satellite: `HOSTD`, `OBC`, `EPS` and `COMMS` in
@@ -140,9 +141,27 @@ What to build:
 3. **A capture procedure that cancels the desk.** A desk is not level either, and a naive "level
    here" bakes its tilt into the satellite. Capture with the satellite on the desk, turn it 180°
    about vertical, capture again: the desk's tilt changes sign relative to the frame while the mount
-   offset does not, so the mean of the two is the mount alone. Ten seconds of samples each, averaged.
+   offset does not, so the mean of the two is the mount alone.
    A `level` (or `calibrate mount`) command on the usual `cubesat/command` topic, so it works from the
    shell, the console and the radio alike, and prints the quaternion for the config file.
+
+   Two corrections to this step, both measured on 2026-09-03 during a capture attempt that ran out
+   of battery before the second position was taken.
+
+   **Calibrate the accelerometer first — it is step zero, not a nicety.** The satellite reported
+   `calib.accel = 0` at the start, and the procedure above cannot remove an accelerometer bias: the
+   bias sits in the sensor frame exactly like the mount offset does, so it would be captured as part
+   of it and then drift away on its own the first time the unit is carried anywhere. Bringing it to
+   3/3 changed the reading from `roll 4.375° / pitch −2.0°` to `roll 0.0° / pitch −2.31°` and `|g|`
+   from 0.969 to 0.991 — **an error of about 4.4°, larger than the offset being measured**. Getting
+   there took two rounds of standing the cube on all six faces for 10–15 s each; the face that gets
+   skipped is the ordinary upright one, because the operator starts by turning it over.
+
+   **Median, not mean, over at least a minute per position** — [V14](#v14-bno055-low-byte-bit-7-flips-reach-the-record),
+   confirmed in the same session at 4 outliers per 82 samples. Ten seconds is 20 samples at 2 Hz,
+   which is one corrupted sample on average, and its 8° step is comparable to the whole quantity
+   being measured. Note also that the poll rate is state-dependent: in `LOW_POWER` ADCS drops to
+   0.2 Hz, so a minute buys 12 samples rather than 120.
 4. **Say so on the wire.** `adcs_status` carries the offset that was applied (or that none was), so a
    consumer can tell corrected attitude from raw. Recorded missions before this change hold sensor
    frame attitude, later ones body frame — worth a line in the schema notes, not worth a migration.
@@ -259,6 +278,15 @@ produced the `SYS_ERR = 9` session already recorded there.
 **Why it is not settled.** Without it the magnetometer must be re-calibrated after every reset, so
 `yaw` is withheld for a while after each restart.
 
+**What that costs is now measured, 2026-09-03.** Standing the cube on its six faces for a couple of
+minutes took the sensor to a full `sys 3 / gyro 3 / accel 3 / mag 3` — the first time this project
+has seen it — and `yaw` immediately started publishing (548 of 599 samples, around 181°), which is
+the withholding rule working exactly as designed. It was then lost, as it always will be, at the
+next stop of ADCS: a profile change to `HOSTED` is enough. So the cost of not having V5 is not only
+a wait after a reset — it is that **every calibration is hand-made and unrepeatable**, and any
+procedure needing a calibrated sensor (notably [W4](#w4-adcs-mounting-offset--requested-2026-09-01-to-be-done-on-the-running-satellite))
+has to redo those two minutes each time, in the field included.
+
 #### V6: NetworkManager client mode
 
 **The check.** `nmcli connection down Hotspot` with a pinned `wlan0`.
@@ -338,26 +366,24 @@ plausibility check cannot see these by construction. The check the hardware doc 
 measure both rates again. Until then a median-of-three in the driver would hide the isolated ones at
 the cost of half a second of latency — a decision, not a fix.
 
+**Confirmed again 2026-09-03, and this time in the Euler angles.** With the satellite standing
+still on a desk and the magnetometer freshly calibrated, `yaw` alternated between **181.125° and
+189.125°** — a difference of exactly 8.000°, which is 128 LSB at the Euler scale of 1/16° per LSB.
+The same reading in the same session put the rate at **4 outliers in 82 published `accel_g` samples**
+(deviations above 50 mg from the median), i.e. one in twenty, matching 2026-09-01 exactly. So the
+defect is stable, it is not confined to one register block, and it reaches every consumer of
+attitude — the heading included, which is the field an operator is most likely to believe.
+
+**What it forces on anything that averages this sensor: take the median, never the mean.** Measured
+in the same series — over 82 samples the median and the mean of `accel_g` differed by 1–2 mg, small
+only because the outliers were few; a single 8° step inside a 20-sample window is comparable to the
+whole quantity [W4](#w4-adcs-mounting-offset--requested-2026-09-01-to-be-done-on-the-running-satellite)
+is trying to measure. Any capture procedure built on this sensor therefore averages by median over a
+window of at least a minute, and W4's own text says so at its capture step.
+
 **Why it is not settled.** They are physically plausible values and DHS writes them into `attitude`
-as measured, so a replay shows an 8° twitch or a 0.13 g kick that never happened.
-
-#### V16: Whether PAYLOAD answers inside the ack window
-
-**The check.** In `DEMO` on the Pi, send `photo` from the phone and read what comes back. Expected
-`re=photo ok=1 kb=<size> seq=…`; what would fail is `re=photo err=noreply` arriving while the
-photograph is visible in the dashboard. Worth repeating with the mission's own photography running
-(a 300 s series in `DIAG`), which is when the bus and the camera are busiest, and once from `SAFE`,
-where COMMS wakes every 60 s and PAYLOAD polls every 300 s.
-
-**Why it is not settled.** `!photo`'s ack reads PAYLOAD's own `payload_photo` message and reports
-`err=noreply` when nothing was published between the command and the transmission
-(`comms/service.py` → `_photo_fields`). Nothing measures how long that actually takes on the
-hardware: a cold capture was 0.97 s on 2026-09-01, but that was one process on an idle bus, and the
-window here is bounded by `ACK_DELAY_SEC` on one side and by the next COMMS wake on the other, with
-four processes sharing a 10 kHz bus behind an advisory lock. It is in this list rather than in the
-code because the failure is a plausible wrong answer: a photograph that worked, reported over the
-radio as one that was never confirmed. If it does bite, the fix is not a longer delay — it is
-holding the ack until the message it is waiting for arrives, with its own bound.
+as measured, so a replay shows an 8° twitch, a 0.13 g kick, or an 8° turn of heading that never
+happened.
 
 ---
 

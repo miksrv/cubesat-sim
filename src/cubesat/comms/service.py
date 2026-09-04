@@ -1067,6 +1067,17 @@ class CommsService(Service):
         a camera that never came back, look exactly like this — but ``ok=0``
         would be a verdict on a capture COMMS never saw, which is the invented
         number this project refuses.
+
+        **Measured 2026-09-03, in `DIAG` on the satellite** (bench check V16, now
+        closed). ``!photo`` from the phone at 20:20:40; PAYLOAD published the
+        frame at 20:20:41.2 — a cold capture, camera opened for it — and the ack
+        went out at 20:21:10 carrying ``re=photo ok=1 kb=485``. So the photograph
+        was ready **29 seconds before** the reply was sent, with five services
+        running and ADCS polling the 10 kHz bus at 2 Hz. The window is not set by
+        the camera at all: it is ``ACK_DELAY_SEC`` on one side and the next COMMS
+        wake on the other, and at the 30 s ``NOMINAL`` cadence that leaves roughly
+        thirty times the margin the capture needs. ``err=noreply`` therefore means
+        what it says — PAYLOAD did not answer — rather than "PAYLOAD was slow".
         """
         photo = self._photo
         at = (photo or {}).get("at")

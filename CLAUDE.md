@@ -508,6 +508,16 @@ back to a process-local lock and four processes stop serialising the bus — sil
 first hardware run, 2026-08-31). The units name the paths in `ReadWritePaths=` instead, which is
 what re-opens them under `ProtectSystem=strict`. Do not restore the directives.
 
+**Never open `comms.db` or `diag.db` as anybody but `cubesat`, read-only included** (found
+2026-09-03). Both run in WAL mode, and SQLite creates `-shm`/`-wal` beside the file even for a
+reader — so a `sqlite3 'file:…?mode=ro'` run from an operator's shell leaves those two files owned
+by that operator, and DHS, which is `cubesat`, then fails its next write with `attempt to write a
+readonly database` while the database file itself still looks perfectly writable. It cost the first
+`DIAG` run its recording: migrations 4→7 aborted and the service logged `nothing will be recorded`
+and stayed up, exactly as it should. Diagnose through `sudo -u cubesat sqlite3 …`, or on a copy.
+Fixing an instance of it is `chown cubesat:cubesat` on the two sidecar files — never delete a `-wal`
+that is not zero-length, it holds committed transactions.
+
 Set `CUBESAT_DATA_DIR=./data` for development. Units are a systemd template — `cubesat@obc`,
 `cubesat@adcs`, `cubesat@dhs` and so on — with `cubesat-hostd` and `cubesat-dashboard` separate,
 having different privileges and dependencies.

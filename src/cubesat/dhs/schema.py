@@ -134,6 +134,10 @@ TELEMETRY_COLUMNS: tuple[str, ...] = (
     "uptime_seconds",
     "cpu_temperature",
     "raw_json",
+    # Appended after raw_json because ALTER TABLE adds a column at the end and
+    # this tuple is documented as DDL order. The insert binds by name, so the
+    # position is documentation rather than mechanism.
+    "charge_rate",
 )
 
 #: Written in this order, in one executemany per flush.
@@ -357,6 +361,23 @@ _START_REASON_DDL = (
     "ALTER TABLE missions ADD COLUMN start_reason TEXT",
 )
 
+_CHARGE_RATE_DDL = (
+    # The signed percent-per-hour EPS fits to the state-of-charge history
+    # (eps/charge_rate.py). It has always been published and has always landed
+    # in raw_json; this promotes it to a column because it is not one more
+    # reading among many — it is the quantity power_policy actually decides on.
+    # `on_mains` compares it against DRAINING_PERCENT_PER_HOUR, so it is the
+    # number that explains why a descent happened or did not, and a black box
+    # that keeps the readings but not the quantity under the decision makes the
+    # analyst reconstruct the decision from JSON.
+    #
+    # Null is a real value here and must stay one: EPS publishes no rate until
+    # it has charge_rate_min_span_sec of history, and again for that long after
+    # the mains pin changes. A row with a null rate says "not known yet", which
+    # is exactly what the policy read at that moment.
+    "ALTER TABLE telemetry ADD COLUMN charge_rate REAL",
+)
+
 #: Forward-only, in order. Never edit a migration that has shipped — a file that
 #: already applied it will not apply it again, so the edit would only ever reach
 #: databases created after it, and the two would silently diverge. That is why
@@ -368,6 +389,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(version=3, statements=(_ATTITUDE_DDL, *_ATTITUDE_INDEX_DDL)),
     Migration(version=4, statements=(_RADIO_DDL, *_RADIO_INDEX_DDL)),
     Migration(version=5, statements=_START_REASON_DDL),
+    Migration(version=6, statements=_CHARGE_RATE_DDL),
 )
 
 #: What a database this build can write looks like.

@@ -44,6 +44,7 @@ code is worth writing.
 | [V16](#v16-whether-payload-answers-inside-the-ack-window) | `[ ]` bench | Whether PAYLOAD answers inside the ack window — `!photo` says `err=noreply` if not |
 | [Q1](#q1-keep-the-bmp280-at-0x76-and-for-what) | `[ ]` open | Keep the BMP280 at `0x76`, and for what? |
 | [Q4](#q4-may-a-safe-satellite-be-shown-in-expo) | `[ ]` open | May a `SAFE` satellite be shown in `EXPO`? |
+| [Q5](#q5-a-watchdog-under-the-satellite-and-what-it-must-not-undo) | `[ ]` open | A watchdog under the satellite, and what it must not undo |
 
 ---
 
@@ -394,6 +395,43 @@ compare over a few sessions; `DIAG` is the natural place, now that it rehearses 
 
 May a human move a fault-latched (`SAFE`) satellite into `EXPO` to show it to an audience? Probably
 yes, with the fault displayed — but it needs deciding rather than falling out of the implementation.
+
+**Blocks:** —
+
+#### Q5: A watchdog under the satellite, and what it must not undo
+
+Raised 2026-09-03, from reading how CubeSat flight computers survive on commercial silicon: the
+processor is an ordinary Compute Module, and what makes it flyable is the obvious things around it —
+a latch-up-aware power switch and a watchdog that does not run on the processor it is watching. Two
+of the three levers below already exist on this Pi and cost one line each; none of them is used.
+
+The BCM SoC carries a hardware watchdog in its power-management block (`bcm2835_wdt`,
+`/dev/watchdog0`, enabled by default on current firmware, **maximum ~15 s** — the counter is in the
+SoC and does not tick longer). Three separable decisions, not one:
+
+1. **The SoC timer under PID 1.** `RuntimeWatchdogSec=14` in `/etc/systemd/system.conf`, and
+   systemd pets it at half the interval. It catches a locked kernel or a wedged PID 1 and nothing
+   else: a hung *service* leaves a healthy systemd petting happily.
+2. **A per-unit watchdog.** `WatchdogSec=` with `Type=notify` and a `WATCHDOG=1` datagram on
+   `NOTIFY_SOCKET` — a few lines of `socket`, no new dependency, and **one place to put them**,
+   because every service already publishes a heartbeat on a fixed interval in `common/service.py`.
+   Two things it does not buy, both of which are existing rules rather than new caveats. It proves a
+   process, never its hardware, so it sits *under* OBC's health verdict and not in place of it. And a
+   restart OBC did not ask for is not covered by `health.expect_restart` — it reads as a lost
+   subsystem and latches `SAFE`, which is the correct reading for a service wedged badly enough to be
+   killed from outside, and must not be "fixed" by widening that grace.
+3. **An external watchdog.** A $2 MCU on the reset line, independent of the SoC. The only one of the
+   three that survives a processor which has stopped answering at all — which is also the only
+   failure the other two cannot see. Out of scope until the first two are decided, but it is the one
+   that would matter.
+
+**What has to be settled before any of it lands, and it is a bench check rather than a reading:
+what a watchdog does to `CRITICAL`.** `CRITICAL` is the one state permitted to power the host down,
+and a `poweroff` that stalls past the timeout would be *undone* by a reset — the satellite comes back
+up on a flat pack, in exactly the situation the shutdown exists to prevent. systemd has
+`RebootWatchdogSec=` for the shutdown path and the driver reports magic-close support, but which of
+those actually governs a `poweroff` on this Pi is not something to infer from documentation. Arm the
+watchdog, take the satellite into `CRITICAL`, and watch whether it stays down.
 
 **Blocks:** —
 

@@ -917,6 +917,13 @@ would be stamped from the epoch of the last boot.
 - **Profile change while `SAFE`.** Should a human be allowed to move a fault-latched satellite
   into `EXPO` to show it to an audience? Probably yes, with the fault clearly displayed — but
   it needs deciding rather than falling out of the implementation.
+- **A watchdog under the satellite.** The BCM SoC carries a hardware watchdog nothing here uses
+  (`/dev/watchdog0`, ~15 s maximum), and systemd would drive it from one line. Three separable
+  decisions — the SoC timer under PID 1, a per-unit `WatchdogSec=` fed from the heartbeat every
+  service already publishes, and an external MCU on the reset line — and one thing that has to be
+  measured before any of them lands: whether a watchdog reset can undo a `CRITICAL` poweroff, which
+  would bring the satellite back up in the state the shutdown exists to prevent. Raised 2026-09-03;
+  the argument is in `ROADMAP.md` → Q5.
 - ~~**Should `DEMO` and `EXPO` record at all, or is a mission the privilege of `FLIGHT`?**~~
   **Answered 2026-09-01: a mission is the privilege of `FLIGHT`** (and of `DIAG`, which rehearses
   it into a separate file). Raised 2026-08-31 because three of the first eleven missions on the

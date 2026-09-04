@@ -404,7 +404,7 @@ opens one for itself and closes it again.
 |---|---|
 | Timing | `id`, `timestamp` (ISO-8601 UTC string) |
 | Context | `mission_id` → [`missions`](#mission-sessions), `profile`, `obc_state` |
-| EPS | `battery`, `voltage`, `external_power` |
+| EPS | `battery`, `voltage`, `external_power`, `charge_rate` |
 | ADCS attitude | `roll`, `pitch`, `yaw`, `quat_w/x/y/z`, `imu_temp`, `accel_x/y/z`, `gyro_x/y/z`, `calib_status` |
 | ADCS position | `lat`, `lon`, `alt`, `speed`, `fix`, `satellites` |
 | Payload science | `temperature`, `humidity`, `pressure`, `light`, `uv_index` |

@@ -127,6 +127,23 @@ def test_the_documented_payloads_flatten_into_the_documented_columns():
     assert (assembled["cpu_percent"], assembled["cpu_temperature"]) == (12.5, 48.3)
 
 
+def test_the_charge_rate_is_a_column_because_the_policy_decides_on_it(conn, recorder):
+    # Promoted out of raw_json at schema version 6. Every other EPS field is a
+    # reading; this one is the quantity power_policy compares against
+    # DRAINING_PERCENT_PER_HOUR, so it is what explains a descent that happened
+    # or one that did not. A black box that keeps the readings but not the
+    # number under the decision makes the analyst rebuild the decision by hand.
+    recorder.write(row())
+    assert conn.execute("SELECT charge_rate FROM telemetry").fetchone()["charge_rate"] == -0.208
+
+
+def test_a_missing_charge_rate_is_null_rather_than_zero():
+    # EPS publishes no rate until it holds charge_rate_min_span_sec of history,
+    # and none again for that long after the mains pin changes. Null there is a
+    # measurement of ignorance; zero would read as a pack holding steady.
+    assert row(eps={"battery_percent": 80.0, "voltage": 3.9})["charge_rate"] is None
+
+
 def test_position_has_real_columns_because_flight_exists_to_record_a_track():
     # The pre-rewrite schema kept GNSS only inside raw_json, which meant every
     # chart and every export had to parse JSON per row to draw a map.

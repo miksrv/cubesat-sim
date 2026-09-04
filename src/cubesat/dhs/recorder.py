@@ -318,6 +318,10 @@ def build_row(
         # SQLite has no boolean type, and "true"/1/'t' in one column is how a
         # chart ends up filtering on a string. Stored as 0/1, null if unknown.
         "external_power": _flag(eps.get("external_power")),
+        # Fitted by EPS, not read from the gauge — this family has no rate
+        # register. Null until EPS has enough history to say, which is a
+        # measurement of ignorance rather than of zero.
+        "charge_rate": _number(eps.get("charge_rate")),
         "roll": _number((adcs or {}).get("roll")),
         "pitch": _number((adcs or {}).get("pitch")),
         # Null until the magnetometer is calibrated — ADCS withholds it rather

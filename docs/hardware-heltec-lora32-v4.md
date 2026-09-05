@@ -2,7 +2,7 @@
 
 LoRa ground link for **COMMS**, replacing the LoRa half of the [52Pi IoT Node(A)](hardware-iot-node-a-52pi.md). The board runs **stock Meshtastic firmware** and is a self-contained radio: the Raspberry Pi talks to it over UART using Meshtastic's Serial module in `PROTO` mode, and Meshtastic handles framing, CRC, retries, acknowledgements and encryption on its own. The custom `length + payload + CRC-16-CCITT` framing used against the 52Pi bridge is therefore obsolete here.
 
-> **Status:** the radio link is bench-verified end to end (Pi → UART → Heltec → air → second Meshtastic node, and back). The driver is `src/cubesat/hal/rpi/meshtastic_radio.py`, built on the `meshtastic` library — the old `smbus2`/SC16IS752 implementation is gone, and with it the hand-rolled framing and CRC that Meshtastic already provides. **It ran inside `COMMS` on the assembled satellite on 2026-08-31**, in `HOSTED`: the node was reachable, a beacon went out, and a ground command typed on a phone round-tripped onto `cubesat/command` and was answered. On 2026-09-02 the node was moved onto the community mesh's modem preset and immediately measured there: 72 foreign gateways published its first broadcast, having relayed it up to five times, which settled the hop arithmetic — see [Coverage](#coverage-measured-2026-09-02). What is still unproven is whether any of that relaying happens on the **private channel** the satellite's own telemetry and commands travel on, which is what remains of bench check V10.
+> **Status:** the radio link is bench-verified end to end (Pi → UART → Heltec → air → second Meshtastic node, and back). The driver is `src/cubesat/hal/rpi/meshtastic_radio.py`, built on the `meshtastic` library — the old `smbus2`/SC16IS752 implementation is gone, and with it the hand-rolled framing and CRC that Meshtastic already provides. **It ran inside `COMMS` on the assembled satellite on 2026-08-31**, in `HOSTED`: the node was reachable, a beacon went out, and a ground command typed on a phone round-tripped onto `cubesat/command` and was answered. On 2026-09-02 the node was moved onto the community mesh's modem preset and immediately measured there: 72 foreign gateways published its first broadcast, having relayed it up to five times, which settled the hop arithmetic — see [Coverage](#coverage-measured-2026-09-02). On 2026-09-05 the last of that was settled on the **private channel**: ten commands sent from 2–3 km away with no line of sight were all accepted and answered, and three traceroutes put a foreign ridge-top `ROUTER` between the two nodes — see [The private channel is relayed](#the-private-channel-is-relayed-measured-2026-09-05). Bench check V10 is closed.
 
 - **Product:** [Heltec WiFi LoRa 32 V4](https://heltec.org/project/wifi-lora-32-v4/)
 - **Official docs:** [Heltec Wiki — WiFi LoRa 32 V4](https://wiki.heltec.org/docs/devices/open-source-hardware/esp32-series/lora-32/wifi-lora-32-v4/)
@@ -218,7 +218,7 @@ well north of the Bay Area (`Davis Home Base`, `Yuba Mesh - Bear`, `Sutter Butte
 traceroute payload are **quarter-dB integers** — `snr_towards: 43` is 10.75 dB, `-32` is −8 dB — and
 not the same encoding as the `rx_snr` meshview reports beside them.
 
-**This settles the hop arithmetic (V10, primary channel).** `hops = hopStart − hopLimit` was read
+**This settled the hop arithmetic — the first half of V10.** `hops = hopStart − hopLimit` was read
 from the library's documentation and had never been exercised, because every packet heard on the
 bench arrived direct and reads 0 whichever interpretation is right. Here one packet is reported by
 72 receivers: `hopStart` stays at the 6 this node now transmits with, `hopLimit` arrives as
@@ -235,15 +235,14 @@ first non-direct packet this satellite has received, and a plausible integer aga
 in use here. `radio_log.hops`, the field the check exists for, has therefore now carried a relayed
 value produced by our own code path rather than by meshview's.
 
-**What is left of V10 is the private channel, not the arithmetic.** All of the above is the primary
-channel; see below.
-
-**What this does not settle.** Everything above happens on the primary channel, and reaching the
-community mesh there is necessary rather than sufficient. A foreign node relays a packet it *cannot*
-decrypt only while its `rebroadcast_mode` is the default `ALL`; one set to `LOCAL_ONLY` relays its
-own channels and drops `CubeSat` without a trace. So the satellite can sit happily in a public node
-list having proved nothing about the channel its telemetry and commands actually travel on. That
-second measurement is V10 in [`ROADMAP.md`](../ROADMAP.md), taken on channel 1.
+**What this measurement could not settle on its own.** Everything above happens on the primary
+channel, and reaching the community mesh there was necessary rather than sufficient. A foreign node
+relays a packet it *cannot* decrypt only while its `rebroadcast_mode` is the default `ALL`; one set
+to `LOCAL_ONLY` relays its own channels and drops `CubeSat` without a trace. So the satellite could
+sit happily in a public node list having proved nothing about the channel its telemetry and commands
+actually travel on. That second reading was taken on 2026-09-05 and closed V10 —
+[The private channel is relayed](#the-private-channel-is-relayed-measured-2026-09-05) — and it turned
+on the same node: Sunol Ridge, the one direct neighbour here, is also what carried channel 1.
 
 **And the internet bridge is not a way in.** A community MQTT gateway cannot uplink the private
 channel even in principle: the firmware gates the publish on that channel's own `uplink_enabled` and
@@ -317,6 +316,69 @@ command channel either way — and the dangerous version of the inference is rul
 channel 1 was seen arriving as an explicit `1`. Reading the raw packet dict would need a bench
 script with `/dev/serial0` free, i.e. `MAINTENANCE`. The reasoning lives at `CHANNEL_KEY` in
 `src/cubesat/hal/rpi/meshtastic_radio.py`.
+
+
+### The private channel is relayed, measured 2026-09-05
+
+**The reading.** The operator walked 2–3 km from the satellite carrying the personal node
+`!698204b0`, with no line of sight the whole way — dense housing, and the satellite indoors on its
+desk at home, in `HOSTED` on the house Wi-Fi. Ten commands were sent on channel 1 between 12:29:50
+and 13:09:50 PDT. **Every one arrived, was accepted and was answered**, with no repeat and nothing
+lost:
+
+| Sent (PDT) | Command | What the satellite did | rx SNR |
+|---|---|---|---|
+| 12:29:50 | `!ping` | `ack sent: re=ping`, 115 ms after the message was logged | 6.00 |
+| 12:32:20 | `!ping` | acked | 6.50 |
+| 12:36:20 | `!sys` | acked | 7.00 |
+| 12:46:20 | `!pos` | acked | 6.75 |
+| 13:02:20 | `!sys` | acked | 6.25 |
+| 13:06:20 | `!profile demo` | relayed as `set_profile`, `DEMO` active 0.8 s later, `DEPLOY → NOMINAL` in 1.4 s | 6.50 |
+| 13:07:20 | `!sys` | acked | 3.25 |
+| 13:07:50 | `!photo` | `photo_20260905_200750.jpg`, cold camera, capture in 0.5 s | 5.50 |
+| 13:08:50 | `!pos` | acked | 2.50 |
+| 13:09:20 | `!profile hosted` | `NOMINAL → STANDBY`, `HOSTED` reapplied, no `SAFE` | 7.00 |
+
+**And there was no direct path between those two nodes.** Three traceroutes run across the same
+walk, between the same pair, all returned the same three-node route:
+
+```
+[CSAT] CubeSat CTM-1 (!6984a378)  ↔  [SUNL] W6SRR Sunol Ridge (!2a9db163)  ↔  [04b0] (!698204b0)
+```
+
+`!2a9db163` is the node this satellite already knew about: the bayme.sh `ROUTER` on the ridge
+7.50 km away that was the **only** gateway reporting zero hops on all three packets of 2026-09-02
+(see [Coverage](#coverage-measured-2026-09-02)). It is not the operator's node, and that is the whole
+point of the check — a hop counted through your own house proves nothing, because the personal node
+holds the `CubeSat` key and relays that channel like any other.
+
+**Why that settles it.** The traceroutes say the two nodes could not reach each other directly. The
+commands say packets on channel 1 got through anyway. Channel 1 is not a second radio: a secondary
+channel is a separate key over the *same* frequency and the *same* modem preset, so physical
+reachability is shared between the two channels and cannot differ. The only remaining explanation is
+that a foreign node rebroadcast a packet it could not decrypt — which is exactly what
+`rebroadcast_mode: ALL` does, and what a `LOCAL_ONLY` node would not have done. **`FLIGHT` may
+therefore be commanded from beyond direct range, and the mesh will carry it.**
+
+**What it does not settle, and one thing worth fixing.** Three limits, in order of how much they
+matter:
+
+- **This is one relay, not a property of the mesh.** `!2a9db163` is a stock-configured bayme.sh
+  `ROUTER`; a different neighbour set to `LOCAL_ONLY` would drop `CubeSat` silently and there would
+  be no trace of it anywhere. The useful reading from wherever `FLIGHT` actually goes is still which
+  nodes hear the satellite *directly*, not how many gateways appear behind Sunol Ridge.
+- **The route was read from meshview, so those traceroutes travelled on the primary channel** — a
+  gateway can only reconstruct a route it can decrypt. That is why the conclusion above is built out
+  of two observations rather than one: the traceroute establishes the topology, the accepted commands
+  establish that channel 1 crossed it. A traceroute sent on channel 1 itself would be visible only to
+  a node holding the key, i.e. from the operator's own client, and would make this a single reading.
+- **The satellite's own logs could not prove any of it.** `hops` was parsed by the driver and
+  published on `cubesat/comms/radio`, but the COMMS log line printed only sender and SNR, and
+  `HOSTED` persists nothing — so the most valuable radio session this project has had left no hop
+  count of its own behind, and the evidence above is entirely external. **Fixed the same day**: the
+  line now reads `LoRa message from !698204b0 (snr 6.5, hops 1)`, with `hops not reported` where the
+  node sent neither field, because that is not the same claim as zero. The next such walk documents
+  itself from the satellite.
 
 ### The channel URL is a secret — keep it out of this repository
 
@@ -440,9 +502,10 @@ Both of the items that used to be here are closed.
 
 The rewrite those items waited on has landed: the driver is `hal/rpi/meshtastic_radio.py`, the service is `src/cubesat/comms/`, `config.py` carries `LORA_PORT`/`LORA_BAUDRATE`/`LORA_CHANNEL_INDEX` rather than an I2C address, the tests fake a serial peripheral instead of `smbus`, and `crc16_ccitt()` went with the framing it existed for.
 
-What remains is bench work, not design — see the verification table in [`ROADMAP.md`](../ROADMAP.md):
+The radio's own bench checks are all closed — the hop arithmetic on 2026-09-02, the uplink channel
+filter on 2026-09-03, and relaying on the private channel on 2026-09-05. What is left is not this
+board:
 
-- **V10, now only the private channel.** The arithmetic `hops = hopStart − hopLimit` was measured on 2026-09-02 — see [Coverage](#coverage-measured-2026-09-02) — but on the primary channel, which carries none of this satellite's traffic. Whether a foreign node relays channel 1 at all depends on its `rebroadcast_mode`, and that reading still wants a packet reaching the personal node from beyond direct range.
 - A two-way ground link needs an SX1262 receiver attached to the ground station as well — a USB Meshtastic node, in the current plan for the ground segment.
 
 ## Further reading

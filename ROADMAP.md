@@ -37,7 +37,6 @@ code is worth writing.
 | [V5](#v5-bno055-calibration-save-and-restore) | `[ ]` not implemented | BNO055 calibration save and restore |
 | [V6](#v6-networkmanager-client-mode-and-the-access-point-beside-it) | `[ ]` bench | NetworkManager client mode and the AP — **needs a setup step on the satellite first** |
 | [V7](#v7-sen0501-board-revision) | `[ ]` bench | SEN0501 board revision — `uv_index` stays null until then |
-| [V10](#v10-whether-the-private-channel-is-relayed-at-all) | `[ ]` bench | Whether the private channel is relayed at all |
 | [V13](#v13-does-the-x728-actually-charge-the-pack-and-from-which-input) | `[ ]` bench | Does the X728 actually charge the pack, and from which input |
 | [V14](#v14-bno055-low-byte-bit-7-flips-reach-the-record) | `[ ]` bench | BNO055 low-byte bit-7 flips reach the record |
 | [V15](#v15-one-full-discharge-the-pack-curve-the-real-capacity-and-the-endurance) | `[ ]` bench | One full discharge: the pack curve, the real capacity and the endurance |
@@ -221,6 +220,13 @@ morning.
 5. **Look at it at home** in `DEMO`: the mission in the archive, its track on the map, its charts,
    its photographs changing as the replay plays.
 
+**Steps 2 and 4 are no longer untried, only their setting is.** On 2026-09-05 the profile was
+switched to `DEMO` and back to `HOSTED` over the radio from 2–3 km away, with no line of sight and a
+foreign ridge-top router carrying the packets, and `!sys`, `!pos`, `!ping` and `!photo` all answered
+across the same walk (`docs/hardware-heltec-lora32-v4.md` → The private channel is relayed). So what
+the walk still has to prove about the radio is range from the route itself, not whether commanding a
+satellite you cannot see works.
+
 What to watch for, in order of how likely it is to bite:
 
 - **The GNSS track** — V2 and V3 below are exactly this walk, and both produce plausible wrong
@@ -325,28 +331,6 @@ logs against a known UV source.
 
 **Why it is not settled.** One raw register, two formulas: at raw 14 they give 0.00 and 84.35.
 `uv_index` stays null until this is settled.
-
-#### V10: Whether the private channel is relayed at all
-
-**The check.** *The hop arithmetic itself is settled.* `hops = hopStart − hopLimit` was measured on
-2026-09-02: one NodeInfo broadcast reported by 72 bayme.sh gateways, `hopStart` fixed at 6 and
-`hopLimit` arriving as everything from 6 to 0 (see
-[`docs/hardware-heltec-lora32-v4.md`](docs/hardware-heltec-lora32-v4.md) → Coverage). The check that
-remains is on **channel 1**, and it is *not* "get far away and look for `hops ≥ 1`". **The
-operator's own node holds the `CubeSat` key, so it relays that channel like any other — and it was
-observed doing exactly that on the primary channel on 2026-09-02** (a chat message arriving with
-`hops: 3` at −23 dBm, the last relay being the personal node one room away). A hop counted through
-your own house proves nothing about strangers, and a passing hop count cannot tell the two apart. So
-the measurement is a **traceroute on channel 1**: the reply carries the route as a list of node ids
-— the same shape `Troy` produced when it trace-routed this satellite — and the question is whether a
-node that is *not* the operator's appears in it. It is answered by the firmware itself, so it needs
-no COMMS and works in any profile where the node is powered.
-
-**Why it is not settled.** All of that measurement is the *primary* channel, and telemetry and
-commands do not travel there. A foreign node rebroadcasts a packet it cannot decrypt only while its
-`rebroadcast_mode` is the default `ALL`; one set to `LOCAL_ONLY` drops `CubeSat` without a trace. So
-the satellite can sit in a public node list, relayed six hops, having proved nothing about the
-channel `FLIGHT` depends on.
 
 #### V13: Does the X728 actually charge the pack, and from which input
 

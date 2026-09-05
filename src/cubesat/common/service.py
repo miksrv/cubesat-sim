@@ -263,6 +263,14 @@ class Service:
         self.log.warning("disconnected from broker (%s); reconnecting", reason)
 
     def _on_message(self, _client: mqtt.Client, _userdata: Any, message: mqtt.MQTTMessage) -> None:
+        # An empty payload is not malformed JSON: with the retain flag it is how
+        # MQTT says "forget this topic", and PAYLOAD clears the last photograph
+        # exactly that way on every start (``_clear_retained_photo``). Warning
+        # about it put an "undecodable payload on cubesat/payload/photo" in the
+        # COMMS log at every profile change — a routine erasure reading as a
+        # fault, and noise that a real decode failure would have hidden behind.
+        if not message.payload:
+            return
         try:
             data = json.loads(message.payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):

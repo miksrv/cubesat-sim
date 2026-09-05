@@ -734,8 +734,19 @@ class CommsService(Service):
             if message.channel != self._command_channel:
                 self._refuse_uplink(message)
                 continue
+            # ``hops`` is on the record here and not only on ``comms_radio``
+            # because the profiles where the radio matters are the ones that
+            # persist least: the walk of 2026-09-05 proved the private channel
+            # is relayed by a foreign node (docs/hardware-heltec-lora32-v4.md),
+            # and it had to be proved from meshview, because ``HOSTED`` writes
+            # no ``radio_log`` and this line carried only the sender and SNR.
+            # 0 means heard directly; "not reported" means the node sent
+            # neither hop field, which is not the same as zero.
             self.log.info(
-                "LoRa message from %s (snr %s)", message.sender or "an unknown node", message.snr
+                "LoRa message from %s (snr %s, hops %s)",
+                message.sender or "an unknown node",
+                message.snr,
+                message.hops if message.hops is not None else "not reported",
             )
             # Before the relay, so a message that turns out to be gibberish is
             # still on the record: a radio session log that only holds the

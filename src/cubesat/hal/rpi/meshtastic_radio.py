@@ -405,11 +405,14 @@ def _hops(packet: Any) -> int | None:
     packet had taken. meshview computes the same subtraction independently. The
     reading is in ``docs/hardware-heltec-lora32-v4.md`` → Coverage.
 
-    What is still open is not the arithmetic: it is whether the private channel
-    is relayed at all (a foreign node rebroadcasts a packet it cannot decrypt
-    only while its ``rebroadcast_mode`` is ``ALL``), which is what is left of
-    V10. The value stays best-effort — None whenever either field is missing or
-    the difference is not a sane hop count.
+    The other half of V10 — whether the private channel is relayed at all, a
+    foreign node rebroadcasting a packet it cannot decrypt only while its
+    ``rebroadcast_mode`` is ``ALL`` — was settled on **2026-09-05**: ten
+    commands sent on channel 1 from beyond direct range were all accepted, with
+    a bayme.sh ``ROUTER`` that is not the operator's between the two nodes. Both
+    halves are therefore measured, and the value stays best-effort all the same
+    — None whenever either field is missing or the difference is not a sane hop
+    count.
     """
     start = packet.get("hopStart")
     limit = packet.get("hopLimit")

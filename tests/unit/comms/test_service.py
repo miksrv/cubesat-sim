@@ -1748,6 +1748,31 @@ def test_every_received_message_is_a_radio_event_even_gibberish(comms):
     }
 
 
+def test_the_log_line_carries_the_hop_count(comms, caplog):
+    # The walk of 2026-09-05 had to be proved from a public gateway's records,
+    # because ``HOSTED`` writes no ``radio_log`` and this line held only the
+    # sender and the SNR. A relayed uplink must now say so where it lands.
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject(RECOVER, sender="!698204b0", snr=6.5, hops=1)
+    with caplog.at_level("INFO"):
+        service.tick()
+
+    assert "LoRa message from !698204b0 (snr 6.5, hops 1)" in caplog.text
+
+
+def test_a_missing_hop_count_is_not_reported_as_zero(comms, caplog):
+    # 0 is "heard directly", which is a measurement; a node that sent neither
+    # hop field measured nothing, and the two must not read alike.
+    service, client = comms()
+    obc(client)
+    service._mesh._radio.inject(RECOVER, hops=None)
+    with caplog.at_level("INFO"):
+        service.tick()
+
+    assert "hops not reported" in caplog.text
+
+
 def test_link_fields_the_node_did_not_report_are_null_not_invented(comms):
     service, client = comms()
     obc(client)

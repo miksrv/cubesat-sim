@@ -166,6 +166,19 @@ def test_undecodable_payload_is_dropped(service_factory):
     assert service.messages == []
 
 
+def test_an_empty_retained_payload_is_an_erasure_not_a_fault(service_factory, caplog):
+    # PAYLOAD clears the last photograph by publishing an empty retained
+    # payload on every start, so this arrives at every profile change. Warning
+    # about it made a routine erasure read as a decode failure in the COMMS log
+    # and buried the real ones.
+    service, client = service_factory(Probe)
+    with caplog.at_level("WARNING"):
+        client.deliver(TOPICS["eps_status"], "")
+
+    assert service.messages == []
+    assert "undecodable" not in caplog.text
+
+
 def test_non_object_payload_is_dropped(service_factory):
     service, client = service_factory(Probe)
     client.deliver(TOPICS["eps_status"], "[1, 2, 3]")

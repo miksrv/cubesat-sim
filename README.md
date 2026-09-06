@@ -605,7 +605,7 @@ WIFI:S=cubesat;T=WPA;P=<password>;;      # iOS and Android cameras handle this n
 http://192.168.66.1/
 ```
 
-Two taps, no typing, and nothing to go wrong in front of an audience. A captive portal — DNS hijack plus a redirect on port 80, so the browser opens by itself — was considered and **deliberately not built**: it needs port 80 (the dashboard runs unprivileged on 8080), a `dnsmasq-shared.d` drop-in and a page that survives being loaded inside a captive webview, which the dashboard would not, because its live data is a WebSocket to mosquitto that such a webview typically drops. Stickers cost nothing and work on every phone.
+Two taps, no typing, and nothing to go wrong in front of an audience. A captive portal — DNS hijack plus a redirect on port 80, so the browser opens by itself — was considered and **deliberately not built**: it needs a DNS hijack of every name a phone tries, a `dnsmasq-shared.d` drop-in and a page that survives being loaded inside a captive webview, which the dashboard would not, because its live data is a WebSocket to mosquitto that such a webview typically drops. Stickers cost nothing and work on every phone.
 
 ### Common Infrastructure
 
@@ -1456,7 +1456,7 @@ statuses the broker already holds, or the recorder's database.
 |---|---|---|
 | What is it doing? | `cubesat profile` | `host_status`, `obc_status`, `dhs_status` |
 | Is it well? | `cubesat status` | the above plus `eps`, `comms`, `payload`, and `dhs_telemetry` for the host metrics |
-| What trips are on the card? | `cubesat mission list [--all]` | `comms.db`, read-only, no broker involved |
+| What trips are on the card? | `cubesat mission list [--all]` | `comms.db`, read-only, no broker involved — and as `cubesat`, through `sudo`, when the file is not the caller's (see [Operating it](#operating-it)) |
 
 **The compact spelling.** `!` is optional and buys exactly one thing: declared intent. A `!` line
 that does not parse is answered `re=? ok=0 err=unknown`, because the sender is a person standing in
@@ -2019,6 +2019,11 @@ applied — not by hand. Nothing in the code ever calls `mkdir` on a system path
 Log out and back in after installing: the group membership that lets you deploy the dashboard build
 does not apply to a session that already exists.
 
+The script reads `.env` from the checkout first — the same file the services read — so the access
+point's SSID, password and address (`CUBESAT_AP_*`, see [Environment variables](#environment-variables))
+are set there once rather than exported by hand before each run. Re-running the script after
+changing them converges: the connection is deleted and recreated.
+
 ### Setting up the command channel
 
 The satellite's radio traffic — the beacon out, every command in — travels on **one Meshtastic
@@ -2124,6 +2129,16 @@ publish, onto the same topic, and reads the same retained statuses. It needs no 
 reachable broker. `cubesat mission list` is the exception that needs no broker at all — the archive
 is a file on the same disk, opened read-only, which matters because the dashboard does not run in
 `FLIGHT` and mosquitto may be the thing that fell over.
+
+Read-only is not enough on its own, and this is the one verb that may ask for a password. The
+databases run in WAL mode, and SQLite creates the `-wal`/`-shm` sidecars beside the file for a
+*reader* too, owned by whoever opened it — so a listing run from the operator's shell after a trip
+would leave two files the operator owns next to a database `cubesat` owns, and DHS would fail its
+next mission with `attempt to write a readonly database` while the file itself looked writable
+(found 2026-09-03, done by hand with `sqlite3`; it cost the first `DIAG` run its recording). Since
+2026-09-05 the command checks who owns the file and, when that is not the current user, re-executes
+itself as the owner: `sudo -u cubesat cubesat mission list`, said on stderr first. It never opens
+the file as anybody else, and without `sudo` it refuses rather than does it wrong.
 
 Exit codes, because this ends up in scripts: `0` done or answered, `1` the satellite did not answer
 or answered badly (a profile that applied only in part is `1`, and says what applied), `2` the
@@ -2246,7 +2261,7 @@ CUBESAT_MOCK_HARDWARE=0
 | `LORA_PORT` | `/dev/serial0` | Serial device the Meshtastic node is on |
 | `LORA_BAUDRATE` | `115200` | Not optional — the Meshtastic Python library opens the port hard-coded at this rate |
 | `LORA_CHANNEL_INDEX` | `1` | The mesh channel telemetry goes out on **and the only one a command is accepted from**. See [Setting up the command channel](#setting-up-the-command-channel) |
-| `DASHBOARD_PORT` | `8080` | Port the local dashboard listens on |
+| `DASHBOARD_PORT` | `80` | Port the local dashboard listens on. 80 since 2026-09-05, so that `http://cubesat.local` and `http://192.168.66.1/` — the addresses on the demo card and the `EXPO` sticker — need no port; the unit grants the service `CAP_NET_BIND_SERVICE` and nothing else. A development run on a laptop sets something above 1024 |
 | `DHS_RETENTION_DAYS` | `30` (from `retention.days`) | Telemetry rows and attitude samples older than this are purged, and their missions' photos with them |
 | `DHS_ATTITUDE_MIN_INTERVAL_SEC` | `1.0` (from `dhs.attitude_min_interval_sec`) | Floor on how often one attitude sample is recorded. One ceiling across every profile. Costs card writes, never bus time |
 | `PHOTO_MISSION_INTERVAL_SEC` | `300` (from `photos.mission_interval_sec`) | How often an open mission photographs by itself. There is no command and no interval on the wire; frames stop when the mission closes |

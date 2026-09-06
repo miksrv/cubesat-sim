@@ -550,6 +550,8 @@ by that operator, and DHS, which is `cubesat`, then fails its next write with `a
 readonly database` while the database file itself still looks perfectly writable. It cost the first
 `DIAG` run its recording: migrations 4→7 aborted and the service logged `nothing will be recorded`
 and stayed up, exactly as it should. Diagnose through `sudo -u cubesat sqlite3 …`, or on a copy.
+`cubesat mission list` does this itself since 2026-09-05: it checks who owns the file and re-executes
+through `sudo -u` as that user rather than open it as the operator (`cli/main.py` → `_rerun_as`).
 Fixing an instance of it is `chown cubesat:cubesat` on the two sidecar files — never delete a `-wal`
 that is not zero-length, it holds committed transactions.
 

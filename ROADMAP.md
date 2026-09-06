@@ -303,10 +303,11 @@ no longer `nmcli device wifi hotspot` but a named NetworkManager connection, `cu
 `scripts/install.sh` creates from `CUBESAT_AP_SSID`, `CUBESAT_AP_PASSWORD` and `CUBESAT_AP_ADDRESS`.
 A satellite updated by `git pull` alone has no such connection, so `EXPO` will report
 `nmcli connection up cubesat-ap: …` on `host_status` and stay in `unknown` mode until it exists. So
-the first step is on the running satellite: set those three in the operator's `.env` and re-run
-`scripts/install.sh`, or create the connection by hand — the command is in the script, and
-`autoconnect no` is the part not to drop, or the satellite comes up broadcasting instead of joining
-the home network.
+the first step is on the running satellite: set those three in `.env` in the checkout and re-run
+`scripts/install.sh`, which reads that file (since 2026-09-05 — until then it read the environment
+only, and this very step printed `skipped`), or create the connection by hand — the command is in
+the script, and `autoconnect no` is the part not to drop, or the satellite comes up broadcasting
+instead of joining the home network.
 
 **The check**, once it exists:
 
@@ -448,7 +449,7 @@ where a visitor's hand naturally goes — the side away from the camera and the 
 anybody who is not the operator, and it is what makes the walk-to-work case work at the far end: two
 taps instead of typing an SSID, a password and an address into a phone in a corridor. It also
 replaces a captive portal, which was considered on 2026-09-04 and deliberately not built — that
-would have wanted port 80 (the dashboard runs unprivileged on 8080), a `dnsmasq-shared.d` drop-in
+would have wanted a DNS hijack of every name a phone tries, a `dnsmasq-shared.d` drop-in
 and a page that survives a captive webview, which the dashboard would not because its live data is a
 WebSocket to mosquitto.
 

@@ -19,13 +19,16 @@ what applied, and it is not a success.
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shutil
 import sys
 
 from cubesat.cli.commands import mission as mission_cmd
 from cubesat.cli.commands import profile as profile_cmd
 from cubesat.cli.commands import status as status_cmd
 from cubesat.cli.session import BrokerUnavailable, Session
+from cubesat.common import config
 from cubesat.common import profiles as profiles_module
 from cubesat.common.profiles import KNOWN_SERVICES, ProfileError
 
@@ -116,6 +119,12 @@ def main(argv: list[str] | None = None) -> int:
             # than by re-entering argparse, which would exit instead of
             # returning and take the exit code with it.
             return _print(2, ["usage: cubesat mission list [--all]"])
+        # Whose file it is decides who may open it, read-only included: SQLite
+        # leaves WAL sidecars owned by the reader, and a sidecar the recorder
+        # cannot write is a recorder that cannot record (mission.py says why).
+        owner = mission_cmd.owner_mismatch(config.DB_PATH)
+        if owner is not None:
+            return _rerun_as(owner, argv)
         code, lines = mission_cmd.listing(limit=0 if args.all else mission_cmd.DEFAULT_LIMIT)
         return _print(code, lines)
 
@@ -129,10 +138,10 @@ def main(argv: list[str] | None = None) -> int:
     wanted = None
     if args.command == "profile" and args.name is not None:
         try:
-            config = profiles_module.load()
+            definitions = profiles_module.load()
         except ProfileError as exc:
             return _print(1, [f"cannot read the profile definitions: {exc}"])
-        wanted, complaints = profile_cmd.resolve(config, args.name)
+        wanted, complaints = profile_cmd.resolve(definitions, args.name)
         if wanted is None:
             return _print(2, complaints)
 
@@ -158,6 +167,42 @@ def main(argv: list[str] | None = None) -> int:
         return _print(1, [str(exc), "Is mosquitto running? `systemctl status mosquitto`"])
 
     return _print(code, lines)
+
+
+def _rerun_as(owner: str, argv: list[str] | None) -> int:
+    """Replace this process with the same command run as ``owner``, via sudo.
+
+    The one place the CLI reaches for privilege, and it reaches for *less* of
+    it than the caller has: the operator can ``sudo`` to root and is asked to
+    become ``cubesat`` instead, because that is whose sidecar files SQLite is
+    about to create. Said out loud on stderr first, so a password prompt that
+    follows is not a mystery. ``sudo`` may ask for one — this is the only
+    ``cubesat`` verb that can, and only when the database is somebody else's.
+
+    Refused, not worked around, where ``sudo`` is missing: opening the file as
+    the wrong user is the failure this function exists to prevent, and doing it
+    anyway with a warning would be the same outcome with a comment.
+    """
+    where = config.DB_PATH
+    sudo = shutil.which("sudo")
+    if sudo is None:
+        return _print(
+            1,
+            [
+                f"{where} belongs to {owner}, and this is not {owner}.",
+                "Opening it as anybody else leaves -wal/-shm files the recorder cannot "
+                "write. Run it as the owner, or install sudo.",
+            ],
+        )
+    command = [sudo, "-u", owner, "--", sys.argv[0], *(sys.argv[1:] if argv is None else argv)]
+    sys.stderr.write(f"{where} belongs to {owner}; re-running as {owner}.\n")
+    try:
+        os.execvp(sudo, command)
+    except OSError as exc:
+        return _print(1, [f"could not re-run as {owner}: {exc}"])
+    # execvp does not return. A stand-in that does has failed to replace us,
+    # and the listing has not happened.
+    return 1
 
 
 def _restart(session: Session, service: str) -> tuple[int, list[str]]:

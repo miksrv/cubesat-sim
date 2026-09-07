@@ -71,6 +71,48 @@ def test_mission_list_needs_no_broker_either(monkeypatch, capsys):
     assert "mission" in capsys.readouterr().out.lower()
 
 
+def test_mission_list_reruns_itself_as_the_owner_of_the_database(monkeypatch, capsys):
+    # SQLite leaves -wal/-shm beside the file owned by whoever *reads* it, and
+    # the recorder cannot write a sidecar the operator owns (2026-09-03). So the
+    # command becomes the owner rather than opening the file as anybody else.
+    monkeypatch.setattr(cli.mission_cmd, "owner_mismatch", lambda _path: "cubesat")
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: "/usr/bin/sudo")
+    calls = []
+    monkeypatch.setattr(cli.os, "execvp", lambda file, args: calls.append((file, args)))
+
+    assert cli.main(["mission", "list", "--all"]) == 1
+
+    ((file, args),) = calls
+    assert file == "/usr/bin/sudo"
+    assert args[:4] == ["/usr/bin/sudo", "-u", "cubesat", "--"]
+    assert args[-3:] == ["mission", "list", "--all"]
+    assert "belongs to cubesat; re-running as cubesat" in capsys.readouterr().err
+
+
+def test_without_sudo_somebody_elses_database_is_refused_not_opened(monkeypatch, capsys):
+    monkeypatch.setattr(cli.mission_cmd, "owner_mismatch", lambda _path: "cubesat")
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        cli.mission_cmd, "listing", lambda **_: pytest.fail("the database must not be opened")
+    )
+
+    assert cli.main(["mission", "list"]) == 1
+    err = capsys.readouterr().err
+    assert "belongs to cubesat" in err and "-wal/-shm" in err
+
+
+def test_a_rerun_that_cannot_start_is_reported(monkeypatch, capsys):
+    monkeypatch.setattr(cli.mission_cmd, "owner_mismatch", lambda _path: "cubesat")
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: "/usr/bin/sudo")
+
+    def refuse(_file, _args):
+        raise OSError("exec format error")
+
+    monkeypatch.setattr(cli.os, "execvp", refuse)
+    assert cli.main(["mission", "list"]) == 1
+    assert "could not re-run as cubesat: exec format error" in capsys.readouterr().err
+
+
 def test_mission_without_a_subcommand_is_a_usage_error(capsys):
     assert cli.main(["mission"]) == 2
     assert "usage: cubesat mission list" in capsys.readouterr().err

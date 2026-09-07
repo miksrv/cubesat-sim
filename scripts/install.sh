@@ -9,6 +9,22 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="${PROJECT_DIR}/venv"
+
+# Per-deployment values and every secret live in .env, which the services read
+# through python-dotenv. This script is bash and has to read the same file
+# itself — until 2026-09-05 it did not, so the documented step for the access
+# point ("set CUBESAT_AP_* in .env and re-run install.sh") printed `skipped`
+# every time. Sourced with allexport so each KEY=VALUE line becomes an exported
+# variable; the file is kept to plain shell-compatible lines for exactly this
+# reason (see .env.example). What the file says wins over the shell's
+# environment: it is the deployment's own record, and this is the deployment.
+if [[ -f "${PROJECT_DIR}/.env" ]]; then
+    echo "==> reading ${PROJECT_DIR}/.env"
+    set -a
+    # shellcheck disable=SC1091
+    source "${PROJECT_DIR}/.env"
+    set +a
+fi
 ALWAYS_ON=(cubesat-hostd.service cubesat@obc.service cubesat@eps.service)
 # Must match the units' User= and the ownership in config/tmpfiles.d/cubesat.conf.
 SERVICE_USER=cubesat
@@ -107,8 +123,9 @@ if ! command -v nmcli >/dev/null 2>&1; then
     echo "    nmcli is not installed — skipped. EXPO needs NetworkManager."
 elif [[ -z "${AP_PASSWORD}" ]]; then
     echo "    CUBESAT_AP_PASSWORD is not set — skipped."
-    echo "    EXPO will report an error until this connection exists; re-run"
-    echo "    with the variable set, or create it by hand (see README)."
+    echo "    EXPO will report an error until this connection exists. Set it in"
+    echo "    ${PROJECT_DIR}/.env and re-run this script, or create the connection"
+    echo "    by hand (see README)."
 else
     # Deleted and recreated rather than modified, so that re-running with a new
     # password or address converges instead of layering half a change onto

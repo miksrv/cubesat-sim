@@ -8,6 +8,7 @@ and every decision it reports belongs to the satellite.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -445,6 +446,41 @@ def test_status_without_a_published_row_says_so_instead_of_inventing_metrics(ses
 
 
 # ── mission list ────────────────────────────────────────────────────────────
+
+
+def test_our_own_database_is_no_mismatch(tmp_path):
+    path = tmp_path / "comms.db"
+    path.write_bytes(b"")
+    assert mission_cmd.owner_mismatch(path) is None
+
+
+def test_an_absent_database_belongs_to_nobody(tmp_path):
+    # Nothing recorded, nothing to protect: `listing` reports the absence
+    # itself, without creating the file it is reporting on.
+    assert mission_cmd.owner_mismatch(tmp_path / "absent.db") is None
+
+
+def test_somebody_elses_database_is_named_by_its_owner(tmp_path, monkeypatch):
+    path = tmp_path / "comms.db"
+    path.write_bytes(b"")
+    uid = path.stat().st_uid
+    monkeypatch.setattr(
+        mission_cmd.pwd, "getpwuid", lambda u: SimpleNamespace(pw_name=f"user{u}")
+    )
+    assert mission_cmd.owner_mismatch(path, geteuid=lambda: uid + 1) == f"user{uid}"
+
+
+def test_an_owner_with_no_passwd_entry_is_named_by_number(tmp_path, monkeypatch):
+    path = tmp_path / "comms.db"
+    path.write_bytes(b"")
+    uid = path.stat().st_uid
+
+    def unknown(_uid):
+        raise KeyError(_uid)
+
+    monkeypatch.setattr(mission_cmd.pwd, "getpwuid", unknown)
+    # `#uid` is the spelling sudo -u accepts for a numeric id.
+    assert mission_cmd.owner_mismatch(path, geteuid=lambda: uid + 1) == f"#{uid}"
 
 
 def test_mission_list_reads_the_card_directly(tmp_path):

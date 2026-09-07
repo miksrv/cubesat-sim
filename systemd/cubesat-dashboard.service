@@ -32,5 +32,16 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 
+# Port 80, without root. The dashboard's address is printed on a demo card and
+# on the QR sticker for EXPO — `http://cubesat.local`, `http://192.168.66.1/` —
+# and neither carries a port, so the service has to be on the one a browser
+# assumes. AmbientCapabilities hands an unprivileged process exactly this one
+# capability at exec time and is compatible with NoNewPrivileges above; the
+# bounding set makes it the only capability the process can ever hold. The
+# alternatives were a redirect on port 80 (a second daemon to fail) and a
+# `:8080` on the sticker (a number for a visitor to type).
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
 [Install]
 WantedBy=multi-user.target

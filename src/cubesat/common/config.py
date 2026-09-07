@@ -176,7 +176,15 @@ LORA_BAUDRATE: int = int(os.getenv("LORA_BAUDRATE", 115200))
 LORA_CHANNEL_INDEX: int = int(os.getenv("LORA_CHANNEL_INDEX", 1))
 
 # ── Services ────────────────────────────────────────────────────────────────
-DASHBOARD_PORT: int = int(os.getenv("DASHBOARD_PORT", 8080))
+#: 80, not 8080 (2026-09-05). The dashboard's address is what goes on a demo
+#: card and on the QR sticker in EXPO — `http://cubesat.local`,
+#: `http://192.168.66.1/` — and both were written without a port while the
+#: service listened on 8080, so the first sticker would have opened nothing.
+#: Binding a privileged port from an unprivileged service is what
+#: `AmbientCapabilities=CAP_NET_BIND_SERVICE` in systemd/cubesat-dashboard.service
+#: grants: that one capability and no other, and still no root. A development
+#: run on a laptop sets DASHBOARD_PORT to something above 1024 instead.
+DASHBOARD_PORT: int = int(os.getenv("DASHBOARD_PORT", 80))
 
 _dashboard = _yaml.get("dashboard", {})
 

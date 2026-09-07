@@ -58,6 +58,17 @@ OFFLINE_WARNING_INTERVAL_SEC = 60.0
 #: of a broker, because DHS has a flight recorder to keep writing.
 STARTUP_CONNECT_TIMEOUT_SEC = 5.0
 
+#: How long a clean shutdown waits for its goodbye to reach the broker.
+#:
+#: ``publish`` only queues the message; it is the network thread that sends it,
+#: and ``loop_stop`` ends that thread. A *clean* ``disconnect`` then tells the
+#: broker not to fire the last will either — so a goodbye still sitting in the
+#: queue is simply gone, and OBC learns of the departure from three missed
+#: heartbeats (30 s) instead of at once. The race was usually won on the
+#: hardware, which is how it stayed hidden. Bounded, because a broker that has
+#: stopped answering must not hold up a SIGTERM that systemd is timing.
+GOODBYE_TIMEOUT_SEC = 2.0
+
 
 class Service:
     #: Client id suffix, log file name, heartbeat identity.
@@ -223,11 +234,18 @@ class Service:
             self.log.exception("on_stop failed")
         # Say goodbye explicitly: a clean exit should not look like a crash to
         # OBC, and the last will only fires on an ungraceful disconnect.
-        self.client.publish(
+        goodbye = self.client.publish(
             TOPICS["heartbeat"],
             json.dumps({"service": self.name, "alive": False, "timestamp": time.time()}),
             qos=1,
         )
+        if self._connected.is_set():
+            # And wait for it to leave — see GOODBYE_TIMEOUT_SEC. Only while
+            # connected: with no broker there is nothing to wait for, and paho
+            # raises for a message it could not queue, which is not a reason to
+            # fail a shutdown.
+            with contextlib.suppress(RuntimeError, ValueError):
+                goodbye.wait_for_publish(timeout=GOODBYE_TIMEOUT_SEC)
         self.client.loop_stop()
         self.client.disconnect()
         self.log.info("%s stopped", self.name)

@@ -2,7 +2,7 @@ import json
 import threading
 import time
 
-from cubesat.common.service import IDLE_POLL_SEC, Service
+from cubesat.common.service import GOODBYE_TIMEOUT_SEC, IDLE_POLL_SEC, Service
 from cubesat.common.states import MissionState, Profile
 from cubesat.common.topics import TOPICS
 
@@ -330,6 +330,40 @@ def test_shutdown_announces_that_the_service_is_gone(service_factory):
     service.run()
     goodbye = client.payloads(TOPICS["heartbeat"])[-1]
     assert goodbye == {"service": "adcs", "alive": False, "timestamp": goodbye["timestamp"]}
+
+
+def test_the_goodbye_is_waited_for_before_the_connection_is_dropped(service_factory):
+    # `publish` only queues; the network thread sends. Stopping that thread and
+    # disconnecting cleanly right after would lose the goodbye *and* suppress
+    # the last will, so OBC would learn of the departure 30 s later from missed
+    # heartbeats instead of at once. The wait has to come before both.
+    service, client = service_factory(Probe)
+    client.connect_ok()
+    service.stop()
+    service.run()
+    # One wait, taken while the loop was still running and the connection up.
+    assert client.awaited == [(GOODBYE_TIMEOUT_SEC, False, False)]
+    assert client.disconnected and client.loop_stopped
+
+
+def test_no_goodbye_is_waited_for_with_no_broker_to_carry_it(service_factory):
+    # Never connected: paho would refuse to queue the message and there is
+    # nothing to wait on. A shutdown must not spend the timeout on that.
+    service, client = service_factory(Probe)
+    service.stop()
+    service.run()
+    assert client.awaited == []
+    assert client.disconnected
+
+
+def test_a_goodbye_that_cannot_be_delivered_still_shuts_down(service_factory):
+    service, client = service_factory(Probe)
+    client.connect_ok()
+    client.wait_error = RuntimeError("Message publish failed")
+    service.stop()
+    service.run()
+    assert client.awaited
+    assert client.disconnected and client.loop_stopped
 
 
 def test_heartbeats_are_published_while_connected(service_factory, monkeypatch):

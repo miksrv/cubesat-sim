@@ -29,9 +29,32 @@ class _Message:
         self.payload = payload.encode("utf-8")
 
 
+class _MessageInfo:
+    """What paho's ``publish`` returns: something a caller can wait on."""
+
+    def __init__(self, client: FakeMqttClient) -> None:
+        self._client = client
+
+    def wait_for_publish(self, timeout: float | None = None) -> None:
+        # Recorded with the client's state at the moment of the wait, so a test
+        # can assert the wait happened *before* the loop was stopped and the
+        # connection dropped — which is the whole point of waiting.
+        self._client.awaited.append((timeout, self._client.loop_stopped, self._client.disconnected))
+        if self._client.wait_error is not None:
+            raise self._client.wait_error
+
+
 class FakeMqttClient:
     def __init__(self) -> None:
         self.published: list[Published] = []
+        #: Every ``wait_for_publish`` call: (timeout, loop already stopped,
+        #: already disconnected). Both flags should read False — a wait after
+        #: either is a wait for a message nothing will send.
+        self.awaited: list[tuple[float | None, bool, bool]] = []
+        self.loop_stopped = False
+        #: Raised from ``wait_for_publish`` when set, as paho raises for a
+        #: message it could not queue.
+        self.wait_error: Exception | None = None
         self.subscribed: list[str] = []
         self.will: Published | None = None
         self.loop_running = False
@@ -50,6 +73,7 @@ class FakeMqttClient:
 
     def publish(self, topic, payload, qos=0, retain=False):
         self.published.append(Published(topic, payload, qos, retain))
+        return _MessageInfo(self)
 
     def subscribe(self, topic, qos=0):
         self.subscribed.append(topic)
@@ -83,6 +107,7 @@ class FakeMqttClient:
 
     def loop_stop(self):
         self.loop_running = False
+        self.loop_stopped = True
 
     def disconnect(self):
         self.disconnected = True
